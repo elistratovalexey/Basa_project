@@ -1,0 +1,28 @@
+# Виртуальные окружения
+.venv/
+venv/
+
+# Кэш Python
+__pycache__/
+
+# Локальные настройки и секреты
+.env
+.env.*
+!.env.example
+
+# Результаты сборки
+build/
+dist/
+*.egg-info/
+
+
+projects.db/
+АРХИВ/
+Закупки/
+Закупки Россия/
+ПОДТВЕРЖДЕНИЯ/
+/Заявки на Закупки/
+backups/
+logs/
+project_log.txt
+
