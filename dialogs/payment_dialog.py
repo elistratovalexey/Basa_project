@@ -1,7 +1,11 @@
 import tkinter as tk
 from tkinter import ttk, messagebox
 from datetime import datetime
-from config import CURRENCIES
+
+try:
+    from config import CURRENCIES
+except ImportError:
+    CURRENCIES = ["RUB", "USD", "EUR", "CNY", "TRY"]
 
 
 class PaymentDialog(tk.Toplevel):
@@ -9,17 +13,15 @@ class PaymentDialog(tk.Toplevel):
                  contract_amount=None, contract_currency=None):
         super().__init__(parent)
         self.title(title)
-        self.geometry("520x380")
-        try:
-            from dialogs.window_geometry import restore_geometry, track_geometry
-            restore_geometry(self, "payment_dialog", "520x380")
-            track_geometry(self, "payment_dialog")
-        except Exception:
-            pass
+        self.geometry("520x420")
         self.resizable(False, False)
         self.result = None
 
-        # Создаем все виджеты
+        # Сохраняем параметры договора для авто-расчёта %
+        self.contract_amount = self._parse_amount(contract_amount)
+        self.contract_currency = contract_currency or ""
+
+        # === Виджеты ===
         ttk.Label(self, text="№ платежа:").grid(row=0, column=0, sticky="w", padx=10, pady=5)
         self.entry_number = ttk.Entry(self, width=25)
         self.entry_number.grid(row=0, column=1, sticky="w", padx=10, pady=5)
@@ -36,28 +38,24 @@ class PaymentDialog(tk.Toplevel):
         ttk.Label(self, text="Сумма:").grid(row=2, column=0, sticky="w", padx=10, pady=5)
         self.entry_amount = ttk.Entry(self, width=25)
         self.entry_amount.grid(row=2, column=1, sticky="w", padx=10, pady=5)
-        # НОВОЕ: авто-расчёт % от суммы договора при вводе суммы
-        self.entry_amount.bind("<KeyRelease>", lambda e: self._auto_percent())
+        self.entry_amount.bind("<KeyRelease>", self._on_amount_change)
 
         ttk.Label(self, text="Валюта:").grid(row=3, column=0, sticky="w", padx=10, pady=5)
         self.combo_currency = ttk.Combobox(self, values=CURRENCIES, state="readonly", width=22)
         self.combo_currency.grid(row=3, column=1, sticky="w", padx=10, pady=5)
-        self.combo_currency.set(CURRENCIES[0])
-
-        # НОВОЕ: параметры договора, переданные вкладкой «Финансы»
-        self.contract_amount = None
-        if contract_amount not in (None, ""):
-            try:
-                self.contract_amount = float(str(contract_amount).replace(' ', '').replace(',', '.'))
-            except (TypeError, ValueError):
-                self.contract_amount = None
-        self.contract_currency = contract_currency or ""
+        # НОВОЕ: если передана валюта договора — ставим её по умолчанию
         if self.contract_currency and self.contract_currency in CURRENCIES:
             self.combo_currency.set(self.contract_currency)
+        else:
+            self.combo_currency.set(CURRENCIES[0])
+
+        # НОВОЕ: подсказка о сумме договора
         if self.contract_amount:
-            ttk.Label(self,
-                      text=f"Договор: {self.contract_amount:,.2f} {self.contract_currency}".replace(',', ' '),
-                      foreground="#0066cc").grid(row=3, column=2, sticky="w", padx=10, pady=5)
+            self.lbl_contract = ttk.Label(
+                self,
+                text=f"Договор: {self.contract_amount:,.2f} {self.contract_currency}".replace(",", " "),
+                foreground="#0066cc")
+            self.lbl_contract.grid(row=3, column=2, sticky="w", padx=5)
 
         ttk.Label(self, text="Когда платят:").grid(row=4, column=0, sticky="w", padx=10, pady=5)
         self.entry_contract = ttk.Entry(self, width=25)
@@ -68,20 +66,22 @@ class PaymentDialog(tk.Toplevel):
         self.entry_percent.grid(row=5, column=1, sticky="w", padx=10, pady=5)
 
         self.paid_var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(self, text="Оплачено", variable=self.paid_var).grid(row=6, column=1, sticky="w", padx=10, pady=5)
+        ttk.Checkbutton(self, text="Оплачено", variable=self.paid_var).grid(
+            row=6, column=1, sticky="w", padx=10, pady=5)
 
         # Заполняем данные если есть
         if payment_data:
             self.entry_amount.delete(0, tk.END)
-            self.entry_amount.insert(0, payment_data["amount"])
-            self.combo_currency.set(payment_data["currency"])
+            self.entry_amount.insert(0, payment_data.get("amount", ""))
+            if payment_data.get("currency"):
+                self.combo_currency.set(payment_data["currency"])
             self.entry_contract.delete(0, tk.END)
-            self.entry_contract.insert(0, payment_data["contract_date"])
+            self.entry_contract.insert(0, payment_data.get("contract_date", ""))
             self.entry_percent.delete(0, tk.END)
             self.entry_percent.insert(0, payment_data.get("percent", ""))
             if payment_data.get("paid"):
                 self.paid_var.set(True)
-            # НОВОЕ: процента нет, но сумма договора известна — досчитываем
+            # НОВОЕ: если % не указан, но есть сумма договора — досчитываем
             if self.contract_amount and not payment_data.get("percent"):
                 try:
                     amt = float(str(payment_data.get("amount", 0)).replace(' ', '').replace(',', '.'))
@@ -96,28 +96,55 @@ class PaymentDialog(tk.Toplevel):
         btn_frame.grid(row=7, column=0, columnspan=3, pady=15)
         ttk.Button(btn_frame, text="Сохранить", command=self.save).pack(side=tk.LEFT, padx=5)
         ttk.Button(btn_frame, text="Отмена", command=self.destroy).pack(side=tk.LEFT, padx=5)
-        self.grab_set()
 
-    def _auto_percent(self):
-        """НОВОЕ: автоматический расчёт % от суммы договора при вводе суммы."""
+        # НОВОЕ: безопасный grab_set (избавляет от "grab failed: window not viewable")
+        self._safe_grab()
+
+    # ---------- Вспомогательные методы ----------
+    @staticmethod
+    def _parse_amount(value):
+        """Превращает строку/число в float или None."""
+        if value in (None, ""):
+            return None
+        try:
+            return float(str(value).replace(' ', '').replace(',', '.'))
+        except (TypeError, ValueError):
+            return None
+
+    def _on_amount_change(self, event=None):
+        """Авто-расчёт % от суммы договора при вводе суммы."""
         if not self.contract_amount:
             return
-        try:
-            amount = float(self.entry_amount.get().replace(' ', '').replace(',', '.'))
-        except (TypeError, ValueError):
+        amount = self._parse_amount(self.entry_amount.get())
+        if amount is None:
             return
         percent = amount / self.contract_amount * 100
         self.entry_percent.delete(0, tk.END)
         self.entry_percent.insert(0, f"{percent:.2f}")
 
+    def _safe_grab(self, attempts=10):
+        """grab_set только после того, как окно реально отрисовано."""
+        try:
+            if self.winfo_exists() and self.winfo_viewable():
+                self.grab_set()
+            elif attempts > 0:
+                self.after(50, lambda: self._safe_grab(attempts - 1))
+        except tk.TclError:
+            if attempts > 0:
+                self.after(50, lambda: self._safe_grab(attempts - 1))
+
     def select_date(self):
-        from dialogs.calendar_dialog import CalendarDialog
-        current = self.entry_date.get()
-        dialog = CalendarDialog(self, current if current else None)
-        self.wait_window(dialog)
-        if dialog.result:
+        try:
+            from dialogs.calendar_dialog import CalendarDialog
+            current = self.entry_date.get()
+            dialog = CalendarDialog(self, current if current else None)
+            self.wait_window(dialog)
+            if dialog.result:
+                self.entry_date.delete(0, tk.END)
+                self.entry_date.insert(0, dialog.result)
+        except ImportError:
             self.entry_date.delete(0, tk.END)
-            self.entry_date.insert(0, dialog.result)
+            self.entry_date.insert(0, datetime.now().strftime("%d.%m.%Y"))
 
     def save(self):
         date_val = self.entry_date.get().strip()
@@ -127,7 +154,7 @@ class PaymentDialog(tk.Toplevel):
             return
         try:
             float(amount_val.replace(" ", "").replace(",", "."))
-        except:
+        except ValueError:
             messagebox.showwarning("Ошибка", "Некорректная сумма!")
             return
         self.result = {

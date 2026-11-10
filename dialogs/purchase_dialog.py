@@ -16,6 +16,7 @@ try:
     HAS_TRANSLATOR = True
 except ImportError:
     HAS_TRANSLATOR = False
+    GoogleTranslator = None
     MyMemoryTranslator = None
 
     class TooManyRequests(Exception):
@@ -23,7 +24,6 @@ except ImportError:
         pass
 
 # === КЭШ ПЕРЕВОДОВ ===
-# Сохраняем кэш в корневой папке проекта
 CACHE_FILE = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
     "translation_cache.json")
@@ -79,7 +79,8 @@ TECH_DICT = {
     'лабиринтное уплотнение': 'labyrinth seal', 'лабиринт': 'labyrinth', 'однорядный': 'single-row',
     'входной конвейер': 'input conveyor', 'шкаф': 'cabinet', 'шкафы': 'cabinets', 'замок': 'lock',
     'замки': 'locks', 'дверь': 'door', 'двери': 'doors', 'для дверей': 'for doors',
-    'ролик': 'roller', 'ролики': 'rollers', 'зажимная втулка': 'clamping bushing',     'колесо': 'wheel', 'колеса': 'wheels', 'колёса': 'wheels', 'поворотный': 'swivel',
+    'ролик': 'roller', 'ролики': 'rollers', 'зажимная втулка': 'clamping bushing',
+    'колесо': 'wheel', 'колеса': 'wheels', 'колёса': 'wheels', 'поворотный': 'swivel',
     'поворотное': 'swivel', 'поворотная': 'swivel', 'полиуретан': 'polyurethane',
     'полиуретановый': 'polyurethane', 'полиуретановое': 'polyurethane', 'нейлон': 'nylon',
     'нейлоновый': 'nylon', 'резина': 'rubber', 'резиновый': 'rubber', 'рычаг': 'lever',
@@ -100,22 +101,23 @@ TECH_DICT = {
 
 
 class PurchaseDialog(tk.Toplevel):
-    def __init__(self, parent, title, number, purchase_data=None, db_manager=None, project_name=None):
+    def __init__(self, parent, title, number, purchase_data=None,
+                 db_manager=None, project_name=None):
         super().__init__(parent)
         self.title(title)
         self.geometry("1100x380")
         self.resizable(False, False)
+
         try:
             from dialogs.window_geometry import restore_geometry, track_geometry
             restore_geometry(self, "purchase_dialog", "1100x380")
             track_geometry(self, "purchase_dialog")
         except Exception:
             pass
+
         self.result = None
         self.db_manager = db_manager
         self.project_name = project_name or ""
-
-        # Загружаем кэш переводов
         self.translation_cache = load_translation_cache()
 
         # Строка 0: №, Производитель, Подпроект
@@ -193,7 +195,6 @@ class PurchaseDialog(tk.Toplevel):
         ttk.Checkbutton(self, text="Запрос цены", variable=self.price_request_var).grid(
             row=5, column=4, sticky="w", padx=10, pady=5)
 
-        # Настройка расширения колонок
         for col in (1, 3, 5):
             self.grid_columnconfigure(col, weight=1)
 
@@ -224,7 +225,21 @@ class PurchaseDialog(tk.Toplevel):
         ttk.Button(btn_frame, text="Сохранить", command=self.save).pack(side=tk.LEFT, padx=5)
         ttk.Button(btn_frame, text="Отмена", command=self.destroy).pack(side=tk.LEFT, padx=5)
 
-        self.grab_set()
+        # НОВОЕ: безопасный grab_set — ждём отрисовки окна
+        self._safe_grab()
+
+    # ------------------------------------------------------------------
+    # Безопасный захват фокуса (лечит "grab failed: window not viewable")
+    # ------------------------------------------------------------------
+    def _safe_grab(self, attempts=10):
+        try:
+            if self.winfo_exists() and self.winfo_viewable():
+                self.grab_set()
+            elif attempts > 0:
+                self.after(50, lambda a=attempts - 1: self._safe_grab(a))
+        except tk.TclError:
+            if attempts > 0:
+                self.after(50, lambda a=attempts - 1: self._safe_grab(a))
 
     # ------------------------------------------------------------------
     # Справочники
@@ -309,8 +324,11 @@ class PurchaseDialog(tk.Toplevel):
             return
 
         # Показываем индикатор загрузки
-        self.btn_translate.config(text=" Перевожу...", state="disabled")
-        self.update_idletasks()
+        try:
+            self.btn_translate.config(text=" Перевожу...", state="disabled")
+            self.update_idletasks()
+        except tk.TclError:
+            return
 
         translated = None
         source_used = ""
@@ -320,6 +338,7 @@ class PurchaseDialog(tk.Toplevel):
             if cache_key in self.translation_cache:
                 translated = self.translation_cache[cache_key]
                 source_used = "КЭШ"
+
             # ШАГ 2: локальный словарь (работает без интернета)
             if not translated:
                 translated = self._translate_local(russian_text)
@@ -327,6 +346,7 @@ class PurchaseDialog(tk.Toplevel):
                     source_used = "СЛОВАРЬ"
                     self.translation_cache[cache_key] = translated
                     save_translation_cache(self.translation_cache)
+
             # ШАГ 3: Google с паузами
             if not translated and HAS_TRANSLATOR:
                 translated = self._translate_with_retry(russian_text)
@@ -334,8 +354,9 @@ class PurchaseDialog(tk.Toplevel):
                     source_used = "GOOGLE"
                     self.translation_cache[cache_key] = translated
                     save_translation_cache(self.translation_cache)
+
             # ШАГ 4: НОВОЕ — резервный сервис MyMemory, если Google ответил 429
-            if not translated and HAS_TRANSLATOR:
+            if not translated and HAS_TRANSLATOR and MyMemoryTranslator is not None:
                 translated = self._translate_mymemory(russian_text)
                 if translated:
                     source_used = "MYMEMORY"
@@ -344,6 +365,7 @@ class PurchaseDialog(tk.Toplevel):
 
             if not self.winfo_exists():
                 return
+
             if translated:
                 self.entry_name_eng.delete(0, tk.END)
                 self.entry_name_eng.insert(0, translated)
@@ -360,22 +382,16 @@ class PurchaseDialog(tk.Toplevel):
         except Exception as e:
             print(f"Критическая ошибка перевода: {e}")
             translated = self._translate_local(russian_text)
-            if translated:
+            if translated and self.winfo_exists():
                 try:
-                    if self.winfo_exists():
-                        self.entry_name_eng.delete(0, tk.END)
-                        self.entry_name_eng.insert(0, translated)
-                except tk.TclError:
-                    pass
-            elif self.winfo_exists():
-                try:
-                    messagebox.showerror("Ошибка перевода",
-                        f"Не удалось перевести: {e}\n\nПожалуйста, введите перевод вручную.")
+                    self.entry_name_eng.delete(0, tk.END)
+                    self.entry_name_eng.insert(0, translated)
                 except tk.TclError:
                     pass
         finally:
+            # НОВОЕ: обновляем кнопку только если окно ещё существует
             try:
-                if self.winfo_exists():
+                if self.winfo_exists() and self.btn_translate.winfo_exists():
                     self.btn_translate.config(text=" Перевести", state="normal")
             except tk.TclError:
                 pass
@@ -385,7 +401,8 @@ class PurchaseDialog(tk.Toplevel):
         а возвращает None — вызывающий код переключится на MyMemory."""
         for attempt in range(max_retries):
             try:
-                delay = 3 + attempt * 5
+                # НОВОЕ: ждём 1.5 сек между запросами, чтобы не упереться в лимит
+                delay = 1.5 + attempt * 2
                 print(f"[GOOGLE] Попытка {attempt + 1}/{max_retries}, пауза {delay} с...")
                 time.sleep(delay)
                 translator = GoogleTranslator(source='ru', target='en')
@@ -403,19 +420,23 @@ class PurchaseDialog(tk.Toplevel):
         return None
 
     def _translate_mymemory(self, text):
-        """НОВОЕ: резервный бесплатный сервис MyMemory на случай блокировки Google."""
+        """НОВОЕ: резервный бесплатный сервис MyMemory на случай блокировки Google.
+        ВАЖНО: MyMemory требует полные коды ru-RU / en-GB, иначе падает
+        с 'No support for the provided language'."""
         if MyMemoryTranslator is None:
             return None
         try:
-            print("[MYMEMORY] Запрашиваю перевод...")
-            translator = MyMemoryTranslator(source='ru', target='en')
+            print("[MYMEMORY] Запрашиваю перевод (ru-RU → en-GB)...")
+            translator = MyMemoryTranslator(source='ru-RU', target='en-GB')
             result = translator.translate(text)
             if result:
+                # MyMemory иногда возвращает HTML-сущности — чистим
+                result = result.replace('&amp;', '&').replace('&#39;', "'")
                 return result
         except Exception as e:
             print(f"[MYMEMORY] Ошибка: {e}")
         return None
-    
+
     def _translate_local(self, text):
         """Перевод, используя локальный словарь технических терминов"""
         text_lower = text.lower().strip()
