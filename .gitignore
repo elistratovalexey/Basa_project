@@ -15,7 +15,7 @@ build/
 dist/
 *.egg-info/
 
-*.db
+
 
 /projects.db
 АРХИВ/
