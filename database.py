@@ -372,7 +372,9 @@ class DatabaseManager:
 
     def get_purchases(self, project_id):
         c = self.conn.cursor()
-        c.execute("SELECT * FROM purchases WHERE project_id=? ORDER BY number", (project_id,))
+        c.execute('''SELECT p.*, pr.name AS project_name FROM purchases p
+                 LEFT JOIN projects pr ON pr.id = p.project_id
+                 WHERE p.project_id=? ORDER BY p.number''', (project_id,))
         return c.fetchall()
 
     def get_next_number(self, table, project_id):

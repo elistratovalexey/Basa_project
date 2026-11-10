@@ -313,7 +313,7 @@ class PurchasesTab(BaseTab):
                 p["kd"] or "", p["article"] or "", p["name"] or "",
                 p["name_eng"] or "", p["quantity"] or "",
                 ordered_mark, p["order_date"] or "", in_order_mark, received_mark,
-                price_request_mark, p["project_name"] or "", p["note"] or ""
+                price_request_mark, self.app.current_project or "", p["note"] or ""
             ))
         # Номер следующей закупки — по ВСЕМ позициям проекта (не по отфильтрованным)
         self.app.purchase_counter = self.db_manager.get_next_number("purchases", project_id)
