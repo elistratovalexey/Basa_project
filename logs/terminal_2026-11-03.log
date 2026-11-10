@@ -1,0 +1,152 @@
+
+===== СЕССИЯ ЗАПУЩЕНА 03.11.2026 08:31:43 =====
+[03.11.2026 08:31:44] Программа запущена v1.8.0
+[03.11.2026 08:31:44] База данных: /home/elistratov/PROJECTS_PERPLEXETY/projects.db
+[03.11.2026 08:31:44] Резервная копия БД: /home/elistratov/PROJECTS_PERPLEXETY/backups/projects_20261103_083144.db
+[03.11.2026 08:31:44] Выбран проект: МЭШ
+[03.11.2026 08:31:50] Выбран проект: РИФАР
+[03.11.2026 08:31:51] Выбран проект: ЦЕНТРОТЕХ СВАРКА
+[03.11.2026 08:31:51] Выбран проект: ОРЕЛ МК
+[03.11.2026 08:31:52] Выбран проект: ЦЕНТРОТЕХ ШПИНДЕЛЬ
+[03.11.2026 08:31:53] Выбран проект: МИКРОН
+[03.11.2026 08:31:55] Выбран проект: ВЗЛЕТ
+[03.11.2026 08:31:56] Выбран проект: КАМАЗ
+[03.11.2026 08:31:57] Выбран проект: ТВСЗ
+[03.11.2026 14:24:48] Выбран проект: КАМАЗ
+[03.11.2026 14:24:49] Выбран проект: ВЗЛЕТ
+[03.11.2026 14:24:49] Выбран проект: МИКРОН
+[03.11.2026 14:24:49] Выбран проект: ЦЕНТРОТЕХ ШПИНДЕЛЬ
+[03.11.2026 14:24:49] Выбран проект: ОРЕЛ МК
+[03.11.2026 14:24:50] Выбран проект: ЦЕНТРОТЕХ СВАРКА
+[03.11.2026 14:24:51] Выбран проект: РИФАР
+[03.11.2026 14:24:51] Выбран проект: МЭШ
+[03.11.2026 16:13:56] Выбран проект: МЭЩ
+[03.11.2026 16:13:56] Проект переименован: МЭШ → МЭЩ
+[03.11.2026 16:14:12] Выбран проект: МЭШ
+[03.11.2026 16:14:12] Проект переименован: МЭЩ → МЭШ
+[03.11.2026 16:14:29] Выбран проект: МЭЩ
+[03.11.2026 16:14:29] Проект переименован: МЭШ → МЭЩ
+[03.11.2026 16:14:31] Выбран проект: РИФАР
+[03.11.2026 16:14:32] Выбран проект: МЭЩ
+[05.11.2026 12:11:22] Выбран проект: РИФАР
+[05.11.2026 12:11:23] Выбран проект: МЭЩ
+[05.11.2026 12:15:04] Закупка №1 добавлена
+[05.11.2026 12:15:32] Закупка №3 добавлена
+[05.11.2026 12:15:50] Закупка №5 добавлена
+[05.11.2026 12:15:56] Добавлена позиция: GL-2000S - Станция очистки горелки LOYEE GLS
+[05.11.2026 12:15:56] Добавлена позиция: ANC-1510-40 - Фреза
+[05.11.2026 12:15:56] Добавлена позиция: ANC-1210-40 - Фреза
+[05.11.2026 12:15:58] Добавлено 3 позиций в справочник номенклатуры
+[05.11.2026 12:16:00] Заказ #68: GL-2000S - Станция очистки горелки LOYEE GLS
+[05.11.2026 12:16:00] Заказ #68: ANC-1510-40 - Фреза
+[05.11.2026 12:16:00] Заказ #68: ANC-1210-40 - Фреза
+[05.11.2026 14:25:37] Выбран проект: РИФАР
+[05.11.2026 14:25:38] Выбран проект: ЦЕНТРОТЕХ СВАРКА
+
+Всего распознано строк: 29
+Пример первой строки: ['OTC PRICE', '', '', '', '', '', '']
+
+Всего распознано строк: 6
+Пример первой строки: ['LOYEE PRICE', '', '', '', '', '', '']
+[06.11.2026 12:29:07] Выбран проект: ОРЕЛ МК
+[06.11.2026 12:29:07] Выбран проект: ЦЕНТРОТЕХ СВАРКА
+[06.11.2026 12:29:07] Выбран проект: РИФАР
+[06.11.2026 12:29:08] Выбран проект: МЭЩ
+[06.11.2026 12:32:56] Закупка №6 добавлена
+[06.11.2026 12:33:52] Закупка №1 отредактирована
+[06.11.2026 12:33:59] Закупка №3 отредактирована
+[06.11.2026 12:34:06] Закупка №5 отредактирована
+[GOOGLE] Попытка 1/2, пауза 3 с...
+[GOOGLE] 429: слишком много запросов — переключаемся на резерв
+[MYMEMORY] Запрашиваю перевод...
+[MYMEMORY] Ошибка: ru --> No support for the provided language.
+Please select on of the supported languages:
+{'acehnese': 'ace-ID', 'afrikaans': 'af-ZA', 'akan': 'ak-GH', 'albanian': 'sq-AL', 'amharic': 'am-ET', 'antigua and barbuda creole english': 'aig-AG', 'arabic': 'ar-SA', 'arabic egyptian': 'ar-EG', 'aragonese': 'an-ES', 'armenian': 'hy-AM', 'assamese': 'as-IN', 'asturian': 'ast-ES', 'austrian german': 'de-AT', 'awadhi': 'awa-IN', 'ayacucho quechua': 'quy-PE', 'azerbaijani': 'az-AZ', 'bahamas creole english': 'bah-BS', 'bajan': 'bjs-BB', 'balinese': 'ban-ID', 'balkan gipsy': 'rm-RO', 'bambara': 'bm-ML', 'banjar': 'bjn-ID', 'bashkir': 'ba-RU', 'basque': 'eu-ES', 'belarusian': 'be-BY', 'belgian french': 'fr-BE', 'bemba': 'bem-ZM', 'bengali': 'bn-IN', 'bhojpuri': 'bho-IN', 'bihari': 'bh-IN', 'bislama': 'bi-VU', 'borana': 'gax-KE', 'bosnian': 'bs-BA', 'bosnian (cyrillic)': 'bs-Cyrl-BA', 'breton': 'br-FR', 'buginese': 'bug-ID', 'bulgarian': 'bg-BG', 'burmese': 'my-MM', 'catalan': 'ca-ES', 'catalan valencian': 'cav-ES', 'cebuano': 'ceb-PH', 'central atlas tamazight': 'tzm-MA', 'central aymara': 'ayr-BO', 'central kanuri (latin script)': 'knc-NG', 'chadian arabic': 'shu-TD', 'chamorro': 'ch-GU', 'cherokee': 'chr-US', 'chhattisgarhi': 'hne-IN', 'chinese simplified': 'zh-CN', 'chinese trad. (hong kong)': 'zh-HK', 'chinese traditional': 'zh-TW', 'chinese traditional macau': 'zh-MO', 'chittagonian': 'ctg-BD', 'chokwe': 'cjk-AO', 'classical greek': 'grc-GR', 'comorian ngazidja': 'zdj-KM', 'coptic': 'cop-EG', 'crimean tatar': 'crh-RU', 'crioulo upper guinea': 'pov-GW', 'croatian': 'hr-HR', 'czech': 'cs-CZ', 'danish': 'da-DK', 'dari': 'prs-AF', 'dimli': 'diq-TR', 'dutch': 'nl-NL', 'dyula': 'dyu-CI', 'dzongkha': 'dz-BT', 'eastern yiddish': 'ydd-US', 'emakhuwa': 'vmw-MZ', 'english': 'en-GB', 'english australia': 'en-AU', 'english canada': 'en-CA', 'english india': 'en-IN', 'english ireland': 'en-IE', 'english new zealand': 'en-NZ', 'english singapore': 'en-SG', 'english south africa': 'en-ZA', 'english us': 'en-US', 'esperanto': 'eo-EU', 'estonian': 'et-EE', 'ewe': 'ee-GH', 'fanagalo': 'fn-FNG', 'faroese': 'fo-FO', 'fijian': 'fj-FJ', 'filipino': 'fil-PH', 'finnish': 'fi-FI', 'flemish': 'nl-BE', 'fon': 'fon-BJ', 'french': 'fr-FR', 'french canada': 'fr-CA', 'french swiss': 'fr-CH', 'friulian': 'fur-IT', 'fula': 'ff-FUL', 'galician': 'gl-ES', 'gamargu': 'mfi-NG', 'garo': 'grt-IN', 'georgian': 'ka-GE', 'german': 'de-DE', 'gilbertese': 'gil-KI', 'glavda': 'glw-NG', 'greek': 'el-GR', 'grenadian creole english': 'gcl-GD', 'guarani': 'gn-PY', 'gujarati': 'gu-IN', 'guyanese creole english': 'gyn-GY', 'haitian creole french': 'ht-HT', 'halh mongolian': 'khk-MN', 'hausa': 'ha-NE', 'hawaiian': 'haw-US', 'hebrew': 'he-IL', 'higi': 'hig-NG', 'hiligaynon': 'hil-PH', 'hill mari': 'mrj-RU', 'hindi': 'hi-IN', 'hmong': 'hmn-CN', 'hungarian': 'hu-HU', 'icelandic': 'is-IS', 'igbo ibo': 'ibo-NG', 'igbo ig': 'ig-NG', 'ilocano': 'ilo-PH', 'indonesian': 'id-ID', 'inuktitut greenlandic': 'kl-GL', 'irish gaelic': 'ga-IE', 'italian': 'it-IT', 'italian swiss': 'it-CH', 'jamaican creole english': 'jam-JM', 'japanese': 'ja-JP', 'javanese': 'jv-ID', 'jingpho': 'kac-MM', "k'iche'": 'quc-GT', 'kabiyè': 'kbp-TG', 'kabuverdianu': 'kea-CV', 'kabylian': 'kab-DZ', 'kalenjin': 'kln-KE', 'kamba': 'kam-KE', 'kannada': 'kn-IN', 'kanuri': 'kr-KAU', 'karen': 'kar-MM', 'kashmiri (devanagari script)': 'ks-IN', 'kashmiri (arabic script)': 'kas-IN', 'kazakh': 'kk-KZ', 'khasi': 'kha-IN', 'khmer': 'km-KH', 'kikuyu kik': 'kik-KE', 'kikuyu ki': 'ki-KE', 'kimbundu': 'kmb-AO', 'kinyarwanda': 'rw-RW', 'kirundi': 'rn-BI', 'kisii': 'guz-KE', 'kongo': 'kg-CG', 'konkani': 'kok-IN', 'korean': 'ko-KR', 'northern kurdish': 'kmr-TR', 'kurdish sorani': 'ckb-IQ', 'kyrgyz': 'ky-KG', 'lao': 'lo-LA', 'latgalian': 'ltg-LV', 'latin': 'la-XN', 'latvian': 'lv-LV', 'ligurian': 'lij-IT', 'limburgish': 'li-NL', 'lingala': 'ln-LIN', 'lithuanian': 'lt-LT', 'lombard': 'lmo-IT', 'luba-kasai': 'lua-CD', 'luganda': 'lg-UG', 'luhya': 'luy-KE', 'luo': 'luo-KE', 'luxembourgish': 'lb-LU', 'maa': 'mas-KE', 'macedonian': 'mk-MK', 'magahi': 'mag-IN', 'maithili': 'mai-IN', 'malagasy': 'mg-MG', 'malay': 'ms-MY', 'malayalam': 'ml-IN', 'maldivian': 'dv-MV', 'maltese': 'mt-MT', 'mandara': 'mfi-CM', 'manipuri': 'mni-IN', 'manx gaelic': 'gv-IM', 'maori': 'mi-NZ', 'marathi': 'mr-IN', 'margi': 'mrt-NG', 'mari': 'mhr-RU', 'marshallese': 'mh-MH', 'mende': 'men-SL', 'meru': 'mer-KE', 'mijikenda': 'nyf-KE', 'minangkabau': 'min-ID', 'mizo': 'lus-IN', 'mongolian': 'mn-MN', 'montenegrin': 'sr-ME', 'morisyen': 'mfe-MU', 'moroccan arabic': 'ar-MA', 'mossi': 'mos-BF', 'ndau': 'ndc-MZ', 'ndebele': 'nr-ZA', 'nepali': 'ne-NP', 'nigerian fulfulde': 'fuv-NG', 'niuean': 'niu-NU', 'north azerbaijani': 'azj-AZ', 'sesotho': 'nso-ZA', 'northern uzbek': 'uzn-UZ', 'norwegian bokmål': 'nb-NO', 'norwegian nynorsk': 'nn-NO', 'nuer': 'nus-SS', 'nyanja': 'ny-MW', 'occitan': 'oc-FR', 'occitan aran': 'oc-ES', 'odia': 'or-IN', 'oriya': 'ory-IN', 'urdu': 'ur-PK', 'palauan': 'pau-PW', 'pali': 'pi-IN', 'pangasinan': 'pag-PH', 'papiamentu': 'pap-CW', 'pashto': 'ps-PK', 'persian': 'fa-IR', 'pijin': 'pis-SB', 'plateau malagasy': 'plt-MG', 'polish': 'pl-PL', 'portuguese': 'pt-PT', 'portuguese brazil': 'pt-BR', 'potawatomi': 'pot-US', 'punjabi': 'pa-IN', 'punjabi (pakistan)': 'pnb-PK', 'quechua': 'qu-PE', 'rohingya': 'rhg-MM', 'rohingyalish': 'rhl-MM', 'romanian': 'ro-RO', 'romansh': 'roh-CH', 'rundi': 'run-BI', 'russian': 'ru-RU', 'saint lucian creole french': 'acf-LC', 'samoan': 'sm-WS', 'sango': 'sg-CF', 'sanskrit': 'sa-IN', 'santali': 'sat-IN', 'sardinian': 'sc-IT', 'scots gaelic': 'gd-GB', 'sena': 'seh-ZW', 'serbian cyrillic': 'sr-Cyrl-RS', 'serbian latin': 'sr-Latn-RS', 'seselwa creole french': 'crs-SC', 'setswana (south africa)': 'tn-ZA', 'shan': 'shn-MM', 'shona': 'sn-ZW', 'sicilian': 'scn-IT', 'silesian': 'szl-PL', 'sindhi snd': 'snd-PK', 'sindhi sd': 'sd-PK', 'sinhala': 'si-LK', 'slovak': 'sk-SK', 'slovenian': 'sl-SI', 'somali': 'so-SO', 'sotho southern': 'st-LS', 'south azerbaijani': 'azb-AZ', 'southern pashto': 'pbt-PK', 'southwestern dinka': 'dik-SS', 'spanish': 'es-ES', 'spanish argentina': 'es-AR', 'spanish colombia': 'es-CO', 'spanish latin america': 'es-419', 'spanish mexico': 'es-MX', 'spanish united states': 'es-US', 'sranan tongo': 'srn-SR', 'standard latvian': 'lvs-LV', 'standard malay': 'zsm-MY', 'sundanese': 'su-ID', 'swahili': 'sw-KE', 'swati': 'ss-SZ', 'swedish': 'sv-SE', 'swiss german': 'de-CH', 'syriac (aramaic)': 'syc-TR', 'tagalog': 'tl-PH', 'tahitian': 'ty-PF', 'tajik': 'tg-TJ', 'tamashek (tuareg)': 'tmh-DZ', 'tamasheq': 'taq-ML', 'tamil india': 'ta-IN', 'tamil sri lanka': 'ta-LK', 'taroko': 'trv-TW', 'tatar': 'tt-RU', 'telugu': 'te-IN', 'tetum': 'tet-TL', 'thai': 'th-TH', 'tibetan': 'bo-CN', 'tigrinya': 'ti-ET', 'tok pisin': 'tpi-PG', 'tokelauan': 'tkl-TK', 'tongan': 'to-TO', 'tosk albanian': 'als-AL', 'tsonga': 'ts-ZA', 'tswa': 'tsc-MZ', 'tswana': 'tn-BW', 'tumbuka': 'tum-MW', 'turkish': 'tr-TR', 'turkmen': 'tk-TM', 'tuvaluan': 'tvl-TV', 'twi': 'tw-GH', 'udmurt': 'udm-RU', 'ukrainian': 'uk-UA', 'uma': 'ppk-ID', 'umbundu': 'umb-AO', 'uyghur uig': 'uig-CN', 'uyghur ug': 'ug-CN', 'uzbek': 'uz-UZ', 'venetian': 'vec-IT', 'vietnamese': 'vi-VN', 'vincentian creole english': 'svc-VC', 'virgin islands creole english': 'vic-US', 'wallisian': 'wls-WF', 'waray (philippines)': 'war-PH', 'welsh': 'cy-GB', 'west central oromo': 'gaz-ET', 'western persian': 'pes-IR', 'wolof': 'wo-SN', 'xhosa': 'xh-ZA', 'yiddish': 'yi-YD', 'yoruba': 'yo-NG', 'zulu': 'zu-ZA'}
+[06.11.2026 12:34:55] Закупка №6 отредактирована
+[06.11.2026 12:35:09] Добавлена позиция: PHX016S-MS-FFC - Камера IMX273 1.6MP BW S-Mount FFC
+[06.11.2026 12:35:12] Добавлено 1 позиций в справочник номенклатуры
+[06.11.2026 12:35:18] Заказ #69: PHX016S-MS-FFC - Камера IMX273 1.6MP BW S-Mount FFC
+[06.11.2026 12:40:41] Выбран проект: РИФАР
+[06.11.2026 12:40:42] Выбран проект: ЦЕНТРОТЕХ СВАРКА
+[06.11.2026 12:40:43] Выбран проект: ОРЕЛ МК
+[06.11.2026 12:40:44] Выбран проект: ЦЕНТРОТЕХ ШПИНДЕЛЬ
+Попытка извлечения текста из PDF...
+✓ PDF содержит текстовый слой
+Анализ заголовков: NO. MARKA REFERANS TANIM MIKTAR BIRIM BIRIM FIYAT TOPLAM TESLIM(HA
+FTA)...
+  Score: 0
+Таблицы не найдены через extract_tables(), пробуем парсинг текста...
+[INTL] ЗАВЕРШЁН: найдено 0 строк
+[INTL] ЗАВЕРШЁН: найдено 0 строк
+
+Всего распознано строк: 0
+
+=== СПЕЦИАЛИЗИРОВАННЫЙ ПАРСИНГ (fallback) ===
+
+--- ПРИОРИТЕТ 0: pipe-структурные строки (строка таблицы = одна линия с '|') ---
+=== PIPE STRUCTURED PARSER: анализ 45 строк ===
+=== PIPE STRUCTURED PARSER ЗАВЕРШЁН: найдено 0 позиций ===
+
+--- ПРИОРИТЕТ 1: токенная грамматика (якорь=единица, запятая завершает число) ---
+=== TOKEN GRAMMAR PARSER: анализ 45 строк ===
+=== TOKEN GRAMMAR PARSER ЗАВЕРШЁН: найдено 0 позиций ===
+
+--- ПРИОРИТЕТ 2: потоковый парсер области таблицы ---
+=== STREAM PARSER ЗАВЕРШЁН: найдено 0 позиций ===
+
+--- ПРИОРИТЕТ 3: общий текстовый парсер ---
+=== TEXT PARSE v2: анализ 45 строк ===
+=== TEXT PARSE ЗАВЕРШЁН: найдено 0 строк ===
+Выбран метод: general_text, строк: 0
+Попытка извлечения текста из PDF...
+✓ PDF содержит текстовый слой
+Анализ заголовков: ФИЛИАЛ "ЦЕНТРАЛЬНЫЙ" БАНКА ВТБ (ПАО)
+БАНК ПОЛУЧАТЕЛЯ БИК 044525411
+30101810145250000411...
+  Score: 0
+Анализ заголовков: № КОД ТОВАРЫ (РАБОТЫ, УСЛУГИ) КОЛИЧЕСТВО ЦЕНА С НДС СУММА...
+  Score: 6
+Найдена таблица с 5 строками
+Заголовки: ['№', 'Код', 'Товары (работы, услуги)', 'Количество', None, 'Цена с НДС', 'Сумма']
+Индексы колонок: {'number': 0, 'code': 1, 'name': 2, 'status': -1, 'delivery_term': -1, 'quantity': 3, 'unit': -1, 'price_no_vat': -1, 'vat_amount': 5, 'price_with_vat': -1, 'total_no_vat': -1, 'total_with_vat': 6, 'currency': 'RUB'}
+Строка 2: 1 08-00022421 SLM21-GMEF2 ЗАМОК БЕЗОПАСНОСТИ 1 ШТ 11 529,00 11 529,00...
+  ✓ Добавлена строка 1: SLM21-GMEF2 Замок безопасности...
+Строка 3: 2 08-00022197 АКТУАТОР ESPE SK-5 1 ШТ 658,80 658,80...
+  ✓ Добавлена строка 2: Актуатор ESPE SK-5...
+Строка 4: 3 08-00036481 РЕЛЕ БЕЗОПАСНОСТИ ESPE ESRP-3A1B-E 1 ШТ 14 219,10 14 219,10...
+  ✓ Добавлена строка 3: Реле безопасности ESPE ESRP-3A1B-E...
+Строка 5: 4 07-00041686 СВЕТОВАЯ ЗАВЕСА БЕЗОПАСНОСТИ ESPE 40ESE124-32L1P-5 1 ШТ 70 134,75 ...
+  ✓ Добавлена строка 4: Световая завеса безопасности ESPE 40ESE1...
+
+Всего распознано строк: 4
+Пример первой строки: ['1', '08-00022421', 'SLM21-GMEF2 Замок безопасности', '1', '', '', '11529.00', '', '', '', 'RUB']
+
+============================================================
+=== ИМПОРТ ИЗ ФАЙЛА: Т208-008241 (1).pdf ===
+Получено строк: 4
+
+============================================================
+=== ПОИСК ПОСТАВЩИКА ===
+Нормализованный текст (первые 500 симв.): Внимание! Оплата данного счета означает согласие с условиями поставки товара. Уведомление об оплате обязательно, в противном случае не гарантируется наличие товара на складе. Товар отпускается по факту прихода денег на р/с Поставщика, самовывозом, при наличии доверенности и паспорта. Филиал "Центральный" Банка ВТБ (ПАО) БИК 044525411 Банк получателя 30101810145250000411 Сч. № ИНН 7447322353 КПП 744701001 Сч. № 40702810820230001576 АО "ТЕКО" Получатель Оплата по заказу клиента № Т208-008241 от 6 ...
+Найденные ИНН покупателей: set()
+Найденные названия покупателей: set()
+✓ [ШАГ 0] НАЙДЕН ЧЕРЕЗ 'Получатель' -> АО "ТЕКО", ИНН=7447322353
+=== РЕЗУЛЬТАТ ПОИСКА ===
+Поставщик: АО "ТЕКО"
+ИНН: 7447322353
+  ⚠ Сверка: цена 0.00 не совпадает с суммой/кол-вом (11529.00), цена пересчитана
+  ✓ Позиция 1: SLM21-GMEF2 Замок безопасности... кол-во=1.0, цена=11529.0, сумма=11529.0
+  ⚠ Сверка: цена 0.00 не совпадает с суммой/кол-вом (658.80), цена пересчитана
+  ✓ Позиция 2: Актуатор ESPE SK-5... кол-во=1.0, цена=658.8, сумма=658.8
+  ⚠ Сверка: цена 0.00 не совпадает с суммой/кол-вом (14219.10), цена пересчитана
+  ✓ Позиция 3: Реле безопасности ESPE ESRP-3A1B-E... кол-во=1.0, цена=14219.1, сумма=14219.1
+  ⚠ Сверка: цена 0.00 не совпадает с суммой/кол-вом (70134.75), цена пересчитана
+  ✓ Позиция 4: Световая завеса безопасности ESPE 40ESE124-32L1P-5... кол-во=1.0, цена=70134.75, сумма=70134.75
+[06.11.2026 12:41:22] Импортирована спецификация из Т208-008241 (1).pdf: АО "ТЕКО"
+============================================================
+
+[06.11.2026 12:42:13] Отредактирована спецификация закупки #66
+[06.11.2026 14:36:34] Выбран проект: ОРЕЛ МК
+[06.11.2026 14:36:35] Выбран проект: ЦЕНТРОТЕХ ШПИНДЕЛЬ
+[06.11.2026 14:36:36] Выбран проект: МИКРОН
+===== СЕССИЯ ЗАВЕРШЕНА 09.11.2026 13:39:16 =====
