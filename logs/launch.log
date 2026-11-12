@@ -11,3 +11,27 @@ Traceback (most recent call last):
 ModuleNotFoundError: No module named 'holidays'
 [12.11.2026 14:35:06] ОШИБКА запуска:   File "/home/elistratov/PROJECTS_PERPLEXETY/app.py", line 4, in <module>     import holidays ModuleNotFoundError: No module named 'holidays' 
 [12.11.2026 14:38:29] ОШИБКА: не установлены зависимости. Выполните:  -m pip install -r requirements.txt
+[12.11.2026 14:48:29] ОШИБКА: не установлены зависимости. Выполните:  -m pip install -r requirements.txt
+[12.11.2026 14:50:10] ОШИБКА: не установлены зависимости. Выполните:  -m pip install -r requirements.txt
+[12.11.2026 15:10:13] Запуск: /home/elistratov/PROJECTS_PERPLEXETY/venv/bin/python (Python 3.14.4)
+[12.11.2026 15:10:14] Программа запущена v1.8.0
+[12.11.2026 15:10:14] База данных: /home/elistratov/PROJECTS_PERPLEXETY/projects.db
+[12.11.2026 15:10:14] Резервная копия БД: /home/elistratov/PROJECTS_PERPLEXETY/backups/projects_20261112_151014.db
+[12.11.2026 15:10:14] Выбран проект: МЭЩ
+[12.11.2026 15:10:16] Успех: PID 1274209
+[12.11.2026 15:14:58] Запуск: /home/elistratov/PROJECTS_PERPLEXETY/venv/bin/python (Python 3.14.4)
+[12.11.2026 15:14:59] Программа запущена v1.8.0
+[12.11.2026 15:14:59] База данных: /home/elistratov/PROJECTS_PERPLEXETY/projects.db
+[12.11.2026 15:14:59] Резервная копия БД: /home/elistratov/PROJECTS_PERPLEXETY/backups/projects_20261112_151459.db
+[12.11.2026 15:14:59] Выбран проект: МЭЩ
+[12.11.2026 15:15:01] Успех: PID 1275123
+[12.11.2026 16:49:11] Запуск: /home/elistratov/PROJECTS_PERPLEXETY/venv/bin/python (Python 3.14.4)
+[12.11.2026 16:49:12] Программа запущена v1.8.0
+[12.11.2026 16:49:12] База данных: /home/elistratov/PROJECTS_PERPLEXETY/projects.db
+[12.11.2026 16:49:12] Резервная копия БД: /home/elistratov/PROJECTS_PERPLEXETY/backups/projects_20261112_164912.db
+[12.11.2026 16:49:12] Выбран проект: МЭЩ
+[12.11.2026 16:49:14] Успех: PID 1288421
+[12.11.2026 16:49:38] Выбран проект: РИФАР
+[12.11.2026 16:49:39] Выбран проект: МЭЩ
+[12.11.2026 16:49:40] Выбран проект: РИФАР
+[12.11.2026 16:49:46] Выбран проект: МЭЩ

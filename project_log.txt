@@ -37,3 +37,27 @@
 [12.11.2026 09:31:48] База данных: /home/elistratov/PROJECTS_PERPLEXETY/projects.db
 [12.11.2026 09:31:48] Резервная копия БД: /home/elistratov/PROJECTS_PERPLEXETY/backups/projects_20261112_093148.db
 [12.11.2026 09:31:48] Выбран проект: МЭЩ
+[12.11.2026 14:10:23] Программа запущена v1.8.0
+[12.11.2026 14:10:23] База данных: /home/elistratov/PROJECTS_PERPLEXETY/projects.db
+[12.11.2026 14:10:23] Резервная копия БД: /home/elistratov/PROJECTS_PERPLEXETY/backups/projects_20261112_141023.db
+[12.11.2026 14:10:23] Выбран проект: МЭЩ
+[12.11.2026 14:50:26] Программа запущена v1.8.0
+[12.11.2026 14:50:26] База данных: /home/elistratov/PROJECTS_PERPLEXETY/projects.db
+[12.11.2026 14:50:26] Резервная копия БД: /home/elistratov/PROJECTS_PERPLEXETY/backups/projects_20261112_145026.db
+[12.11.2026 14:50:26] Выбран проект: МЭЩ
+[12.11.2026 15:10:14] Программа запущена v1.8.0
+[12.11.2026 15:10:14] База данных: /home/elistratov/PROJECTS_PERPLEXETY/projects.db
+[12.11.2026 15:10:14] Резервная копия БД: /home/elistratov/PROJECTS_PERPLEXETY/backups/projects_20261112_151014.db
+[12.11.2026 15:10:14] Выбран проект: МЭЩ
+[12.11.2026 15:14:59] Программа запущена v1.8.0
+[12.11.2026 15:14:59] База данных: /home/elistratov/PROJECTS_PERPLEXETY/projects.db
+[12.11.2026 15:14:59] Резервная копия БД: /home/elistratov/PROJECTS_PERPLEXETY/backups/projects_20261112_151459.db
+[12.11.2026 15:14:59] Выбран проект: МЭЩ
+[12.11.2026 16:49:12] Программа запущена v1.8.0
+[12.11.2026 16:49:12] База данных: /home/elistratov/PROJECTS_PERPLEXETY/projects.db
+[12.11.2026 16:49:12] Резервная копия БД: /home/elistratov/PROJECTS_PERPLEXETY/backups/projects_20261112_164912.db
+[12.11.2026 16:49:12] Выбран проект: МЭЩ
+[12.11.2026 16:49:38] Выбран проект: РИФАР
+[12.11.2026 16:49:39] Выбран проект: МЭЩ
+[12.11.2026 16:49:40] Выбран проект: РИФАР
+[12.11.2026 16:49:46] Выбран проект: МЭЩ
