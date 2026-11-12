@@ -43,15 +43,28 @@ def add_working_days_with_holidays(start_date, days, holidays_set):
     return current
 
 
-def parse_date(date_str, fmt="%d.%m.%Y"):
-    """Разбор даты ДД.ММ.ГГГГ. Возвращает datetime или None."""
+def parse_date(date_str, fmt=None):
+    """Разбор даты в распространённых форматах. Возвращает datetime или None.
+
+    Поддерживает: ДД.ММ.ГГГГ, ДД.ММ.ГГ (двузначный год), ДД/ММ/ГГГГ,
+    ДД/ММ/ГГ, ГГГГ-ММ-ДД и варианты с временем.
+    Параметр fmt оставлен для совместимости: если передан — используется только он.
+    """
     if not date_str:
         return None
-    try:
-        return datetime.strptime(str(date_str).strip(), fmt)
-    except (ValueError, TypeError):
+    s = str(date_str).strip()
+    if not s:
         return None
-
+    formats = [fmt] if fmt else [
+        "%d.%m.%Y", "%d.%m.%y", "%d/%m/%Y", "%d/%m/%y",
+        "%Y-%m-%d", "%d.%m.%Y %H:%M", "%d.%m.%y %H:%M",
+    ]
+    for f in formats:
+        try:
+            return datetime.strptime(s, f)
+        except (ValueError, TypeError):
+            continue
+    return None
 
 def get_exchange_rates():
     try:

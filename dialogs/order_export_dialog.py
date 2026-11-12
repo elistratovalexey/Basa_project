@@ -10,6 +10,7 @@ try:
     HAS_OPENPYXL = True
 except ImportError:
     HAS_OPENPYXL = False
+import traceback
 
 
 class OrderExportDialog(tk.Toplevel):

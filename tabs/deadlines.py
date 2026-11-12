@@ -116,13 +116,11 @@ class DeadlinesTab(BaseTab):
             return None
         payments = self.db_manager.get_payments(project_id)
         # Берём самую раннюю корректную дату, а не просто платёж №1
-        # (номер и хронология могут не совпадать)
-        dated = [(self.parse_date(p['date']), p['date']) for p in payments]
-        dated = [d for d in dated if d[0]]
+        dated = [d for d in (self.parse_date(p['date']) for p in payments) if d]
         if dated:
-            return min(dated)[1]
+            return min(dated).strftime("%d.%m.%Y")
         return None
-
+    
     def calculate_deadline(self, start_date_str, term_str, unit):
         start_date = self.parse_date(start_date_str)
         term_str = (term_str or "").strip()
@@ -170,4 +168,4 @@ class DeadlinesTab(BaseTab):
         self.app.entry_work_deadline.config(state="normal")
         self.app.entry_work_deadline.delete(0, tk.END)
         self.app.entry_work_deadline.insert(0, work_deadline)
-        self.app.entry_work_deadline.config(state="readonly")
+        self.app.entry_work_deadline.config(state="readonly")

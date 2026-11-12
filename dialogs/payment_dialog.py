@@ -148,6 +148,12 @@ class PaymentDialog(tk.Toplevel):
 
     def save(self):
         date_val = self.entry_date.get().strip()
+        # НОВОЕ: приводим дату к каноническому ДД.ММ.ГГГГ,
+        # чтобы в БД не попадали варианты вида 27.10.26
+        from utils import parse_date
+        _d = parse_date(date_val)
+        if _d:
+            date_val = _d.strftime("%d.%m.%Y")       
         amount_val = self.entry_amount.get().strip()
         if not amount_val:
             messagebox.showwarning("Ошибка", "Введите сумму!")
