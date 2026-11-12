@@ -146,3 +146,89 @@
 [10.11.2026 14:04:28] Резервная копия БД: /home/elistratov/PROJECTS_PERPLEXETY/backups/projects_20261110_140428.db
 [10.11.2026 14:04:28] Выбран проект: МЭЩ
 ===== СЕССИЯ ЗАВЕРШЕНА 10.11.2026 14:13:24 =====
+
+===== СЕССИЯ ЗАПУЩЕНА 10.11.2026 15:35:13 =====
+[10.11.2026 15:35:14] Программа запущена v1.8.0
+[10.11.2026 15:35:14] База данных: /home/elistratov/PROJECTS_PERPLEXETY/projects.db
+[10.11.2026 15:35:14] Резервная копия БД: /home/elistratov/PROJECTS_PERPLEXETY/backups/projects_20261110_153514.db
+Traceback (most recent call last):
+  File "/home/elistratov/PROJECTS_PERPLEXETY/app.py", line 557, in <module>
+    app = ProjectManagerApp(root)
+  File "/home/elistratov/PROJECTS_PERPLEXETY/app.py", line 83, in __init__
+    self.on_project_select()
+    ~~~~~~~~~~~~~~~~~~~~~~^^
+  File "/home/elistratov/PROJECTS_PERPLEXETY/app.py", line 507, in on_project_select
+    self.purchases_tab.load_purchases()
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "/home/elistratov/PROJECTS_PERPLEXETY/tabs/purchases.py", line 316, in load_purchases
+    price_request_mark, p["project_name"] or "", p["note"] or ""
+                        ~^^^^^^^^^^^^^^^^
+IndexError: No item with that key
+
+===== СЕССИЯ ЗАПУЩЕНА 10.11.2026 15:35:29 =====
+[10.11.2026 15:35:29] Программа запущена v1.8.0
+[10.11.2026 15:35:30] База данных: /home/elistratov/PROJECTS_PERPLEXETY/projects.db
+[10.11.2026 15:35:30] Резервная копия БД: /home/elistratov/PROJECTS_PERPLEXETY/backups/projects_20261110_153530.db
+Traceback (most recent call last):
+  File "/home/elistratov/PROJECTS_PERPLEXETY/app.py", line 557, in <module>
+    app = ProjectManagerApp(root)
+  File "/home/elistratov/PROJECTS_PERPLEXETY/app.py", line 83, in __init__
+    self.on_project_select()
+    ~~~~~~~~~~~~~~~~~~~~~~^^
+  File "/home/elistratov/PROJECTS_PERPLEXETY/app.py", line 507, in on_project_select
+    self.purchases_tab.load_purchases()
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "/home/elistratov/PROJECTS_PERPLEXETY/tabs/purchases.py", line 316, in load_purchases
+    price_request_mark, p["project_name"] or "", p["note"] or ""
+                        ~^^^^^^^^^^^^^^^^
+IndexError: No item with that key
+
+===== СЕССИЯ ЗАПУЩЕНА 10.11.2026 15:47:37 =====
+[10.11.2026 15:47:38] Программа запущена v1.8.0
+[10.11.2026 15:47:38] База данных: /home/elistratov/PROJECTS_PERPLEXETY/projects.db
+[10.11.2026 15:47:38] Резервная копия БД: /home/elistratov/PROJECTS_PERPLEXETY/backups/projects_20261110_154738.db
+Traceback (most recent call last):
+  File "/home/elistratov/PROJECTS_PERPLEXETY/app.py", line 557, in <module>
+    app = ProjectManagerApp(root)
+  File "/home/elistratov/PROJECTS_PERPLEXETY/app.py", line 83, in __init__
+    self.on_project_select()
+    ~~~~~~~~~~~~~~~~~~~~~~^^
+  File "/home/elistratov/PROJECTS_PERPLEXETY/app.py", line 507, in on_project_select
+    self.purchases_tab.load_purchases()
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "/home/elistratov/PROJECTS_PERPLEXETY/tabs/purchases.py", line 316, in load_purchases
+    price_request_mark, p["project_name"] or "", p["note"] or ""
+                        ~^^^^^^^^^^^^^^^^
+IndexError: No item with that key
+
+===== СЕССИЯ ЗАПУЩЕНА 10.11.2026 15:48:16 =====
+[10.11.2026 15:48:16] Программа запущена v1.8.0
+[10.11.2026 15:48:16] База данных: /home/elistratov/PROJECTS_PERPLEXETY/projects.db
+[10.11.2026 15:48:16] Резервная копия БД: /home/elistratov/PROJECTS_PERPLEXETY/backups/projects_20261110_154816.db
+Traceback (most recent call last):
+  File "/home/elistratov/PROJECTS_PERPLEXETY/app.py", line 557, in <module>
+    app = ProjectManagerApp(root)
+  File "/home/elistratov/PROJECTS_PERPLEXETY/app.py", line 83, in __init__
+    self.on_project_select()
+    ~~~~~~~~~~~~~~~~~~~~~~^^
+  File "/home/elistratov/PROJECTS_PERPLEXETY/app.py", line 507, in on_project_select
+    self.purchases_tab.load_purchases()
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "/home/elistratov/PROJECTS_PERPLEXETY/tabs/purchases.py", line 316, in load_purchases
+    price_request_mark, p["project_name"] or "", p["note"] or ""
+                        ~^^^^^^^^^^^^^^^^
+IndexError: No item with that key
+
+===== СЕССИЯ ЗАПУЩЕНА 10.11.2026 15:53:47 =====
+[10.11.2026 15:53:48] Программа запущена v1.8.0
+[10.11.2026 15:53:48] База данных: /home/elistratov/PROJECTS_PERPLEXETY/projects.db
+[10.11.2026 15:53:48] Резервная копия БД: /home/elistratov/PROJECTS_PERPLEXETY/backups/projects_20261110_155348.db
+[10.11.2026 15:53:48] Выбран проект: МЭЩ
+===== СЕССИЯ ЗАВЕРШЕНА 10.11.2026 15:53:54 =====
+
+===== СЕССИЯ ЗАПУЩЕНА 10.11.2026 15:54:04 =====
+[10.11.2026 15:54:05] Программа запущена v1.8.0
+[10.11.2026 15:54:05] База данных: /home/elistratov/PROJECTS_PERPLEXETY/projects.db
+[10.11.2026 15:54:05] Резервная копия БД: /home/elistratov/PROJECTS_PERPLEXETY/backups/projects_20261110_155405.db
+[10.11.2026 15:54:05] Выбран проект: МЭЩ
+===== СЕССИЯ ЗАВЕРШЕНА 10.11.2026 15:54:26 =====
