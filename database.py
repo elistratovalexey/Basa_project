@@ -23,8 +23,8 @@ class DatabaseManager:
         self._ensure_order_columns()
         self._ensure_order_received_columns()
         self._ensure_order_delivery_number_column()
-        self._ensure_order_write_off_column()          # ДОБАВЛЕНО
-        self._ensure_price_request_columns()           # ДОБАВЛЕНО
+        self._ensure_order_write_off_column()
+        self._ensure_price_request_columns()
         self._ensure_delivery_addresses_table()
         self._ensure_purchase_payments_ext_columns()
         self._ensure_purchase_spec_items_table()
@@ -79,24 +79,18 @@ class DatabaseManager:
         c = self.conn.cursor()
         c.execute("PRAGMA table_info(orders)")
         columns = [row[1] for row in c.fetchall()]
-        if 'delivery_term' not in columns:
-            c.execute("ALTER TABLE orders ADD COLUMN delivery_term INTEGER DEFAULT 0")
-        if 'delivery_unit' not in columns:
-            c.execute("ALTER TABLE orders ADD COLUMN delivery_unit TEXT DEFAULT ''")
-        if 'price' not in columns:
-            c.execute("ALTER TABLE orders ADD COLUMN price TEXT DEFAULT ''")
-        if 'currency' not in columns:
-            c.execute("ALTER TABLE orders ADD COLUMN currency TEXT DEFAULT ''")
+        for col, default in [('delivery_term', '0'), ('delivery_unit', "''"), ('price', "''"), ('currency', "''")]:
+            if col not in columns:
+                c.execute(f"ALTER TABLE orders ADD COLUMN {col} DEFAULT {default}")
         self.conn.commit()
 
     def _ensure_order_received_columns(self):
         c = self.conn.cursor()
         c.execute("PRAGMA table_info(orders)")
         columns = [row[1] for row in c.fetchall()]
-        if 'received' not in columns:
-            c.execute("ALTER TABLE orders ADD COLUMN received INTEGER DEFAULT 0")
-        if 'receipt_date' not in columns:
-            c.execute("ALTER TABLE orders ADD COLUMN receipt_date TEXT DEFAULT ''")
+        for col, default in [('received', '0'), ('receipt_date', "''")]:
+            if col not in columns:
+                c.execute(f"ALTER TABLE orders ADD COLUMN {col} DEFAULT {default}")
         self.conn.commit()
 
     def _ensure_order_delivery_number_column(self):
@@ -113,7 +107,7 @@ class DatabaseManager:
         columns = [row[1] for row in c.fetchall()]
         if 'write_off_date' not in columns:
             c.execute("ALTER TABLE orders ADD COLUMN write_off_date TEXT DEFAULT ''")
-            self.conn.commit()
+        self.conn.commit()
 
     def _ensure_price_request_columns(self):
         c = self.conn.cursor()
@@ -141,13 +135,10 @@ class DatabaseManager:
         c = self.conn.cursor()
         c.execute("PRAGMA table_info(purchase_payments)")
         columns = [row[1] for row in c.fetchall()]
-        ext_cols = {
-            'invoice_number': 'TEXT DEFAULT ""', 'invoice_date': 'TEXT DEFAULT ""',
+        ext_cols = {'invoice_number': 'TEXT DEFAULT ""', 'invoice_date': 'TEXT DEFAULT ""',
             'supplier_name': 'TEXT DEFAULT ""', 'supplier_inn': 'TEXT DEFAULT ""',
             'payment_purpose': 'TEXT DEFAULT ""', 'delivery_term': 'TEXT DEFAULT ""',
-            'delivery_date': 'TEXT DEFAULT ""', 'vat_amount': 'REAL DEFAULT 0',
-            'total_with_vat': 'REAL DEFAULT 0',
-        }
+            'delivery_date': 'TEXT DEFAULT ""', 'vat_amount': 'REAL DEFAULT 0', 'total_with_vat': 'REAL DEFAULT 0'}
         for col, dtype in ext_cols.items():
             if col not in columns:
                 c.execute(f"ALTER TABLE purchase_payments ADD COLUMN {col} {dtype}")
@@ -174,13 +165,9 @@ class DatabaseManager:
         c = self.conn.cursor()
         c.execute("PRAGMA table_info(suppliers)")
         columns = [row[1] for row in c.fetchall()]
-        additional_columns = {
-            'contact': 'TEXT DEFAULT ""', 'phone': 'TEXT DEFAULT ""',
-            'email': 'TEXT DEFAULT ""', 'address': 'TEXT DEFAULT ""', 'note': 'TEXT DEFAULT ""'
-        }
-        for col_name, col_type in additional_columns.items():
-            if col_name not in columns:
-                c.execute(f"ALTER TABLE suppliers ADD COLUMN {col_name} {col_type}")
+        for col in ['contact', 'phone', 'email', 'address', 'note']:
+            if col not in columns:
+                c.execute(f"ALTER TABLE suppliers ADD COLUMN {col} TEXT DEFAULT ''")
         self.conn.commit()
 
     def create_tables(self):
@@ -218,8 +205,7 @@ class DatabaseManager:
             delivery_unit TEXT, price TEXT, currency TEXT, note TEXT, manufacturer TEXT,
             subproject TEXT, kd TEXT, FOREIGN KEY (order_batch_id) REFERENCES orders(order_batch_id))''')
         c.execute('''CREATE TABLE IF NOT EXISTS nomenclature (
-            id INTEGER PRIMARY KEY AUTOINCREMENT, manufacturer TEXT, article TEXT,
-            name_rus TEXT, name_eng TEXT)''')
+            id INTEGER PRIMARY KEY AUTOINCREMENT, manufacturer TEXT, article TEXT, name_rus TEXT, name_eng TEXT)''')
         c.execute('''CREATE TABLE IF NOT EXISTS manufacturers (
             id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE NOT NULL)''')
         c.execute('''CREATE TABLE IF NOT EXISTS subprojects (
@@ -237,8 +223,8 @@ class DatabaseManager:
             delivery_address TEXT, note TEXT, FOREIGN KEY (project_id) REFERENCES projects(id))''')
         c.execute('''CREATE TABLE IF NOT EXISTS purchase_payments (
             id INTEGER PRIMARY KEY AUTOINCREMENT, spec_id INTEGER NOT NULL, number INTEGER NOT NULL,
-            date TEXT, amount REAL DEFAULT 0, currency TEXT, percent REAL DEFAULT 0,
-            paid INTEGER DEFAULT 0, FOREIGN KEY (spec_id) REFERENCES purchase_specifications(id))''')
+            date TEXT, amount REAL DEFAULT 0, currency TEXT, percent REAL DEFAULT 0, paid INTEGER DEFAULT 0,
+            FOREIGN KEY (spec_id) REFERENCES purchase_specifications(id))''')
         self.conn.commit()
 
     def get_all_projects(self, sort_by="name"):
@@ -246,12 +232,12 @@ class DatabaseManager:
         c.execute("SELECT * FROM projects ORDER BY id")
         rows = c.fetchall()
         if sort_by == "name":
-            rows = sorted(rows, key=lambda r: (r["name"] or "").upper())
+            return sorted(rows, key=lambda r: (r["name"] or "").upper())
         elif sort_by == "contract_date":
             dated = [r for r in rows if _date_sort_key(r["contract_date"])[0] == 0]
             undated = [r for r in rows if _date_sort_key(r["contract_date"])[0] == 1]
             dated.sort(key=lambda r: _date_sort_key(r["contract_date"])[1], reverse=True)
-            rows = dated + undated
+            return dated + undated
         return rows
 
     def get_project(self, name):
@@ -260,36 +246,30 @@ class DatabaseManager:
         return c.fetchone()
 
     def get_project_id(self, name):
-        c = self.conn.cursor()
-        c.execute("SELECT id FROM projects WHERE name=?", (name,))
-        row = c.fetchone()
+        row = self.get_project(name)
         return row['id'] if row else None
 
     def add_project(self, name, path):
-        c = self.conn.cursor()
         try:
-            c.execute("INSERT INTO projects (name, path) VALUES (?, ?)", (name, path))
+            self.conn.execute("INSERT INTO projects (name, path) VALUES (?, ?)", (name, path))
             self.conn.commit()
             return True
         except sqlite3.IntegrityError:
             return False
 
     def update_project(self, name, data):
-        c = self.conn.cursor()
-        c.execute('''UPDATE projects SET contract_date=?, contract_amount=?, contract_currency=?,
-            del_term=?, del_unit=?, del_base_date=?, confirmation_date=?, work_start=?,
-            work_term=?, work_unit=?, delivery_address=? WHERE name=?''',
-            (data.get('contract_date', ''), data.get('contract_amount', ''),
-             data.get('contract_currency', ''), data.get('del_term', ''),
-             data.get('del_unit', ''), data.get('del_base_date', ''),
-             data.get('confirmation_date', ''), data.get('work_start', ''),
-             data.get('work_term', ''), data.get('work_unit', ''),
-             data.get('delivery_address', ''), name))
+        self.conn.execute('''UPDATE projects SET contract_date=?, contract_amount=?, contract_currency=?,
+            del_term=?, del_unit=?, del_base_date=?, confirmation_date=?, work_start=?, work_term=?,
+            work_unit=?, delivery_address=? WHERE name=?''',
+            (data.get('contract_date', ''), data.get('contract_amount', ''), data.get('contract_currency', ''),
+             data.get('del_term', ''), data.get('del_unit', ''), data.get('del_base_date', ''),
+             data.get('confirmation_date', ''), data.get('work_start', ''), data.get('work_term', ''),
+             data.get('work_unit', ''), data.get('delivery_address', ''), name))
         self.conn.commit()
 
     def rename_project(self, old_name, new_name):
-        if not new_name or old_name == new_name: return False
-        if self.get_project(new_name): return False
+        if not new_name or old_name == new_name or self.get_project(new_name):
+            return False
         try:
             with self.conn:
                 self.conn.execute("UPDATE projects SET name=? WHERE name=?", (new_name, old_name))
@@ -297,8 +277,7 @@ class DatabaseManager:
                 self.conn.execute("UPDATE subprojects SET project_name=? WHERE project_name=?", (new_name, old_name))
                 self.conn.execute("UPDATE kd_directory SET project_name=? WHERE project_name=?", (new_name, old_name))
             return True
-        except sqlite3.Error as e:
-            print(f"Ошибка переименования проекта: {e}")
+        except sqlite3.Error:
             return False
 
     def update_project_path(self, name, path):
@@ -325,24 +304,21 @@ class DatabaseManager:
         return c.fetchall()
 
     def add_payment(self, project_id, data):
-        c = self.conn.cursor()
-        c.execute('''INSERT INTO payments (project_id, number, date, amount, currency, percent, paid, contract_date)
+        self.conn.execute('''INSERT INTO payments (project_id, number, date, amount, currency, percent, paid, contract_date)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
             (project_id, data.get('number', 1), data.get('date', ''), data.get('amount', ''),
              data.get('currency', ''), data.get('percent', ''), data.get('paid', 0), data.get('contract_date', '')))
         self.conn.commit()
 
     def update_payment(self, project_id, number, data):
-        c = self.conn.cursor()
-        c.execute('''UPDATE payments SET date=?, amount=?, currency=?, percent=?, paid=?, contract_date=?
+        self.conn.execute('''UPDATE payments SET date=?, amount=?, currency=?, percent=?, paid=?, contract_date=?
             WHERE project_id=? AND number=?''',
             (data.get('date', ''), data.get('amount', ''), data.get('currency', ''),
              data.get('percent', ''), data.get('paid', 0), data.get('contract_date', ''), project_id, number))
         self.conn.commit()
 
     def delete_payment(self, project_id, number):
-        c = self.conn.cursor()
-        c.execute("DELETE FROM payments WHERE project_id=? AND number=?", (project_id, number))
+        self.conn.execute("DELETE FROM payments WHERE project_id=? AND number=?", (project_id, number))
         self.conn.commit()
 
     def get_specifications(self, project_id):
@@ -351,30 +327,24 @@ class DatabaseManager:
         return c.fetchall()
 
     def add_specification(self, project_id, data):
-        c = self.conn.cursor()
-        c.execute('''INSERT INTO specifications (project_id, number, name, quantity, price, currency)
+        self.conn.execute('''INSERT INTO specifications (project_id, number, name, quantity, price, currency)
             VALUES (?, ?, ?, ?, ?, ?)''',
-            (project_id, data.get('number', 1), data.get('name', ''),
-             data.get('quantity', ''), data.get('price', ''), data.get('currency', '')))
+            (project_id, data.get('number', 1), data.get('name', ''), data.get('quantity', ''), data.get('price', ''), data.get('currency', '')))
         self.conn.commit()
 
     def update_specification(self, project_id, number, data):
-        c = self.conn.cursor()
-        c.execute('''UPDATE specifications SET name=?, quantity=?, price=?, currency=?
+        self.conn.execute('''UPDATE specifications SET name=?, quantity=?, price=?, currency=?
             WHERE project_id=? AND number=?''',
             (data.get('name', ''), data.get('quantity', ''), data.get('price', ''), data.get('currency', ''), project_id, number))
         self.conn.commit()
 
     def delete_specification(self, project_id, number):
-        c = self.conn.cursor()
-        c.execute("DELETE FROM specifications WHERE project_id=? AND number=?", (project_id, number))
+        self.conn.execute("DELETE FROM specifications WHERE project_id=? AND number=?", (project_id, number))
         self.conn.commit()
 
     def get_purchases(self, project_id):
         c = self.conn.cursor()
-        c.execute('''SELECT p.*, pr.name AS project_name FROM purchases p
-                 LEFT JOIN projects pr ON pr.id = p.project_id
-                 WHERE p.project_id=? ORDER BY p.number''', (project_id,))
+        c.execute("SELECT * FROM purchases WHERE project_id=? ORDER BY number", (project_id,))
         return c.fetchall()
 
     def get_next_number(self, table, project_id):
@@ -382,8 +352,7 @@ class DatabaseManager:
             raise ValueError(table)
         c = self.conn.cursor()
         c.execute(f"SELECT MAX(CAST(number AS INTEGER)) AS m FROM {table} WHERE project_id=?", (project_id,))
-        row = c.fetchone()
-        return (row["m"] or 0) + 1
+        return (c.fetchone()["m"] or 0) + 1
 
     def get_purchase_by_number(self, project_id, number):
         c = self.conn.cursor()
@@ -391,8 +360,7 @@ class DatabaseManager:
         return c.fetchone()
 
     def add_purchase(self, project_id, data):
-        c = self.conn.cursor()
-        c.execute('''INSERT INTO purchases 
+        self.conn.execute('''INSERT INTO purchases 
             (project_id, number, manufacturer, subproject, kd, article, name, name_eng,
              quantity, note, ordered, order_date, in_order, received, receipt_date, price_request)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
@@ -403,8 +371,7 @@ class DatabaseManager:
         self.conn.commit()
 
     def update_purchase(self, project_id, number, data):
-        c = self.conn.cursor()
-        c.execute('''UPDATE purchases SET manufacturer=?, subproject=?, kd=?, article=?, name=?, name_eng=?,
+        self.conn.execute('''UPDATE purchases SET manufacturer=?, subproject=?, kd=?, article=?, name=?, name_eng=?,
             quantity=?, note=?, ordered=?, order_date=?, in_order=?, received=?, receipt_date=?, price_request=?
             WHERE project_id=? AND number=?''',
             (data.get('manufacturer', ''), data.get('subproject', ''), data.get('kd', ''), data.get('article', ''),
@@ -416,35 +383,25 @@ class DatabaseManager:
     def set_purchase_flag(self, project_id, number, field, value):
         if field not in ("ordered", "in_order", "received", "price_request"):
             raise ValueError(f"Недопустимое поле: {field}")
-        c = self.conn.cursor()
-        c.execute(f"UPDATE purchases SET {field}=? WHERE project_id=? AND number=?", (value, project_id, number))
+        self.conn.execute(f"UPDATE purchases SET {field}=? WHERE project_id=? AND number=?", (value, project_id, number))
         self.conn.commit()
 
     def delete_purchase(self, project_id, number):
-        c = self.conn.cursor()
-        c.execute("DELETE FROM purchases WHERE project_id=? AND number=?", (project_id, number))
+        self.conn.execute("DELETE FROM purchases WHERE project_id=? AND number=?", (project_id, number))
         self.conn.commit()
 
     def get_next_order_batch_id(self):
         c = self.conn.cursor()
         c.execute("SELECT MAX(order_batch_id) as max_id FROM orders")
-        row = c.fetchone()
-        return (row['max_id'] or 0) + 1
-
-    def get_next_price_request_num(self):
-        c = self.conn.cursor()
-        c.execute("SELECT MAX(price_request_num) AS m FROM orders WHERE price_request=1")
-        row = c.fetchone()
-        return (row['m'] or 0) + 1
+        return (c.fetchone()['max_id'] or 0) + 1
 
     def get_order_batches(self):
         c = self.conn.cursor()
         c.execute('''SELECT order_batch_id, MAX(order_date) as order_date, MAX(project_name) as project_name, 
-            MAX(payment_date) as payment_date, MAX(manufacturer) as manufacturer,
-            MAX(delivery_days) as delivery_days, MAX(delivery_unit_order) as delivery_unit_order, 
-            MAX(min_delivery_date) as min_delivery_date, MAX(max_delivery_date) as max_delivery_date,
-            MAX(invoice_number) as invoice_number, MAX(supplier) as supplier,
-            MAX(delivery_number) as delivery_number, MAX(received) as received,
+            MAX(payment_date) as payment_date, MAX(manufacturer) as manufacturer, MAX(delivery_days) as delivery_days, 
+            MAX(delivery_unit_order) as delivery_unit_order, MAX(min_delivery_date) as min_delivery_date, 
+            MAX(max_delivery_date) as max_delivery_date, MAX(invoice_number) as invoice_number,
+            MAX(supplier) as supplier, MAX(delivery_number) as delivery_number, MAX(received) as received,
             MAX(receipt_date) as receipt_date, MAX(write_off_date) as write_off_date,
             MAX(price_request) as price_request, MAX(price_request_num) as price_request_num
             FROM orders GROUP BY order_batch_id ORDER BY order_batch_id DESC''')
@@ -454,18 +411,16 @@ class DatabaseManager:
         c = self.conn.cursor()
         c.execute('''SELECT id, article, name, name_eng, quantity, note, manufacturer, subproject, kd,
             delivery_term, delivery_unit, price, currency FROM orders WHERE order_batch_id=? ORDER BY id''', (batch_id,))
-        rows = c.fetchall()
         return [{
             'id': row['id'], 'article': row['article'] or '', 'name': row['name'] or '',
             'name_eng': row['name_eng'] or '', 'quantity': row['quantity'] or 0,
             'delivery_term': row['delivery_term'] or 0, 'delivery_unit': row['delivery_unit'] or '',
             'price': row['price'] or '', 'currency': row['currency'] or '', 'note': row['note'] or '',
             'manufacturer': row['manufacturer'] or '', 'subproject': row['subproject'] or '', 'kd': row['kd'] or '',
-        } for row in rows]
+        } for row in c.fetchall()]
 
     def add_order(self, data):
-        c = self.conn.cursor()
-        c.execute('''INSERT INTO orders 
+        self.conn.execute('''INSERT INTO orders 
             (order_batch_id, order_date, project_name, payment_date, manufacturer, subproject, kd, article,
              name, name_eng, quantity, note, price_request, price_request_num)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
@@ -476,25 +431,34 @@ class DatabaseManager:
         self.conn.commit()
 
     def update_order_batch(self, batch_id, order_date, project_name, payment_date, delivery_days, delivery_unit, min_date, max_date):
-        c = self.conn.cursor()
-        c.execute('''UPDATE orders SET order_date=?, project_name=?, payment_date=?, delivery_days=?,
-            delivery_unit_order=?, min_delivery_date=?, max_delivery_date=? WHERE order_batch_id=?''',
+        self.conn.execute('''UPDATE orders SET order_date=?, project_name=?, payment_date=?,
+            delivery_days=?, delivery_unit_order=?, min_delivery_date=?, max_delivery_date=? WHERE order_batch_id=?''',
             (order_date, project_name, payment_date, delivery_days, delivery_unit, min_date, max_date, batch_id))
         self.conn.commit()
 
     def set_order_received(self, batch_id, value, receipt_date=""):
-        c = self.conn.cursor()
-        c.execute("UPDATE orders SET received=?, receipt_date=? WHERE order_batch_id=?", (value, receipt_date, batch_id))
+        self.conn.execute("UPDATE orders SET received=?, receipt_date=? WHERE order_batch_id=?", (value, receipt_date, batch_id))
         self.conn.commit()
 
     def set_order_delivery_number(self, batch_id, delivery_number):
-        c = self.conn.cursor()
-        c.execute("UPDATE orders SET delivery_number=? WHERE order_batch_id=?", (delivery_number, batch_id))
+        self.conn.execute("UPDATE orders SET delivery_number=? WHERE order_batch_id=?", (delivery_number, batch_id))
         self.conn.commit()
 
     def set_order_write_off_date(self, batch_id, write_off_date):
+        self.conn.execute("UPDATE orders SET write_off_date=? WHERE order_batch_id=?", (write_off_date, batch_id))
+        self.conn.commit()
+
+    def set_order_price_request(self, batch_id, value):
         c = self.conn.cursor()
-        c.execute("UPDATE orders SET write_off_date=? WHERE order_batch_id=?", (write_off_date, batch_id))
+        if value:
+            c.execute("SELECT MAX(price_request_num) FROM orders WHERE order_batch_id=?", (batch_id,))
+            num = c.fetchone()[0] or 0
+            if not num:
+                c.execute("SELECT MAX(price_request_num) FROM orders")
+                num = (c.fetchone()[0] or 0) + 1
+            c.execute("UPDATE orders SET price_request=1, price_request_num=? WHERE order_batch_id=?", (num, batch_id))
+        else:
+            c.execute("UPDATE orders SET price_request=0 WHERE order_batch_id=?", (batch_id,))
         self.conn.commit()
 
     def get_order_projects(self):
@@ -503,17 +467,16 @@ class DatabaseManager:
         return [row[0] for row in c.fetchall()]
 
     def delete_order_batch(self, batch_id):
-        c = self.conn.cursor()
-        c.execute("DELETE FROM orders WHERE order_batch_id=?", (batch_id,))
-        c.execute("DELETE FROM order_items WHERE order_batch_id=?", (batch_id,))
-        self.conn.commit()
+        with self.conn:
+            self.conn.execute("DELETE FROM orders WHERE order_batch_id=?", (batch_id,))
+            self.conn.execute("DELETE FROM order_items WHERE order_batch_id=?", (batch_id,))
 
     def update_order_item(self, item_id, data):
         c = self.conn.cursor()
         c.execute("SELECT article, name, name_eng, quantity, note, manufacturer, subproject, kd, delivery_term, delivery_unit, price, currency FROM orders WHERE id=?", (item_id,))
         current = c.fetchone()
         if not current: return
-        c.execute('''UPDATE orders SET article=?, name=?, name_eng=?, quantity=?, note=?, manufacturer=?,
+        self.conn.execute('''UPDATE orders SET article=?, name=?, name_eng=?, quantity=?, note=?, manufacturer=?,
             subproject=?, kd=?, delivery_term=?, delivery_unit=?, price=?, currency=? WHERE id=?''',
             (data.get('article', current['article'] or ''), data.get('name', current['name'] or ''),
              data.get('name_eng', current['name_eng'] or ''), data.get('quantity', current['quantity'] or 0),
@@ -524,8 +487,7 @@ class DatabaseManager:
         self.conn.commit()
 
     def delete_order_item(self, item_id):
-        c = self.conn.cursor()
-        c.execute("DELETE FROM orders WHERE id=?", (item_id,))
+        self.conn.execute("DELETE FROM orders WHERE id=?", (item_id,))
         self.conn.commit()
 
     def search_nomenclature(self, query, field='article'):
@@ -537,8 +499,7 @@ class DatabaseManager:
         return c.fetchall()
 
     def add_nomenclature(self, data):
-        c = self.conn.cursor()
-        c.execute('''INSERT INTO nomenclature (manufacturer, article, name_rus, name_eng) VALUES (?, ?, ?, ?)''',
+        self.conn.execute('''INSERT INTO nomenclature (manufacturer, article, name_rus, name_eng) VALUES (?, ?, ?, ?)''',
             (data.get('manufacturer', ''), data.get('article', ''), data.get('name_rus', ''), data.get('name_eng', '')))
         self.conn.commit()
 
@@ -548,8 +509,7 @@ class DatabaseManager:
         return c.fetchall()
 
     def delete_nomenclature(self, item_id):
-        c = self.conn.cursor()
-        c.execute("DELETE FROM nomenclature WHERE id=?", (item_id,))
+        self.conn.execute("DELETE FROM nomenclature WHERE id=?", (item_id,))
         self.conn.commit()
 
     def find_nomenclature_by_article(self, article):
@@ -564,9 +524,8 @@ class DatabaseManager:
         return c.fetchall()
 
     def add_manufacturer(self, name):
-        c = self.conn.cursor()
         try:
-            c.execute("INSERT INTO manufacturers (name) VALUES (?)", (name,))
+            self.conn.execute("INSERT INTO manufacturers (name) VALUES (?)", (name,))
             self.conn.commit()
             return True
         except sqlite3.IntegrityError:
@@ -583,8 +542,7 @@ class DatabaseManager:
             return False
 
     def delete_manufacturer(self, name):
-        c = self.conn.cursor()
-        c.execute("DELETE FROM manufacturers WHERE name=?", (name,))
+        self.conn.execute("DELETE FROM manufacturers WHERE name=?", (name,))
         self.conn.commit()
 
     def get_subprojects(self, project_name=None):
@@ -596,18 +554,15 @@ class DatabaseManager:
         return c.fetchall()
 
     def add_subproject(self, name, project_name=""):
-        c = self.conn.cursor()
-        c.execute("INSERT INTO subprojects (name, project_name) VALUES (?, ?)", (name, project_name))
+        self.conn.execute("INSERT INTO subprojects (name, project_name) VALUES (?, ?)", (name, project_name))
         self.conn.commit()
 
     def delete_subproject(self, name):
-        c = self.conn.cursor()
-        c.execute("DELETE FROM subprojects WHERE name=?", (name,))
+        self.conn.execute("DELETE FROM subprojects WHERE name=?", (name,))
         self.conn.commit()
 
     def update_subproject(self, subproject_id, new_name, new_project_name):
-        c = self.conn.cursor()
-        c.execute("UPDATE subprojects SET name=?, project_name=? WHERE id=?", (new_name, new_project_name, subproject_id))
+        self.conn.execute("UPDATE subprojects SET name=?, project_name=? WHERE id=?", (new_name, new_project_name, subproject_id))
         self.conn.commit()
 
     def get_kd_directory(self, project_name=None):
@@ -619,13 +574,11 @@ class DatabaseManager:
         return c.fetchall()
 
     def add_kd(self, kd_number, project_name=""):
-        c = self.conn.cursor()
-        c.execute("INSERT INTO kd_directory (kd_number, project_name) VALUES (?, ?)", (kd_number, project_name))
+        self.conn.execute("INSERT INTO kd_directory (kd_number, project_name) VALUES (?, ?)", (kd_number, project_name))
         self.conn.commit()
 
     def delete_kd(self, kd_number):
-        c = self.conn.cursor()
-        c.execute("DELETE FROM kd_directory WHERE kd_number=?", (kd_number,))
+        self.conn.execute("DELETE FROM kd_directory WHERE kd_number=?", (kd_number,))
         self.conn.commit()
 
     def get_suppliers(self):
@@ -634,9 +587,8 @@ class DatabaseManager:
         return c.fetchall()
 
     def add_supplier(self, data):
-        c = self.conn.cursor()
         try:
-            c.execute('''INSERT INTO suppliers (name, contact, phone, email, address, note) VALUES (?, ?, ?, ?, ?, ?)''',
+            self.conn.execute('''INSERT INTO suppliers (name, contact, phone, email, address, note) VALUES (?, ?, ?, ?, ?, ?)''',
                 (data.get('name', ''), data.get('contact', ''), data.get('phone', ''), data.get('email', ''), data.get('address', ''), data.get('note', '')))
             self.conn.commit()
             return True
@@ -644,14 +596,12 @@ class DatabaseManager:
             return False
 
     def update_supplier(self, supplier_id, data):
-        c = self.conn.cursor()
-        c.execute('''UPDATE suppliers SET name=?, contact=?, phone=?, email=?, address=?, note=? WHERE id=?''',
+        self.conn.execute('''UPDATE suppliers SET name=?, contact=?, phone=?, email=?, address=?, note=? WHERE id=?''',
             (data.get('name', ''), data.get('contact', ''), data.get('phone', ''), data.get('email', ''), data.get('address', ''), data.get('note', ''), supplier_id))
         self.conn.commit()
 
     def delete_supplier(self, supplier_id):
-        c = self.conn.cursor()
-        c.execute("DELETE FROM suppliers WHERE id=?", (supplier_id,))
+        self.conn.execute("DELETE FROM suppliers WHERE id=?", (supplier_id,))
         self.conn.commit()
 
     def get_purchase_specifications(self, project_id):
@@ -660,41 +610,35 @@ class DatabaseManager:
         return c.fetchall()
 
     def add_purchase_spec(self, project_id, data):
-        c = self.conn.cursor()
-        c.execute('''INSERT INTO purchase_specifications 
+        self.conn.execute('''INSERT INTO purchase_specifications 
             (project_id, supplier, name, quantity, price, total, currency, delivery_term, delivery_unit,
              payment_date, delivery_date, fully_paid, received, delivery_address, note)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
-            (project_id, data.get('supplier', ''), data.get('name', ''), data.get('quantity', 0),
-             data.get('price', 0), data.get('total', 0), data.get('currency', ''), data.get('delivery_term', 0),
-             data.get('delivery_unit', ''), data.get('payment_date', ''), data.get('delivery_date', ''),
-             data.get('fully_paid', 0), data.get('received', 0), data.get('delivery_address', ''), data.get('note', '')))
+            (project_id, data.get('supplier', ''), data.get('name', ''), data.get('quantity', 0), data.get('price', 0),
+             data.get('total', 0), data.get('currency', ''), data.get('delivery_term', 0), data.get('delivery_unit', ''),
+             data.get('payment_date', ''), data.get('delivery_date', ''), data.get('fully_paid', 0),
+             data.get('received', 0), data.get('delivery_address', ''), data.get('note', '')))
         self.conn.commit()
 
     def update_purchase_spec(self, spec_id, data):
-        c = self.conn.cursor()
-        c.execute('''UPDATE purchase_specifications SET supplier=?, name=?, quantity=?, price=?, total=?, currency=?,
-            delivery_term=?, delivery_unit=?, payment_date=?, delivery_date=?, fully_paid=?, received=?,
-            delivery_address=?, note=? WHERE id=?''',
-            (data.get('supplier', ''), data.get('name', ''), data.get('quantity', 0), data.get('price', 0),
-             data.get('total', 0), data.get('currency', ''), data.get('delivery_term', 0), data.get('delivery_unit', ''),
-             data.get('payment_date', ''), data.get('delivery_date', ''), data.get('fully_paid', 0),
-             data.get('received', 0), data.get('delivery_address', ''), data.get('note', ''), spec_id))
+        self.conn.execute('''UPDATE purchase_specifications SET supplier=?, name=?, quantity=?, price=?, total=?, currency=?,
+            delivery_term=?, delivery_unit=?, payment_date=?, delivery_date=?, fully_paid=?, received=?, delivery_address=?, note=? WHERE id=?''',
+            (data.get('supplier', ''), data.get('name', ''), data.get('quantity', 0), data.get('price', 0), data.get('total', 0),
+             data.get('currency', ''), data.get('delivery_term', 0), data.get('delivery_unit', ''), data.get('payment_date', ''),
+             data.get('delivery_date', ''), data.get('fully_paid', 0), data.get('received', 0), data.get('delivery_address', ''),
+             data.get('note', ''), spec_id))
         self.conn.commit()
 
     def delete_purchase_spec(self, spec_id):
-        c = self.conn.cursor()
-        c.execute("DELETE FROM purchase_payments WHERE spec_id=?", (spec_id,))
-        c.execute("DELETE FROM purchase_spec_items WHERE spec_id=?", (spec_id,))
-        c.execute("DELETE FROM purchase_specifications WHERE id=?", (spec_id,))
-        self.conn.commit()
+        with self.conn:
+            self.conn.execute("DELETE FROM purchase_payments WHERE spec_id=?", (spec_id,))
+            self.conn.execute("DELETE FROM purchase_spec_items WHERE spec_id=?", (spec_id,))
+            self.conn.execute("DELETE FROM purchase_specifications WHERE id=?", (spec_id,))
 
     def add_purchase_spec_item(self, spec_id, data):
-        c = self.conn.cursor()
-        c.execute('''INSERT INTO purchase_spec_items (spec_id, name, quantity, price, total, delivery_term, delivery_unit)
+        self.conn.execute('''INSERT INTO purchase_spec_items (spec_id, name, quantity, price, total, delivery_term, delivery_unit)
             VALUES (?, ?, ?, ?, ?, ?, ?)''',
-            (spec_id, data.get('name', ''), data.get('quantity', 0), data.get('price', 0),
-             data.get('total', 0), data.get('delivery_term', ''), data.get('delivery_unit', '')))
+            (spec_id, data.get('name', ''), data.get('quantity', 0), data.get('price', 0), data.get('total', 0), data.get('delivery_term', ''), data.get('delivery_unit', '')))
         self.conn.commit()
 
     def get_purchase_spec_items(self, spec_id):
@@ -703,20 +647,16 @@ class DatabaseManager:
         return c.fetchall()
 
     def update_purchase_spec_item(self, item_id, data):
-        c = self.conn.cursor()
-        c.execute('''UPDATE purchase_spec_items SET name=?, quantity=?, price=?, total=?, delivery_term=?, delivery_unit=? WHERE id=?''',
-            (data.get('name', ''), data.get('quantity', 0), data.get('price', 0), data.get('total', 0),
-             data.get('delivery_term', ''), data.get('delivery_unit', ''), item_id))
+        self.conn.execute('''UPDATE purchase_spec_items SET name=?, quantity=?, price=?, total=?, delivery_term=?, delivery_unit=? WHERE id=?''',
+            (data.get('name', ''), data.get('quantity', 0), data.get('price', 0), data.get('total', 0), data.get('delivery_term', ''), data.get('delivery_unit', ''), item_id))
         self.conn.commit()
 
     def delete_purchase_spec_item(self, item_id):
-        c = self.conn.cursor()
-        c.execute("DELETE FROM purchase_spec_items WHERE id=?", (item_id,))
+        self.conn.execute("DELETE FROM purchase_spec_items WHERE id=?", (item_id,))
         self.conn.commit()
 
     def delete_purchase_spec_items(self, spec_id):
-        c = self.conn.cursor()
-        c.execute("DELETE FROM purchase_spec_items WHERE spec_id=?", (spec_id,))
+        self.conn.execute("DELETE FROM purchase_spec_items WHERE spec_id=?", (spec_id,))
         self.conn.commit()
 
     def get_purchase_payments(self, spec_id):
@@ -730,16 +670,12 @@ class DatabaseManager:
         return c.fetchall()
 
     def add_purchase_payment(self, spec_id, data):
-        c = self.conn.cursor()
-        c.execute('''INSERT INTO purchase_payments (spec_id, number, date, amount, currency, percent, paid)
-            VALUES (?, ?, ?, ?, ?, ?, ?)''',
-            (spec_id, data.get('number', 1), data.get('date', ''), data.get('amount', 0),
-             data.get('currency', ''), data.get('percent', 0), data.get('paid', 0)))
+        self.conn.execute('''INSERT INTO purchase_payments (spec_id, number, date, amount, currency, percent, paid) VALUES (?, ?, ?, ?, ?, ?, ?)''',
+            (spec_id, data.get('number', 1), data.get('date', ''), data.get('amount', 0), data.get('currency', ''), data.get('percent', 0), data.get('paid', 0)))
         self.conn.commit()
 
     def add_purchase_payment_ext(self, spec_id, data):
-        c = self.conn.cursor()
-        c.execute('''INSERT INTO purchase_payments 
+        self.conn.execute('''INSERT INTO purchase_payments 
             (spec_id, number, date, amount, currency, percent, paid, invoice_number, invoice_date,
              supplier_name, supplier_inn, payment_purpose, delivery_term, delivery_date, vat_amount, total_with_vat)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
@@ -750,27 +686,22 @@ class DatabaseManager:
         self.conn.commit()
 
     def update_purchase_payment(self, payment_id, data):
-        c = self.conn.cursor()
-        c.execute('''UPDATE purchase_payments SET number=?, date=?, amount=?, currency=?, percent=?, paid=? WHERE id=?''',
-            (data.get('number', 1), data.get('date', ''), data.get('amount', 0), data.get('currency', ''),
-             data.get('percent', 0), data.get('paid', 0), payment_id))
+        self.conn.execute('''UPDATE purchase_payments SET number=?, date=?, amount=?, currency=?, percent=?, paid=? WHERE id=?''',
+            (data.get('number', 1), data.get('date', ''), data.get('amount', 0), data.get('currency', ''), data.get('percent', 0), data.get('paid', 0), payment_id))
         self.conn.commit()
 
     def update_purchase_payment_ext(self, payment_id, data):
-        c = self.conn.cursor()
-        c.execute('''UPDATE purchase_payments SET number=?, date=?, amount=?, currency=?, percent=?, paid=?,
-            invoice_number=?, invoice_date=?, supplier_name=?, supplier_inn=?, payment_purpose=?,
-            delivery_term=?, delivery_date=?, vat_amount=?, total_with_vat=? WHERE id=?''',
-            (data.get('number', 1), data.get('date', ''), data.get('amount', 0), data.get('currency', ''),
-             data.get('percent', 0), data.get('paid', 0), data.get('invoice_number', ''), data.get('invoice_date', ''),
-             data.get('supplier_name', ''), data.get('supplier_inn', ''), data.get('payment_purpose', ''),
-             data.get('delivery_term', ''), data.get('delivery_date', ''), data.get('vat_amount', 0),
-             data.get('total_with_vat', 0), payment_id))
+        self.conn.execute('''UPDATE purchase_payments SET number=?, date=?, amount=?, currency=?, percent=?, paid=?,
+            invoice_number=?, invoice_date=?, supplier_name=?, supplier_inn=?, payment_purpose=?, delivery_term=?,
+            delivery_date=?, vat_amount=?, total_with_vat=? WHERE id=?''',
+            (data.get('number', 1), data.get('date', ''), data.get('amount', 0), data.get('currency', ''), data.get('percent', 0),
+             data.get('paid', 0), data.get('invoice_number', ''), data.get('invoice_date', ''), data.get('supplier_name', ''),
+             data.get('supplier_inn', ''), data.get('payment_purpose', ''), data.get('delivery_term', ''),
+             data.get('delivery_date', ''), data.get('vat_amount', 0), data.get('total_with_vat', 0), payment_id))
         self.conn.commit()
 
     def delete_purchase_payment(self, payment_id):
-        c = self.conn.cursor()
-        c.execute("DELETE FROM purchase_payments WHERE id=?", (payment_id,))
+        self.conn.execute("DELETE FROM purchase_payments WHERE id=?", (payment_id,))
         self.conn.commit()
 
     def get_delivery_addresses(self):
@@ -779,20 +710,17 @@ class DatabaseManager:
         return c.fetchall()
 
     def add_delivery_address(self, data):
-        c = self.conn.cursor()
-        c.execute('''INSERT INTO delivery_addresses (name, address, contact, phone, note) VALUES (?, ?, ?, ?, ?)''',
+        self.conn.execute('''INSERT INTO delivery_addresses (name, address, contact, phone, note) VALUES (?, ?, ?, ?, ?)''',
             (data.get('name', ''), data.get('address', ''), data.get('contact', ''), data.get('phone', ''), data.get('note', '')))
         self.conn.commit()
 
     def update_delivery_address(self, addr_id, data):
-        c = self.conn.cursor()
-        c.execute('''UPDATE delivery_addresses SET name=?, address=?, contact=?, phone=?, note=? WHERE id=?''',
+        self.conn.execute('''UPDATE delivery_addresses SET name=?, address=?, contact=?, phone=?, note=? WHERE id=?''',
             (data.get('name', ''), data.get('address', ''), data.get('contact', ''), data.get('phone', ''), data.get('note', ''), addr_id))
         self.conn.commit()
 
     def delete_delivery_address(self, addr_id):
-        c = self.conn.cursor()
-        c.execute("DELETE FROM delivery_addresses WHERE id=?", (addr_id,))
+        self.conn.execute("DELETE FROM delivery_addresses WHERE id=?", (addr_id,))
         self.conn.commit()
 
     def close(self):
