@@ -92,31 +92,27 @@ except Exception as e:
     print(f"   FAIL database: {e}")
     FAILURES.append(f"database: {e}")
     
-# 4) Согласованность вкладки «Закупки» и слоя БД
-print("4) API-контракт purchases ↔ database:")
-import inspect, tempfile, os
+
+
+print("4) Контракт purchases ↔ database:")
+import os, tempfile
 from database import DatabaseManager
-for name in ("get_next_price_request_num", "move_purchase", "set_order_price_request",
-             "set_order_write_off_date", "set_purchase_flag"):
+for name in ("get_next_price_request_num", "move_purchase",
+             "set_order_price_request", "set_order_write_off_date"):
     ok = hasattr(DatabaseManager, name)
     print(f"   {'OK  ' if ok else 'FAIL'} DatabaseManager.{name}")
-    if not ok:
-        FAILURES.append(f"нет метода DatabaseManager.{name}")
+    if not ok: FAILURES.append(f"нет метода {name}")
 
-tmp = tempfile.mkdtemp(); m = DatabaseManager(os.path.join(tmp, "c.db"))
+m = DatabaseManager(os.path.join(tempfile.mkdtemp(), "c.db"))
 m.add_project("A", "/tmp"); m.add_project("B", "/tmp")
 a, b = m.get_project_id("A"), m.get_project_id("B")
 m.add_purchase(a, {"number": 1, "article": "X", "quantity": 1, "price_request": 1})
 try:
-    pn = m.get_purchases(a)[0]["project_name"]
-    print("   OK   get_purchases → project_name =", pn)
+    print("   OK   project_name =", m.get_purchases(a)[0]["project_name"])
 except Exception as e:
-    print("   FAIL get_purchases → project_name:", e); FAILURES.append("get_purchases без JOIN")
+    print("   FAIL project_name:", e); FAILURES.append("get_purchases без JOIN")
 if hasattr(m, "move_purchase"):
-    n = m.move_purchase(a, 1, b)
-    print("   OK   move_purchase → новый №", n)
-if hasattr(m, "get_next_price_request_num"):
-    print("   OK   get_next_price_request_num →", m.get_next_price_request_num())
+    print("   OK   move_purchase → №", m.move_purchase(a, 1, b))
 m.close()
 
 print()

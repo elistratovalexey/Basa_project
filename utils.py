@@ -42,23 +42,15 @@ def add_working_days_with_holidays(start_date, days, holidays_set):
             added += 1
     return current
 
-
 def parse_date(date_str, fmt=None):
-    """Разбор даты в распространённых форматах. Возвращает datetime или None.
-
-    Поддерживает: ДД.ММ.ГГГГ, ДД.ММ.ГГ (двузначный год), ДД/ММ/ГГГГ,
-    ДД/ММ/ГГ, ГГГГ-ММ-ДД и варианты с временем.
-    Параметр fmt оставлен для совместимости: если передан — используется только он.
-    """
+    """ДД.ММ.ГГГГ, ДД.ММ.ГГ, ДД/ММ/ГГГГ, ДД/ММ/ГГ, ГГГГ-ММ-ДД (+ время)."""
     if not date_str:
         return None
     s = str(date_str).strip()
     if not s:
         return None
-    formats = [fmt] if fmt else [
-        "%d.%m.%Y", "%d.%m.%y", "%d/%m/%Y", "%d/%m/%y",
-        "%Y-%m-%d", "%d.%m.%Y %H:%M", "%d.%m.%y %H:%M",
-    ]
+    formats = [fmt] if fmt else ["%d.%m.%Y", "%d.%m.%y", "%d/%m/%Y", "%d/%m/%y",
+                                 "%Y-%m-%d", "%d.%m.%Y %H:%M", "%d.%m.%y %H:%M"]
     for f in formats:
         try:
             return datetime.strptime(s, f)

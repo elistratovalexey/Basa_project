@@ -4,10 +4,9 @@ import glob
 from datetime import datetime
 
 def _date_sort_key(date_str):
-    try:
-        return (0, datetime.strptime(str(date_str).strip(), "%d.%m.%Y"))
-    except (ValueError, TypeError):
-        return (1, datetime.max)
+    from utils import parse_date
+    d = parse_date(date_str)
+    return (0, d) if d else (1, datetime.max)
 
 class DatabaseManager:
     def __init__(self, db_path):
@@ -343,14 +342,13 @@ class DatabaseManager:
         self.conn.commit()
 
     def get_purchases(self, project_id):
-        """JOIN с projects: каждая строка несёт имя своего проекта (project_name)."""
         c = self.conn.cursor()
         c.execute('''SELECT p.*, pr.name AS project_name
                      FROM purchases p
                      LEFT JOIN projects pr ON pr.id = p.project_id
                      WHERE p.project_id=? ORDER BY p.number''', (project_id,))
         return c.fetchall()
-    
+        
     def get_next_number(self, table, project_id):
         if table not in ("payments", "specifications", "purchases"):
             raise ValueError(table)
@@ -411,6 +409,23 @@ class DatabaseManager:
         c.execute("SELECT MAX(order_batch_id) as max_id FROM orders")
         return (c.fetchone()['max_id'] or 0) + 1
     
+     def get_next_price_request_num(self):
+        """Следующий номер Z-серии (запросы цены)."""
+        c = self.conn.cursor()
+        c.execute("SELECT MAX(price_request_num) AS m FROM orders WHERE price_request=1")
+        return (c.fetchone()["m"] or 0) + 1
+
+    def move_purchase(self, from_project_id, number, to_project_id):
+        """Перенос закупки в другой проект с перенумерацией. Возвращает новый номер."""
+        if from_project_id == to_project_id:
+            return number
+        new_number = self.get_next_number("purchases", to_project_id)
+        self.conn.execute('''UPDATE purchases SET project_id=?, number=?
+                             WHERE project_id=? AND number=?''',
+                          (to_project_id, new_number, from_project_id, number))
+        self.conn.commit()
+        return new_number
+       
     def get_next_price_request_num(self):
         """Следующий номер Z-серии (запросы цены)."""
         c = self.conn.cursor()
