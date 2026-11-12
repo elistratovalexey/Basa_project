@@ -69,8 +69,18 @@ class OrderExportDialog(tk.Toplevel):
         self.combo_project.bind("<<ComboboxSelected>>", lambda e: self._update_info())
         self.combo_manufacturer.bind("<<ComboboxSelected>>", lambda e: self._update_info())
         self.combo_received.bind("<<ComboboxSelected>>", lambda e: self._update_info())
-        self.grab_set()
+        self._safe_grab()
 
+    def _safe_grab(self, attempts=10):
+        try:
+            if self.winfo_exists() and self.winfo_viewable():
+                self.grab_set()
+            elif attempts > 0:
+                self.after(50, lambda: self._safe_grab(attempts - 1))
+        except tk.TclError:
+            if attempts > 0:
+                self.after(50, lambda: self._safe_grab(attempts - 1))
+                
     def _update_info(self):
         project = self.combo_project.get()
         manufacturer = self.combo_manufacturer.get()
