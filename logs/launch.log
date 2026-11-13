@@ -53,3 +53,10 @@ SyntaxError: invalid syntax
     ^^^^
 SyntaxError: invalid syntax
 [13.11.2026 09:09:29] ОШИБКА запуска:     from settings_dialog import SettingsDialog     ^^^^ SyntaxError: invalid syntax 
+[13.11.2026 09:31:18] Запуск: /home/elistratov/PROJECTS_PERPLEXETY/venv/bin/python (Python 3.14.4)
+[13.11.2026 09:31:20] Программа запущена v1.8.0
+[13.11.2026 09:31:20] База данных: /home/elistratov/PROJECTS_PERPLEXETY/projects.db
+[13.11.2026 09:31:20] Резервная копия БД: /home/elistratov/PROJECTS_PERPLEXETY/backups/projects_20261113_093120.db
+[13.11.2026 09:31:20] Выбран проект: МЭЩ
+[13.11.2026 09:31:21] Успех: PID 1421405
+[13.11.2026 09:31:40] Напоминания: 103 (просрочек 37)
