@@ -103,18 +103,16 @@ class DashboardTab(BaseTab):
         sel = self.tree.selection()
         if not sel:
             return
-        vals = self.tree.item(sel[0])["values"]
-        rows = self.data.get(self.current_key, [])
         idx = self.tree.index(sel[0])
+        rows = self.data.get(self.current_key, [])
         if idx >= len(rows):
             return
         row = rows[idx]
-        if row.get("batch_id"):
+        if row.get("spec_id"):
+            # НОВОЕ: открываем счёт на редактирование (вся информация)
+            from dialogs.spec_edit_dialog import SpecEditDialog
+            SpecEditDialog(self.root, self.db_manager, row["spec_id"], on_saved=self.refresh)
+        elif row.get("batch_id"):
             from dialogs.order_status_dialog import OrderStatusDialog
             OrderStatusDialog(self.root, self.db_manager, row["batch_id"])
             self.refresh()
-        else:
-            messagebox.showinfo("Спецификация",
-                                f"{row.get('Поставщик','')}\n{row.get('Спецификация','')}\n"
-                                f"{row.get('Сумма','')} {row.get('Валюта','')}\n"
-                                f"Оплата: {row.get('Дата оплаты','')}")

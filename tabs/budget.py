@@ -51,10 +51,27 @@ class BudgetTab(BaseTab):
     def _fmt(self, v):
         return f"{v:,.2f} ₽".replace(",", " ").replace(".", ",")
 
+    def _auto_fetch_rates(self, silent=False):
+        try:
+            from utils import get_exchange_rates
+            rates = get_exchange_rates()
+            n = self.db_manager.save_rates(rates, datetime.now().strftime("%d.%m.%Y"))
+            if not silent:
+                messagebox.showinfo("Курсы", f"Сохранено курсов: {n}")
+            return n > 0
+        except Exception as e:
+            if not silent:
+                messagebox.showerror("Курсы", f"Не удалось получить курсы ЦБ:\n{e}")
+            return False
+
     def load_budget(self):
         for i in self.tree.get_children():
             self.tree.delete(i)
         proj = self.app.current_project
+        # НОВОЕ: если курсов ещё нет — пробуем один раз подтянуть ЦБ автоматически
+        if not self.db_manager.has_rates():
+            self._auto_fetch_rates(silent=True)
+
         if not proj:
             for k in self.lbl:
                 self.lbl[k].config(text="—")
@@ -70,9 +87,13 @@ class BudgetTab(BaseTab):
         for kind, item, amount, cur, rub in b.get("detail", []):
             self.tree.insert("", tk.END, values=(kind, item, f"{amount:,.2f}".replace(",", " "),
                                                  cur, f"{rub:,.2f}".replace(",", " ")))
-        rates = " · ".join(f"{c} {self.db_manager.get_rate(c):.2f}" for c in ("USD", "EUR", "CNY", "TRY"))
-        self.lbl_rates.config(text="Курсы: " + rates)
-
+        rates_txt = " · ".join(f"{c} {self.db_manager.get_rate(c):.4f}" for c in ("USD", "EUR", "CNY", "TRY"))
+        if self.db_manager.has_rates():
+            self.lbl_rates.config(foreground="gray", text="Курсы: " + rates_txt)
+        else:
+            self.lbl_rates.config(foreground="red",
+                text="⚠ Курсы не загружены (все валюты = 1). Нажмите «Курсы ЦБ на сегодня» или «Курсы вручную».")
+            
     def fetch_rates(self):
         try:
             from utils import get_exchange_rates

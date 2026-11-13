@@ -962,6 +962,11 @@ class DatabaseManager:
         c = self.conn.cursor()
         c.execute("SELECT * FROM purchase_specifications WHERE project_id=? ORDER BY id", (project_id,))
         return c.fetchall()
+    
+    def get_purchase_spec_by_id(self, spec_id):
+        c = self.conn.cursor()
+        c.execute("SELECT * FROM purchase_specifications WHERE id=?", (spec_id,))
+        return c.fetchone()
 
     def add_purchase_spec(self, project_id, data):
         c = self.conn.cursor()
@@ -1197,9 +1202,32 @@ class DatabaseManager:
         self.conn.commit()
         return n
 
+    _CUR_ALIASES = {
+        "RUB": "RUB", "RUR": "RUB", "₽": "RUB", "₽ (РУБЛИ)": "RUB", "₽ (РУБЛЬ)": "RUB",
+        "РУБЛИ": "RUB", "РУБ": "RUB",
+        "USD": "USD", "$": "USD", "$ (ДОЛЛАРЫ)": "USD", "ДОЛЛАРЫ": "USD",
+        "EUR": "EUR", "€": "EUR", "€ (ЕВРО)": "EUR", "ЕВРО": "EUR",
+        "CNY": "CNY", "¥": "CNY", "¥ (ЮАНИ)": "CNY", "ЮАНИ": "CNY",
+        "TRY": "TRY", "₺": "TRY", "₺ (ЛИРЫ)": "TRY", "ЛИРЫ": "TRY",
+        "GBP": "GBP", "CHF": "CHF",
+    }
+
+    def norm_currency(self, code):
+        """'₽ (Рубли)' → 'RUB', '$ (Доллары)' → 'USD' и т.д."""
+        c = (code or "").strip()
+        if not c:
+            return "RUB"
+        if c in self._CUR_ALIASES:
+            return self._CUR_ALIASES[c]
+        return self._CUR_ALIASES.get(c.upper(), c.upper())
+
+    def has_rates(self):
+        r = self.conn.execute("SELECT COUNT(*) c FROM currency_rates").fetchone()
+        return (r["c"] or 0) > 0
+
     def get_rate(self, code, date_str=None):
-        code = (code or "RUB").upper().strip()
-        if code in ("RUB", "RUR", ""):
+        code = self.norm_currency(code)
+        if code == "RUB":
             return 1.0
         c = self.conn.cursor()
         iso = self._iso(date_str)
@@ -1212,7 +1240,7 @@ class DatabaseManager:
         c.execute("SELECT rate FROM currency_rates WHERE code=? ORDER BY date DESC LIMIT 1", (code,))
         r = c.fetchone()
         return float(r["rate"]) if r else 1.0
-
+    
     def get_rates_table(self, limit=40):
         return self.conn.execute(
             "SELECT date, code, rate FROM currency_rates ORDER BY date DESC, code LIMIT ?",
