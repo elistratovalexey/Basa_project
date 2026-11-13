@@ -39,6 +39,7 @@ class DatabaseManager:
         self._ensure_order_delivery_number_column()
         self._ensure_order_write_off_column()
         self._ensure_price_request_columns()
+        self._ensure_plan_fact_tables()        
         self._ensure_v19()       
         self._ensure_delivery_addresses_table()
         self._ensure_purchase_payments_ext_columns()
@@ -567,8 +568,9 @@ class DatabaseManager:
 
     def get_next_number(self, table, project_id):
         """Следующий свободный номер по ВСЕМ записям проекта (не по фильтру)."""
-        if table not in ("payments", "specifications", "purchases"):
+        if table not in ("payments", "specifications", "purchases", "plan_fact"):
             raise ValueError(table)
+    
         c = self.conn.cursor()
         c.execute(f"SELECT MAX(CAST(number AS INTEGER)) AS m FROM {table} WHERE project_id=?",
                   (project_id,))
@@ -1471,7 +1473,128 @@ class DatabaseManager:
         res["margin"] = res["income"] - res["paid_sup"]
         res["plan_margin"] = res["plan_sell"] - res["plan_buy"]
         return res
-    
+    # === План-Факт: справочники и карточки работ ===
+    def _ensure_plan_fact_tables(self):
+        c = self.conn.cursor()
+        c.execute('''CREATE TABLE IF NOT EXISTS work_types (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT UNIQUE NOT NULL
+        )''')
+        c.execute('''CREATE TABLE IF NOT EXISTS work_statuses (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT UNIQUE NOT NULL
+        )''')
+        c.execute('''CREATE TABLE IF NOT EXISTS plan_fact (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_id INTEGER NOT NULL,
+            number INTEGER NOT NULL,
+            name TEXT,
+            work_type TEXT,
+            status TEXT,
+            note TEXT DEFAULT '',
+            FOREIGN KEY (project_id) REFERENCES projects(id)
+        )''')
+        c.execute("CREATE INDEX IF NOT EXISTS idx_pf_project ON plan_fact(project_id, number)")
+        c.execute("SELECT COUNT(*) FROM work_types")
+        if c.fetchone()[0] == 0:
+            for n in ("Проектирование", "Производство", "Поставка", "Монтаж", "Пусконаладка"):
+                c.execute("INSERT OR IGNORE INTO work_types (name) VALUES (?)", (n,))
+        c.execute("SELECT COUNT(*) FROM work_statuses")
+        if c.fetchone()[0] == 0:
+            for n in ("Не начато", "В работе", "Выполнено", "Приостановлено"):
+                c.execute("INSERT OR IGNORE INTO work_statuses (name) VALUES (?)", (n,))
+        self.conn.commit()
+
+    def get_work_types(self):
+        c = self.conn.cursor()
+        c.execute("SELECT name FROM work_types ORDER BY name")
+        return [r[0] for r in c.fetchall()]
+
+    def add_work_type(self, name):
+        name = (name or "").strip()
+        if not name:
+            return False
+        try:
+            self.conn.execute("INSERT INTO work_types (name) VALUES (?)", (name,))
+            self.conn.commit()
+            return True
+        except sqlite3.IntegrityError:
+            return False
+
+    def rename_work_type(self, old, new):
+        new = (new or "").strip()
+        if not new or old == new:
+            return False
+        try:
+            with self.conn:
+                self.conn.execute("UPDATE work_types SET name=? WHERE name=?", (new, old))
+                self.conn.execute("UPDATE plan_fact SET work_type=? WHERE work_type=?", (new, old))
+            return True
+        except sqlite3.IntegrityError:
+            return False
+
+    def delete_work_type(self, name):
+        self.conn.execute("DELETE FROM work_types WHERE name=?", (name,))
+        self.conn.commit()
+
+    def get_work_statuses(self):
+        c = self.conn.cursor()
+        c.execute("SELECT name FROM work_statuses ORDER BY name")
+        return [r[0] for r in c.fetchall()]
+
+    def add_work_status(self, name):
+        name = (name or "").strip()
+        if not name:
+            return False
+        try:
+            self.conn.execute("INSERT INTO work_statuses (name) VALUES (?)", (name,))
+            self.conn.commit()
+            return True
+        except sqlite3.IntegrityError:
+            return False
+
+    def rename_work_status(self, old, new):
+        new = (new or "").strip()
+        if not new or old == new:
+            return False
+        try:
+            with self.conn:
+                self.conn.execute("UPDATE work_statuses SET name=? WHERE name=?", (new, old))
+                self.conn.execute("UPDATE plan_fact SET status=? WHERE status=?", (new, old))
+            return True
+        except sqlite3.IntegrityError:
+            return False
+
+    def delete_work_status(self, name):
+        self.conn.execute("DELETE FROM work_statuses WHERE name=?", (name,))
+        self.conn.commit()
+
+    def get_plan_fact(self, project_id):
+        c = self.conn.cursor()
+        c.execute("SELECT * FROM plan_fact WHERE project_id=? ORDER BY number", (project_id,))
+        return c.fetchall()
+
+    def add_plan_fact(self, project_id, data):
+        c = self.conn.cursor()
+        c.execute('''INSERT INTO plan_fact (project_id, number, name, work_type, status, note)
+                     VALUES (?, ?, ?, ?, ?, ?)''',
+                  (project_id, data.get('number', 1), data.get('name', ''),
+                   data.get('work_type', ''), data.get('status', ''), data.get('note', '')))
+        self.conn.commit()
+
+    def update_plan_fact(self, project_id, number, data):
+        c = self.conn.cursor()
+        c.execute('''UPDATE plan_fact SET name=?, work_type=?, status=?, note=?
+                     WHERE project_id=? AND number=?''',
+                  (data.get('name', ''), data.get('work_type', ''), data.get('status', ''),
+                   data.get('note', ''), project_id, number))
+        self.conn.commit()
+
+    def delete_plan_fact(self, project_id, number):
+        c = self.conn.cursor()
+        c.execute("DELETE FROM plan_fact WHERE project_id=? AND number=?", (project_id, number))
+        self.conn.commit()
+            
     def close(self):
         if self.conn:
             try:

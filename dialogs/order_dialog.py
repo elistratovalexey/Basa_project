@@ -54,9 +54,8 @@ class OrderDialog(tk.Toplevel):
         self.sort_order = "DESC"
         self._display2batch = {}
         self.create_ui()
-        self._display2batch = {}
-        self.create_ui()
-        # НОВОЕ: если окно открыли для конкретного заказа — сразу грузим его позиции
+        # ВАЖНО: batch_id существует только здесь (параметр __init__),
+        # поэтому загрузка позиций заказа — после create_ui()
         if batch_id:
             self.load_items(batch_id)
 
@@ -87,7 +86,7 @@ class OrderDialog(tk.Toplevel):
         ttk.Button(ff, text="База Поставщиков", command=self.open_suppliers).pack(side=tk.RIGHT, padx=5)
         ttk.Button(ff, text="Экспорт в Excel", command=self.open_export_dialog).pack(side=tk.RIGHT, padx=5)
 
-        # === Таблица заказов (19 колонок: #15 Получено, #18 Запрос цены, #19 Статус) ===
+        # === Таблица заказов: 19 колонок (#15 Получено, #18 Запрос цены, #19 Статус) ===
         bf = ttk.Frame(self)
         bf.pack(fill="both", expand=False, padx=8, pady=4)
         cols_b = ("batch_id", "manufacturer", "subproject", "kd", "order_date",
@@ -120,6 +119,8 @@ class OrderDialog(tk.Toplevel):
         sb.pack(side=tk.RIGHT, fill="y")
         self.tree_batches.bind("<<TreeviewSelect>>", self.on_select_batch)
         self.tree_batches.bind("<Button-1>", self.on_batch_click)
+        self.tree_batches.bind("<ButtonRelease-1>",
+                               lambda e: self.after(30, self.on_select_batch))
 
         # === Заголовок заказа ===
         hf = ttk.LabelFrame(self, text="Заголовок заказа", padding=8)
@@ -173,7 +174,8 @@ class OrderDialog(tk.Toplevel):
         self.entry_write_off_date.grid(row=2, column=1, padx=5, pady=4)
         ttk.Button(hf, text="📅", width=3, command=self.select_write_off_date).grid(row=2, column=2, pady=4)
         ttk.Label(hf, text="Статус:").grid(row=2, column=3, sticky="w", pady=4)
-        self.lbl_batch_status = ttk.Label(hf, text="", foreground="#0066cc", font=("Arial", 9, "bold"))
+        self.lbl_batch_status = ttk.Label(hf, text="", foreground="#0066cc",
+                                          font=("Arial", 9, "bold"))
         self.lbl_batch_status.grid(row=2, column=4, sticky="w", pady=4)
 
         # === Кнопки действий ===
@@ -482,7 +484,7 @@ class OrderDialog(tk.Toplevel):
             pass
 
     # ------------------------------------------------------------------
-    # Статус заказа (НОВОЕ)
+    # Статус заказа
     # ------------------------------------------------------------------
     def edit_status(self):
         if self.current_batch_id is None:
@@ -829,25 +831,47 @@ class OrderDialog(tk.Toplevel):
             self.tree_items.delete(item)
         self.current_item_id = None
         self.clear_item_form()
-        for r in self.db_manager.get_order_items(batch_id):
+        try:
+            rows = self.db_manager.get_order_items(batch_id)
+        except Exception:
+            traceback.print_exc()
+            return
+        for r in rows:
             self.tree_items.insert("", tk.END, values=(
                 r['id'], r['article'] or "", r['name'] or "",
                 r['quantity'] or "", r['delivery_term'] or "", r['delivery_unit'] or "",
                 r['price'] or "", r['currency'] or "", r['note'] or ""))
+        if not rows:
+            print(f"[order_dialog] Заказ {batch_id}: позиций в БД не найдено")
 
-    def on_select_batch(self, event):
+    def on_select_batch(self, event=None):
         selected = self.tree_batches.selection()
         if not selected:
             return
-        values = self.tree_batches.item(selected[0])['values']
-        self.current_batch_id = self._batch_of(values[0])
-        self._load_batch_to_form(values)
-        project_from_order = values[5]
-        if project_from_order and project_from_order != self.project_name:
-            self.project_name = project_from_order
-            self.load_subprojects_for_combo()
-            self.load_kd_for_combo()
-        self.load_items(self.current_batch_id)
+        try:
+            values = self.tree_batches.item(selected[0])['values']
+            if not values:
+                return
+            batch_id = self._batch_of(values[0])
+            try:
+                batch_id = int(batch_id)
+            except (TypeError, ValueError):
+                pass
+            self.current_batch_id = batch_id
+            self._load_batch_to_form(values)
+            project_from_order = values[5] if len(values) > 5 else ""
+            if project_from_order and project_from_order != self.project_name:
+                self.project_name = project_from_order
+                self.load_subprojects_for_combo()
+                self.load_kd_for_combo()
+            self.load_items(self.current_batch_id)
+        except Exception:
+            traceback.print_exc()
+            try:
+                if hasattr(self.parent, 'log_action'):
+                    self.parent.log_action("Ошибка выбора заказа:\n" + traceback.format_exc(limit=4))
+            except Exception:
+                pass
 
     def on_received_change(self):
         if not self.current_batch_id:
@@ -1134,10 +1158,9 @@ class OrderDialog(tk.Toplevel):
             return
         except Exception as e:
             error_msg = f"Не удалось создать файл.\nПричина: {e}"
-            full_traceback = traceback.format_exc()
             print("\n" + "=" * 50)
             print("ПОЛНАЯ ОШИБКА ЭКСПОРТА EXCEL:")
-            print(full_traceback)
+            print(traceback.format_exc())
             print("=" * 50 + "\n")
             if hasattr(self.parent, 'log_action'):
                 self.parent.log_action(f"Ошибка экспорта Excel: {e}")

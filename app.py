@@ -310,6 +310,9 @@ class ProjectManagerApp:
         tab_deadlines = ttk.Frame(self.notebook, padding=10)
         self.notebook.add(tab_deadlines, text="  Сроки  ")
         self.deadlines_tab = DeadlinesTab(self, tab_deadlines)
+        tab_pf = ttk.Frame(self.notebook, padding=10)
+        self.notebook.add(tab_pf, text="  План-Факт  ")
+        self.plan_fact_tab = PlanFactTab(self, tab_pf)
 
         # --- v1.9: Бюджет (после «Сроки») ---
         frame_budget = ttk.Frame(self.notebook)
@@ -521,6 +524,8 @@ class ProjectManagerApp:
         self.entry_delivery_address.insert(0, data.get("delivery_address", "") or "")
         self.finances_tab.load_payments()
         self.specification_tab.load_specifications()
+        if hasattr(self, "plan_fact_tab"):
+            self.plan_fact_tab.load_records()       
         self.purchases_tab.load_purchases()
         if hasattr(self, "dashboard_tab"):
             self.dashboard_tab.refresh()

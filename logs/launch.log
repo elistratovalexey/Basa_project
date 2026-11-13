@@ -216,3 +216,31 @@ Traceback (most recent call last):
        ^^^^^^^^
 NameError: name 'batch_id' is not defined
 
+Миграция v1.9: статусы/приёмка/история цен/курсы — OK
+[13.11.2026 14:55:54] Запуск: /home/elistratov/PROJECTS_PERPLEXETY/venv/bin/python (Python 3.14.4)
+[13.11.2026 14:55:55] Программа запущена v1.8.0
+[13.11.2026 14:55:55] База данных: /home/elistratov/PROJECTS_PERPLEXETY/projects.db
+[13.11.2026 14:55:55] Резервная копия БД: /home/elistratov/PROJECTS_PERPLEXETY/backups/projects_20261113_145555.db
+[13.11.2026 14:55:55] Выбран проект: МЭЩ
+[13.11.2026 14:55:57] Успех: PID 1457134
+Миграция v1.9: статусы/приёмка/история цен/курсы — OK
+[13.11.2026 15:12:43] Запуск: /home/elistratov/PROJECTS_PERPLEXETY/venv/bin/python (Python 3.14.4)
+[13.11.2026 15:12:44] Программа запущена v1.8.0
+[13.11.2026 15:12:44] База данных: /home/elistratov/PROJECTS_PERPLEXETY/projects.db
+[13.11.2026 15:12:44] Резервная копия БД: /home/elistratov/PROJECTS_PERPLEXETY/backups/projects_20261113_151244.db
+[13.11.2026 15:12:44] Выбран проект: МЭЩ
+[13.11.2026 15:12:46] Успех: PID 1458747
+Миграция v1.9: статусы/приёмка/история цен/курсы — OK
+[13.11.2026 16:31:48] Запуск: /home/elistratov/PROJECTS_PERPLEXETY/venv/bin/python (Python 3.14.4)
+[13.11.2026 16:31:51] Успех: PID 1466603
+Traceback (most recent call last):
+  File "/home/elistratov/PROJECTS_PERPLEXETY/app.py", line 583, in <module>
+    app = ProjectManagerApp(root)
+  File "/home/elistratov/PROJECTS_PERPLEXETY/app.py", line 76, in __init__
+    self.create_widgets()
+    ~~~~~~~~~~~~~~~~~~~^^
+  File "/home/elistratov/PROJECTS_PERPLEXETY/app.py", line 315, in create_widgets
+    self.plan_fact_tab = PlanFactTab(self, tab_pf)
+                         ^^^^^^^^^^^
+NameError: name 'PlanFactTab' is not defined
+Миграция v1.9: статусы/приёмка/история цен/курсы — OK

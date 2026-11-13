@@ -165,3 +165,33 @@ Traceback (most recent call last):
        ^^^^^^^^
 NameError: name 'batch_id' is not defined
 
+===== СЕССИЯ ЗАВЕРШЕНА 13.11.2026 14:55:46 =====
+
+===== СЕССИЯ ЗАПУЩЕНА 13.11.2026 14:55:55 =====
+Миграция v1.9: статусы/приёмка/история цен/курсы — OK
+[13.11.2026 14:55:55] Программа запущена v1.8.0
+[13.11.2026 14:55:55] База данных: /home/elistratov/PROJECTS_PERPLEXETY/projects.db
+[13.11.2026 14:55:55] Резервная копия БД: /home/elistratov/PROJECTS_PERPLEXETY/backups/projects_20261113_145555.db
+[13.11.2026 14:55:55] Выбран проект: МЭЩ
+===== СЕССИЯ ЗАВЕРШЕНА 13.11.2026 15:05:17 =====
+
+===== СЕССИЯ ЗАПУЩЕНА 13.11.2026 15:12:44 =====
+Миграция v1.9: статусы/приёмка/история цен/курсы — OK
+[13.11.2026 15:12:44] Программа запущена v1.8.0
+[13.11.2026 15:12:44] База данных: /home/elistratov/PROJECTS_PERPLEXETY/projects.db
+[13.11.2026 15:12:44] Резервная копия БД: /home/elistratov/PROJECTS_PERPLEXETY/backups/projects_20261113_151244.db
+[13.11.2026 15:12:44] Выбран проект: МЭЩ
+===== СЕССИЯ ЗАВЕРШЕНА 13.11.2026 16:09:40 =====
+
+===== СЕССИЯ ЗАПУЩЕНА 13.11.2026 16:31:48 =====
+Миграция v1.9: статусы/приёмка/история цен/курсы — OK
+Traceback (most recent call last):
+  File "/home/elistratov/PROJECTS_PERPLEXETY/app.py", line 583, in <module>
+    app = ProjectManagerApp(root)
+  File "/home/elistratov/PROJECTS_PERPLEXETY/app.py", line 76, in __init__
+    self.create_widgets()
+    ~~~~~~~~~~~~~~~~~~~^^
+  File "/home/elistratov/PROJECTS_PERPLEXETY/app.py", line 315, in create_widgets
+    self.plan_fact_tab = PlanFactTab(self, tab_pf)
+                         ^^^^^^^^^^^
+NameError: name 'PlanFactTab' is not defined
