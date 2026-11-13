@@ -8,8 +8,8 @@ class SupplierDialog(tk.Toplevel):
         self.title("Справочник поставщиков")
         self.geometry("700x450")
         from dialogs.window_geometry import restore_geometry, track_geometry
-        restore_geometry(self, "КЛЮЧ", "ШИРИНАxВЫСОТА")
-        track_geometry(self, "КЛЮЧ")
+        restore_geometry(self, "supplier_dialog", "700x450")
+        track_geometry(self, "supplier_dialog")
         self.resizable(True, True)
         self.db_manager = db_manager
 

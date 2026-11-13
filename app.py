@@ -13,7 +13,7 @@ from config import (
 from utils import open_path
 from database import DatabaseManager
 from tabs import (FinancesTab, SpecificationTab, PurchasesTab, PurchaseSpecTab,
-                  DeadlinesTab, DashboardTab, BudgetTab)\
+                  DeadlinesTab, DashboardTab, BudgetTab)
 from settings_dialog import SettingsDialog
 from dialogs.window_geometry import restore_geometry, track_geometry
 import terminal_log

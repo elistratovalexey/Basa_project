@@ -60,8 +60,8 @@ class FileImportMatchDialog(tk.Toplevel):
         self.title("Сопоставление строк из файла")
         self.geometry("1400x750")
         from dialogs.window_geometry import restore_geometry, track_geometry
-        restore_geometry(self, "КЛЮЧ", "ШИРИНАxВЫСОТА")
-        track_geometry(self, "КЛЮЧ")
+        restore_geometry(self, "file_import_dialog", "1400x750")
+        track_geometry(self, "file_import_dialog")
         self.resizable(True, True)
         self.db_manager = db_manager
         
