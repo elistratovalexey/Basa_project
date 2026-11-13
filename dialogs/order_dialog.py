@@ -54,6 +54,11 @@ class OrderDialog(tk.Toplevel):
         self.sort_order = "DESC"
         self._display2batch = {}
         self.create_ui()
+        self._display2batch = {}
+        self.create_ui()
+        # НОВОЕ: если окно открыли для конкретного заказа — сразу грузим его позиции
+        if batch_id:
+            self.load_items(batch_id)
 
     # ------------------------------------------------------------------
     # Интерфейс
@@ -244,8 +249,6 @@ class OrderDialog(tk.Toplevel):
         if hasattr(self.db_manager, "ensure_column"):
             self.db_manager.ensure_column("orders", "write_off_date")
         self.load_batches()
-        if batch_id:
-            self.load_items(batch_id)
 
         self._bind_ids = []
         for seq in ("<Control-c>", "<Control-C>", "<Control-v>", "<Control-V>",
