@@ -1,111 +1,44 @@
 import tkinter as tk
-from tkinter import ttk, filedialog, messagebox, simpledialog
-from datetime import datetime, timedelta
+from tkinter import ttk, messagebox, filedialog
 import os
-import holidays
-import re
 import traceback
-from collections import defaultdict
+from datetime import datetime, timedelta
+
+from utils import add_months, add_working_days_with_holidays
+from dialogs.calendar_dialog import CalendarDialog
+from dialogs.order_item_edit_dialog import OrderItemEditDialog
+from dialogs.order_export_dialog import OrderExportDialog
+from dialogs.supplier_dialog import SupplierDialog
 
 try:
+    from dialogs.order_file_parser import parse_file_to_rows_with_text
+except Exception:
+    parse_file_to_rows_with_text = None
+try:
+    from dialogs.file_import_dialog import FileImportMatchDialog
+except Exception:
+    FileImportMatchDialog = None
+try:
     import openpyxl
-    from openpyxl.styles import Font, PatternFill, Alignment
+    from openpyxl.styles import Font
     from openpyxl.utils import get_column_letter
     HAS_OPENPYXL = True
 except ImportError:
     HAS_OPENPYXL = False
 
 try:
-    from config import TIME_UNITS, ORDER_CURRENCIES
+    from config import ORDER_CURRENCIES, TIME_UNITS
 except ImportError:
-    TIME_UNITS = ["Календарные дни", "Рабочие дни", "Недели", "Месяцы"]
     ORDER_CURRENCIES = ["EUR", "USD", "CNY", "RUB"]
-
-try:
-    from utils import add_months, add_working_days_with_holidays, parse_number, parse_delivery_time, translate_time_unit
-except ImportError:
-    import calendar
-
-    def add_months(source_date, months):
-        if months == 0:
-            return source_date
-        month = source_date.month - 1 + months
-        year = source_date.year + month // 12
-        month = month % 12 + 1
-        day = min(source_date.day, calendar.monthrange(year, month)[1])
-        return source_date.replace(year=year, month=month, day=day)
-
-    def add_working_days_with_holidays(start_date, days, holidays_set):
-        current = start_date
-        added = 0
-        while added < days:
-            current += timedelta(days=1)
-            if current.weekday() < 5 and current not in holidays_set:
-                added += 1
-        return current
-
-    def parse_number(s):
-        if s is None:
-            return None
-        s = str(s).strip()
-        if not s:
-            return None
-        if '.' in s and ',' in s:
-            s = s.replace('.', '').replace(',', '.')
-        elif ',' in s:
-            s = s.replace(',', '.')
-        try:
-            return float(s)
-        except:
-            return None
-
-    def translate_time_unit(unit_str):
-        if not unit_str:
-            return "Недели"
-        unit_upper = unit_str.upper().strip()
-        unit_map = {
-            'HAFTA': 'Недели', 'WEEK': 'Недели', 'WEEKS': 'Недели',
-            'GÜN': 'Календарные дни', 'DAY': 'Календарные дни', 'DAYS': 'Календарные дни',
-            'AY': 'Месяцы', 'MONTH': 'Месяцы', 'MONTHS': 'Месяцы',
-            'İŞ GÜNÜ': 'Рабочие дни', 'İŞGÜNÜ': 'Рабочие дни',
-        }
-        return unit_map.get(unit_upper, "Недели")
-
-    def parse_delivery_time(time_str):
-        if not time_str:
-            return None, None
-        time_str = str(time_str).strip()
-        time_upper = time_str.upper()
-        match = re.match(r'(\d+)\s*[-–]\s*(\d+)\s+([A-ZА-Я]+(?:\s+[A-ZА-Я]+)?)', time_upper)
-        if match:
-            num1 = int(match.group(1))
-            num2 = int(match.group(2))
-            unit = match.group(3)
-            max_num = max(num1, num2)
-            translated_unit = translate_time_unit(unit)
-            return max_num, translated_unit
-        match = re.match(r'(\d+)\s+([A-ZА-Я]+(?:\s+[A-ZА-Я]+)?)', time_upper)
-        if match:
-            num = int(match.group(1))
-            unit = match.group(2)
-            translated_unit = translate_time_unit(unit)
-            return num, translated_unit
-        return None, None
-
-from dialogs.order_file_parser import parse_file_to_rows_with_text
-from dialogs.order_item_edit_dialog import OrderItemEditDialog
-from dialogs.order_export_dialog import OrderExportDialog
-from dialogs.calendar_dialog import CalendarDialog
-from dialogs.file_import_dialog import FileImportMatchDialog
-from dialogs.supplier_dialog import SupplierDialog
+    TIME_UNITS = ["Календарные дни", "Рабочие дни", "Недели", "Месяцы"]
 
 
 class OrderDialog(tk.Toplevel):
-    def __init__(self, parent, db_manager, batch_id=None, russian_holidays=None, project_name=None):
+    def __init__(self, parent, db_manager, batch_id=None,
+                 russian_holidays=None, project_name=None):
         super().__init__(parent)
         self.title("База заказов")
         self.geometry("1600x1000")
-        self.resizable(True, True)
         try:
             from dialogs.window_geometry import restore_geometry, track_geometry
             restore_geometry(self, "order_dialog", "1600x1000")
@@ -113,219 +46,186 @@ class OrderDialog(tk.Toplevel):
         except Exception:
             pass
         self.db_manager = db_manager
-        self.current_batch_id = batch_id
+        self.project_name = project_name or ""
+        self.russian_holidays = russian_holidays or set()
+        self.current_batch_id = None
         self.current_item_id = None
-        self.parent = parent
-        self.russian_holidays = russian_holidays or holidays.Russia()
-        self.project_name = project_name
         self.sort_column = "order_date"
-        self.sort_order = "ASC"
-        # НОВОЕ: соответствие "отображаемый номер (Z1/53)" -> реальный order_batch_id
+        self.sort_order = "DESC"
         self._display2batch = {}
+        self.create_ui()
 
-        top_frame = ttk.LabelFrame(self, text="Заказы", padding=8)
-        top_frame.pack(fill=tk.X, padx=10, pady=(10, 5))
-
-        filter_frame = ttk.Frame(top_frame)
-        filter_frame.pack(fill=tk.X, pady=(0, 5))
-        ttk.Label(filter_frame, text="Фильтр по производителю:").pack(side=tk.LEFT, padx=5)
-        self.combo_filter_manufacturer = ttk.Combobox(filter_frame, width=20, state="readonly")
+    # ------------------------------------------------------------------
+    # Интерфейс
+    # ------------------------------------------------------------------
+    def create_ui(self):
+        # === Фильтры ===
+        ff = ttk.Frame(self)
+        ff.pack(fill="x", padx=8, pady=6)
+        ttk.Label(ff, text="Заказы", font=("Arial", 10, "bold")).pack(side=tk.LEFT, padx=(0, 10))
+        ttk.Label(ff, text="Фильтр по производителю:").pack(side=tk.LEFT)
+        self.combo_filter_manufacturer = ttk.Combobox(ff, width=22, state="readonly")
         self.combo_filter_manufacturer.pack(side=tk.LEFT, padx=5)
         self.combo_filter_manufacturer.bind("<<ComboboxSelected>>", lambda e: self.load_batches())
-
-        ttk.Label(filter_frame, text="Дата оплаты:").pack(side=tk.LEFT, padx=(15, 5))
-        self.combo_filter_payment = ttk.Combobox(filter_frame, values=["Все", "Есть дата", "Нет даты"],
-                                                 state="readonly", width=12)
+        ttk.Label(ff, text="Дата оплаты:").pack(side=tk.LEFT, padx=(10, 0))
+        self.combo_filter_payment = ttk.Combobox(ff, width=10, state="readonly",
+                                                 values=["Все", "Есть дата", "Нет даты"])
         self.combo_filter_payment.set("Все")
         self.combo_filter_payment.pack(side=tk.LEFT, padx=5)
         self.combo_filter_payment.bind("<<ComboboxSelected>>", lambda e: self.load_batches())
-
-        ttk.Label(filter_frame, text="Получено:").pack(side=tk.LEFT, padx=(15, 5))
-        self.combo_filter_received = ttk.Combobox(filter_frame, values=["Все", "Получено", "Не получено"],
-                                                  state="readonly", width=12)
+        ttk.Label(ff, text="Получено:").pack(side=tk.LEFT, padx=(10, 0))
+        self.combo_filter_received = ttk.Combobox(ff, width=12, state="readonly",
+                                                  values=["Все", "Получено", "Не получено"])
         self.combo_filter_received.set("Все")
         self.combo_filter_received.pack(side=tk.LEFT, padx=5)
         self.combo_filter_received.bind("<<ComboboxSelected>>", lambda e: self.load_batches())
+        ttk.Button(ff, text="База Поставщиков", command=self.open_suppliers).pack(side=tk.RIGHT, padx=5)
+        ttk.Button(ff, text="Экспорт в Excel", command=self.open_export_dialog).pack(side=tk.RIGHT, padx=5)
 
-        ttk.Button(filter_frame, text="Экспорт в Excel", command=self.open_export_dialog).pack(side=tk.RIGHT, padx=5)
-        ttk.Button(filter_frame, text="База Поставщиков", command=self.open_suppliers).pack(side=tk.RIGHT, padx=5)
-        self.load_manufacturers_filter()
-
-        # НОВОЕ: колонка price_request в конце (не сбивает номера колонок #15/#16/#17)
-        cols_b = ("batch_id", "manufacturer", "subproject", "kd", "order_date", "project_name",
-                  "payment_date", "delivery_days", "delivery_unit_order", "min_delivery_date", "max_delivery_date",
-                  "invoice_number", "supplier", "delivery_number", "received", "receipt_date",
-                  "write_off_date", "price_request","status")
-        self.tree_batches = ttk.Treeview(top_frame, columns=cols_b, show="headings", height=6)
-        self.tree_batches.heading("batch_id", text="№ заказа", command=lambda: self.sort_by_column("batch_id"))
-        self.tree_batches.heading("manufacturer", text="Производитель")
-        self.tree_batches.heading("subproject", text="Подпроект")
-        self.tree_batches.heading("kd", text="КД")
-        self.tree_batches.heading("order_date", text="Дата заказа", command=lambda: self.sort_by_column("order_date"))
-        self.tree_batches.heading("project_name", text="Проект")
-        self.tree_batches.heading("payment_date", text="Дата оплаты")
-        self.tree_batches.heading("delivery_days", text="Доставка")
-        self.tree_batches.heading("delivery_unit_order", text="Ед. доставки")
-        self.tree_batches.heading("min_delivery_date", text="Min дата поставки МСК")
-        self.tree_batches.heading("max_delivery_date", text="Max дата поставки МСК")
-        self.tree_batches.heading("invoice_number", text="Номер инвойса")
-        self.tree_batches.heading("supplier", text="Поставщик")
-        self.tree_batches.heading("delivery_number", text="Номер поставки")
-        self.tree_batches.heading("received", text="Получено")
-        self.tree_batches.heading("receipt_date", text="Дата получения")
-        self.tree_batches.heading("write_off_date", text="Дата списания")
-        self.tree_batches.heading("price_request", text="Запрос цены")
-
-        self.tree_batches.column("batch_id", width=70, anchor="center")
-        self.tree_batches.column("manufacturer", width=100, anchor="w")
-        self.tree_batches.column("subproject", width=120, anchor="w")
-        self.tree_batches.column("kd", width=80, anchor="w")
-        self.tree_batches.column("order_date", width=90, anchor="center")
-        self.tree_batches.column("project_name", width=150, anchor="w")
-        self.tree_batches.column("payment_date", width=90, anchor="center")
-        self.tree_batches.column("delivery_days", width=70, anchor="center")
-        self.tree_batches.column("delivery_unit_order", width=90, anchor="w")
-        self.tree_batches.column("min_delivery_date", width=100, anchor="center", stretch=False)
-        self.tree_batches.column("max_delivery_date", width=100, anchor="center", stretch=False)
-        self.tree_batches.column("invoice_number", width=120, anchor="w")
-        self.tree_batches.column("supplier", width=150, anchor="w")
-        self.tree_batches.column("delivery_number", width=120, anchor="w")
-        self.tree_batches.column("received", width=70, anchor="center")
-        self.tree_batches.column("receipt_date", width=100, anchor="center")
-        self.tree_batches.column("write_off_date", width=90, anchor="center", stretch=False)
-        self.tree_batches.column("price_request", width=80, anchor="center")
-        self.tree_batches.heading("status", text="Статус")
-        self.tree_batches.column("status", width=110, anchor="w")       
-
-        sb_b = ttk.Scrollbar(top_frame, orient=tk.VERTICAL, command=self.tree_batches.yview)
-        sb_bx = ttk.Scrollbar(top_frame, orient=tk.HORIZONTAL, command=self.tree_batches.xview)
-        self.tree_batches.configure(yscroll=sb_b.set, xscroll=sb_bx.set)
-        sb_b.pack(side=tk.RIGHT, fill=tk.Y)
-        sb_bx.pack(side=tk.BOTTOM, fill=tk.X)
-        self.tree_batches.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        # === Таблица заказов (19 колонок: #15 Получено, #18 Запрос цены, #19 Статус) ===
+        bf = ttk.Frame(self)
+        bf.pack(fill="both", expand=False, padx=8, pady=4)
+        cols_b = ("batch_id", "manufacturer", "subproject", "kd", "order_date",
+                  "project_name", "payment_date", "delivery_days", "delivery_unit_order",
+                  "min_delivery_date", "max_delivery_date", "invoice_number", "supplier",
+                  "delivery_number", "received", "receipt_date", "write_off_date",
+                  "price_request", "status")
+        self.tree_batches = ttk.Treeview(bf, columns=cols_b, show="headings", height=8)
+        heads = {"batch_id": ("№ заказа", 60), "manufacturer": ("Производитель", 110),
+                 "subproject": ("Подпроект", 110), "kd": ("КД", 60),
+                 "order_date": ("Дата заказа", 90), "project_name": ("Проект", 130),
+                 "payment_date": ("Дата оплаты", 90), "delivery_days": ("Доставка", 60),
+                 "delivery_unit_order": ("Ед. доставки", 90),
+                 "min_delivery_date": ("Min дата пост.", 100),
+                 "max_delivery_date": ("Max дата пост.", 100),
+                 "invoice_number": ("Номер инвойса", 110), "supplier": ("Поставщик", 150),
+                 "delivery_number": ("Номер поставки", 100), "received": ("Получено", 60),
+                 "receipt_date": ("Дата получения", 100), "write_off_date": ("Дата списания", 100),
+                 "price_request": ("Запрос цены", 80), "status": ("Статус", 110)}
+        for c in cols_b:
+            t, w = heads[c]
+            self.tree_batches.heading(c, text=t, command=lambda cc=c: self.sort_by_column(cc))
+            self.tree_batches.column(c, width=w, anchor="center" if c in
+                                     ("batch_id", "order_date", "payment_date", "delivery_days",
+                                      "min_delivery_date", "max_delivery_date", "received",
+                                      "receipt_date", "write_off_date", "price_request") else "w")
+        sb = ttk.Scrollbar(bf, orient=tk.VERTICAL, command=self.tree_batches.yview)
+        self.tree_batches.configure(yscroll=sb.set)
+        self.tree_batches.pack(side=tk.LEFT, fill="both", expand=True)
+        sb.pack(side=tk.RIGHT, fill="y")
         self.tree_batches.bind("<<TreeviewSelect>>", self.on_select_batch)
         self.tree_batches.bind("<Button-1>", self.on_batch_click)
 
-        bf = ttk.LabelFrame(self, text="Заголовок заказа", padding=8)
-        bf.pack(fill=tk.X, padx=10, pady=5)
+        # === Заголовок заказа ===
+        hf = ttk.LabelFrame(self, text="Заголовок заказа", padding=8)
+        hf.pack(fill="x", padx=8, pady=4)
+        ttk.Label(hf, text="Дата заказа:").grid(row=0, column=0, sticky="w")
+        self.entry_batch_date = ttk.Entry(hf, width=12)
+        self.entry_batch_date.grid(row=0, column=1, padx=5)
+        ttk.Button(hf, text="📅", width=3, command=self.select_order_date).grid(row=0, column=2)
+        ttk.Label(hf, text="Проект:").grid(row=0, column=3, sticky="w", padx=(12, 0))
+        self.entry_batch_project = ttk.Entry(hf, width=18)
+        self.entry_batch_project.grid(row=0, column=4, padx=5)
+        ttk.Label(hf, text="Дата оплаты:").grid(row=0, column=5, sticky="w", padx=(12, 0))
+        self.entry_batch_payment = ttk.Entry(hf, width=12)
+        self.entry_batch_payment.grid(row=0, column=6, padx=5)
+        ttk.Button(hf, text="📅", width=3, command=self.select_payment_date).grid(row=0, column=7)
+        ttk.Label(hf, text="Номер инвойса:").grid(row=0, column=8, sticky="w", padx=(12, 0))
+        self.entry_invoice_number = ttk.Entry(hf, width=16)
+        self.entry_invoice_number.grid(row=0, column=9, padx=5)
+        ttk.Label(hf, text="Поставщик:").grid(row=0, column=10, sticky="w", padx=(12, 0))
+        self.combo_batch_supplier = ttk.Combobox(hf, width=22)
+        self.combo_batch_supplier.grid(row=0, column=11, padx=5)
+        ttk.Label(hf, text="Номер поставки:").grid(row=0, column=12, sticky="w", padx=(12, 0))
+        self.entry_delivery_number = ttk.Entry(hf, width=14)
+        self.entry_delivery_number.grid(row=0, column=13, padx=5)
 
-        ttk.Label(bf, text="Дата заказа:").grid(row=0, column=0, sticky="w", padx=(0, 2))
-        self.entry_batch_date = ttk.Entry(bf, width=10)
-        self.entry_batch_date.grid(row=0, column=1, sticky="w", padx=(0, 5))
-        self.btn_cal_order = ttk.Button(bf, text="📅", width=3, command=self.select_order_date)
-        self.btn_cal_order.grid(row=0, column=2, padx=(0, 5))
-
-        ttk.Label(bf, text="Проект:").grid(row=0, column=3, sticky="w", padx=(0, 2))
-        self.entry_batch_project = ttk.Entry(bf, width=15)
-        self.entry_batch_project.grid(row=0, column=4, sticky="w", padx=(0, 5))
-
-        ttk.Label(bf, text="Дата оплаты:").grid(row=0, column=5, sticky="w", padx=(0, 2))
-        self.entry_batch_payment = ttk.Entry(bf, width=10)
-        self.entry_batch_payment.grid(row=0, column=6, sticky="w", padx=(0, 5))
-        self.btn_cal_payment = ttk.Button(bf, text="📅", width=3, command=self.select_payment_date)
-        self.btn_cal_payment.grid(row=0, column=7, padx=(0, 5))
-
-        ttk.Label(bf, text="Номер инвойса:").grid(row=0, column=8, sticky="w", padx=(0, 2))
-        self.entry_invoice_number = ttk.Entry(bf, width=15)
-        self.entry_invoice_number.grid(row=0, column=9, sticky="w", padx=(0, 5))
-
-        ttk.Label(bf, text="Поставщик:").grid(row=0, column=10, sticky="w", padx=(0, 2))
-        self.combo_batch_supplier = ttk.Combobox(bf, width=18)
-        self.combo_batch_supplier.grid(row=0, column=11, sticky="w", padx=(0, 5))
-        self.load_suppliers()
-
-        ttk.Label(bf, text="Номер поставки:").grid(row=0, column=12, sticky="w", padx=(0, 2))
-        self.entry_delivery_number = ttk.Entry(bf, width=15)
-        self.entry_delivery_number.grid(row=0, column=13, sticky="w", padx=(0, 5))
-
-        ttk.Label(bf, text="Производитель:").grid(row=1, column=0, sticky="w", padx=(0, 2))
-        self.combo_batch_manufacturer = ttk.Combobox(bf, width=20)
-        self.combo_batch_manufacturer.grid(row=1, column=1, sticky="w", padx=(0, 5))
-
-        ttk.Label(bf, text="Подпроект:").grid(row=1, column=2, sticky="w", padx=(0, 2))
-        self.combo_batch_subproject = ttk.Combobox(bf, width=20)
-        self.combo_batch_subproject.grid(row=1, column=3, sticky="w", padx=(0, 5))
-
-        ttk.Label(bf, text="КД:").grid(row=1, column=4, sticky="w", padx=(0, 2))
-        self.combo_batch_kd = ttk.Combobox(bf, width=20)
-        self.combo_batch_kd.grid(row=1, column=5, sticky="w", padx=(0, 5))
-
-        ttk.Label(bf, text="Доставка:").grid(row=1, column=6, sticky="w", padx=(0, 2))
-        self.entry_delivery_days = ttk.Entry(bf, width=8)
-        self.entry_delivery_days.grid(row=1, column=7, sticky="w", padx=(0, 5))
-
-        ttk.Label(bf, text="Ед.:").grid(row=1, column=8, sticky="w", padx=(0, 2))
-        self.combo_delivery_unit = ttk.Combobox(bf, values=TIME_UNITS, state="readonly", width=12)
-        self.combo_delivery_unit.grid(row=1, column=9, sticky="w", padx=(0, 5))
-
+        ttk.Label(hf, text="Производитель:").grid(row=1, column=0, sticky="w", pady=4)
+        self.combo_batch_manufacturer = ttk.Combobox(hf, width=16)
+        self.combo_batch_manufacturer.grid(row=1, column=1, padx=5, pady=4)
+        ttk.Label(hf, text="Подпроект:").grid(row=1, column=3, sticky="w", pady=4)
+        self.combo_batch_subproject = ttk.Combobox(hf, width=16)
+        self.combo_batch_subproject.grid(row=1, column=4, padx=5, pady=4)
+        ttk.Label(hf, text="КД:").grid(row=1, column=5, sticky="w", pady=4)
+        self.combo_batch_kd = ttk.Combobox(hf, width=10)
+        self.combo_batch_kd.grid(row=1, column=6, padx=5, pady=4)
+        ttk.Label(hf, text="Доставка:").grid(row=1, column=8, sticky="w", pady=4)
+        self.entry_delivery_days = ttk.Entry(hf, width=6)
+        self.entry_delivery_days.grid(row=1, column=9, padx=5, pady=4)
+        ttk.Label(hf, text="Ед.:").grid(row=1, column=10, sticky="w", pady=4)
+        self.combo_delivery_unit = ttk.Combobox(hf, values=TIME_UNITS, state="readonly", width=16)
+        self.combo_delivery_unit.grid(row=1, column=11, padx=5, pady=4)
         self.received_var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(bf, text="Получено", variable=self.received_var,
-                        command=self.on_received_change).grid(row=1, column=10, sticky="w", padx=(0, 5))
+        ttk.Checkbutton(hf, text="Получено", variable=self.received_var,
+                        command=self.on_received_change).grid(row=1, column=12, sticky="w", pady=4)
+        ttk.Label(hf, text="Дата получения:").grid(row=1, column=13, sticky="w", pady=4)
+        self.entry_receipt_date = ttk.Entry(hf, width=12)
+        self.entry_receipt_date.grid(row=1, column=14, padx=5, pady=4)
+        ttk.Button(hf, text="📅", width=3, command=self.select_receipt_date).grid(row=1, column=15, pady=4)
 
-        ttk.Label(bf, text="Дата получения:").grid(row=1, column=11, sticky="w", padx=(0, 2))
-        self.entry_receipt_date = ttk.Entry(bf, width=10)
-        self.entry_receipt_date.grid(row=1, column=12, sticky="w", padx=(0, 5))
-        self.btn_cal_receipt = ttk.Button(bf, text="📅", width=3, command=self.select_receipt_date)
-        self.btn_cal_receipt.grid(row=1, column=13, padx=(0, 5))
+        ttk.Label(hf, text="Дата списания:").grid(row=2, column=0, sticky="w", pady=4)
+        self.entry_write_off_date = ttk.Entry(hf, width=12)
+        self.entry_write_off_date.grid(row=2, column=1, padx=5, pady=4)
+        ttk.Button(hf, text="📅", width=3, command=self.select_write_off_date).grid(row=2, column=2, pady=4)
+        ttk.Label(hf, text="Статус:").grid(row=2, column=3, sticky="w", pady=4)
+        self.lbl_batch_status = ttk.Label(hf, text="", foreground="#0066cc", font=("Arial", 9, "bold"))
+        self.lbl_batch_status.grid(row=2, column=4, sticky="w", pady=4)
 
-        ttk.Label(bf, text="Дата списания:").grid(row=2, column=0, sticky="w", padx=(0, 2), pady=(8, 0))
-        self.entry_write_off_date = ttk.Entry(bf, width=10)
-        self.entry_write_off_date.grid(row=2, column=1, sticky="w", padx=(0, 5), pady=(8, 0))
-        self.btn_cal_write_off = ttk.Button(bf, text="📅", width=3, command=self.select_write_off_date)
-        self.btn_cal_write_off.grid(row=2, column=2, padx=(0, 5), pady=(8, 0))
+        # === Кнопки действий ===
+        af = ttk.Frame(self)
+        af.pack(fill="x", padx=8, pady=4)
+        ttk.Button(af, text="Импорт из файла (Excel/PDF)", command=self.import_from_file).pack(side=tk.LEFT, padx=5)
+        ttk.Label(af, text="— выберите файл коммерческого предложения",
+                  foreground="gray").pack(side=tk.LEFT)
+        ttk.Button(af, text="Рассчитать даты", command=self.calculate_delivery_dates).pack(side=tk.LEFT, padx=20)
+        ttk.Button(af, text="Статус / ETA", command=self.edit_status).pack(side=tk.LEFT, padx=5)
+        ttk.Button(af, text="Сохранить заказ", command=self.save_batch).pack(side=tk.LEFT, padx=5)
+        ttk.Button(af, text="Удалить заказ", command=self.delete_batch).pack(side=tk.LEFT, padx=5)
+        ttk.Button(af, text="Заказ в файл АНГ", command=self.export_order_to_excel).pack(side=tk.RIGHT, padx=5)
 
-        import_frame = ttk.Frame(self)
-        import_frame.pack(fill=tk.X, padx=10, pady=5)
-        ttk.Button(import_frame, text="Импорт из файла (Excel/PDF)", command=self.import_from_file).pack(side=tk.LEFT, padx=5)
-        ttk.Label(import_frame, text="— выберите файл коммерческого предложения").pack(side=tk.LEFT, padx=10)
-        ttk.Separator(import_frame, orient=tk.VERTICAL).pack(side=tk.LEFT, fill=tk.Y, padx=10)
-        ttk.Button(import_frame, text="Рассчитать даты", command=self.calculate_delivery_dates).pack(side=tk.LEFT, padx=5)
-        ttk.Button(import_frame, text="Статус / ETA", command=self.edit_status).pack(side=tk.LEFT, padx=5)
-        ttk.Button(import_frame, text="Сохранить заказ", command=self.save_batch).pack(side=tk.LEFT, padx=5)
-        ttk.Button(import_frame, text="Удалить заказ", command=self.delete_batch).pack(side=tk.LEFT, padx=5)
-        ttk.Button(import_frame, text="Заказ в файл АНГ", command=self.export_order_to_excel).pack(side=tk.RIGHT, padx=5)
-
-        bot_frame = ttk.LabelFrame(self, text="Позиции заказа", padding=8)
-        bot_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
-        cols_i = ("id", "article", "name", "quantity", "delivery_term", "delivery_unit", "price", "currency", "note")
-        self.tree_items = ttk.Treeview(bot_frame, columns=cols_i, show="headings", height=10)
-        for col, title, width, anc in [
-            ("id", "ID", 50, "center"), ("article", "Артикул", 130, "w"),
-            ("name", "Наименование", 250, "w"), ("quantity", "Кол-во", 60, "center"),
-            ("delivery_term", "Срок поставки", 80, "center"),
-            ("delivery_unit", "Единица", 110, "w"), ("price", "Цена", 80, "e"),
-            ("currency", "Валюта", 70, "center"), ("note", "Примечание", 150, "w")
-        ]:
-            self.tree_items.heading(col, text=title)
-            self.tree_items.column(col, width=width, anchor=anc)
-
-        sb_i = ttk.Scrollbar(bot_frame, orient=tk.VERTICAL, command=self.tree_items.yview)
-        self.tree_items.configure(yscroll=sb_i.set)
-        self.tree_items.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        sb_i.pack(side=tk.RIGHT, fill=tk.Y)
+        # === Позиции заказа ===
+        pf = ttk.LabelFrame(self, text="Позиции заказа", padding=6)
+        pf.pack(fill="both", expand=True, padx=8, pady=4)
+        cols_i = ("id", "article", "name", "quantity", "delivery_term",
+                  "delivery_unit", "price", "currency", "note")
+        self.tree_items = ttk.Treeview(pf, columns=cols_i, show="headings", height=10)
+        heads_i = {"id": ("ID", 60), "article": ("Артикул", 160), "name": ("Наименование", 320),
+                   "quantity": ("Кол-во", 70), "delivery_term": ("Срок поставки", 90),
+                   "delivery_unit": ("Единица", 100), "price": ("Цена", 90),
+                   "currency": ("Валюта", 70), "note": ("Примечание", 200)}
+        for c in cols_i:
+            t, w = heads_i[c]
+            self.tree_items.heading(c, text=t)
+            self.tree_items.column(c, width=w, anchor="center" if c in
+                                   ("id", "quantity", "delivery_term", "price", "currency") else "w")
+        si = ttk.Scrollbar(pf, orient=tk.VERTICAL, command=self.tree_items.yview)
+        self.tree_items.configure(yscroll=si.set)
+        self.tree_items.pack(side=tk.LEFT, fill="both", expand=True)
+        si.pack(side=tk.RIGHT, fill="y")
         self.tree_items.bind("<<TreeviewSelect>>", self.on_select_item)
         self.tree_items.bind("<Double-1>", lambda e: self.edit_item())
 
-        itf = ttk.LabelFrame(self, text="Позиция", padding=8)
-        itf.pack(fill=tk.X, padx=10, pady=(5, 10))
+        # === Форма позиции ===
+        itf = ttk.LabelFrame(self, text="Позиция", padding=6)
+        itf.pack(fill="x", padx=8, pady=4)
         ttk.Label(itf, text="Артикул:").grid(row=0, column=0, sticky="w", padx=(0, 5))
-        self.entry_item_article = ttk.Entry(itf, width=20)
+        self.entry_item_article = ttk.Entry(itf, width=30)
         self.entry_item_article.grid(row=0, column=1, sticky="ew", padx=(0, 15))
         ttk.Label(itf, text="Наименование:").grid(row=0, column=2, sticky="w", padx=(0, 5))
-        self.entry_item_name = ttk.Entry(itf, width=30)
+        self.entry_item_name = ttk.Entry(itf, width=40)
         self.entry_item_name.grid(row=0, column=3, sticky="ew", padx=(0, 15))
         ttk.Label(itf, text="Кол-во:").grid(row=0, column=4, sticky="w", padx=(0, 5))
         self.entry_item_quantity = ttk.Entry(itf, width=10)
         self.entry_item_quantity.grid(row=0, column=5, sticky="w", padx=(0, 15))
         ttk.Label(itf, text="Срок:").grid(row=1, column=0, sticky="w", padx=(0, 5), pady=(8, 0))
         self.entry_item_delivery_term = ttk.Entry(itf, width=10)
-        self.entry_item_delivery_term.grid(row=1, column=1, sticky="w", padx=(0, 15), pady=(8, 0))
+        self.entry_item_delivery_term.grid(row=1, column=1, sticky="w", pady=(8, 0))
         ttk.Label(itf, text="Единица:").grid(row=1, column=2, sticky="w", padx=(0, 5), pady=(8, 0))
-        self.combo_item_delivery_unit = ttk.Combobox(itf, values=TIME_UNITS, state="readonly", width=16)
-        self.combo_item_delivery_unit.grid(row=1, column=3, sticky="w", padx=(0, 15), pady=(8, 0))
+        self.combo_item_delivery_unit = ttk.Combobox(itf, values=TIME_UNITS, state="readonly", width=18)
+        self.combo_item_delivery_unit.grid(row=1, column=3, sticky="w", pady=(8, 0))
         ttk.Label(itf, text="Цена:").grid(row=1, column=4, sticky="w", padx=(0, 5), pady=(8, 0))
         self.entry_item_price = ttk.Entry(itf, width=12)
-        self.entry_item_price.grid(row=1, column=5, sticky="w", padx=(0, 15), pady=(8, 0))
+        self.entry_item_price.grid(row=1, column=5, sticky="w", pady=(8, 0))
         ttk.Label(itf, text="Валюта:").grid(row=1, column=6, sticky="w", padx=(0, 5), pady=(8, 0))
         self.combo_item_currency = ttk.Combobox(itf, values=ORDER_CURRENCIES, state="readonly", width=10)
         self.combo_item_currency.grid(row=1, column=7, sticky="w", pady=(8, 0))
@@ -354,33 +254,38 @@ class OrderDialog(tk.Toplevel):
             self._bind_ids.append((seq, bid))
         self._original_destroy = self.destroy
         self.destroy = self._safe_destroy
-        
-    def edit_status(self):
-        if self.current_batch_id is None:
-            messagebox.showwarning("Внимание", "Выберите заказ!")
-            return
-        from dialogs.order_status_dialog import OrderStatusDialog
-        OrderStatusDialog(self, self.db_manager, self._batch_of(self.current_batch_id)
-                          if hasattr(self, "_batch_of") else self.current_batch_id)
-        self.load_batches()
+        self._safe_grab()
+
+    def _safe_grab(self, attempts=10):
+        try:
+            if self.winfo_exists() and self.winfo_viewable():
+                self.grab_set()
+            elif attempts > 0:
+                self.after(50, lambda a=attempts - 1: self._safe_grab(a))
+        except tk.TclError:
+            if attempts > 0:
+                self.after(50, lambda a=attempts - 1: self._safe_grab(a))
 
     def _safe_destroy(self):
         for seq, bid in self._bind_ids:
             try:
                 self.unbind_all(seq)
-            except:
+            except Exception:
                 pass
         self._original_destroy()
 
     def _batch_of(self, display):
-        """НОВОЕ: реальный order_batch_id по отображаемому номеру (Z1 / 53)."""
+        """Реальный order_batch_id по отображаемому номеру (Z1 / 53)."""
         return self._display2batch.get(str(display), display)
 
+    # ------------------------------------------------------------------
+    # Буфер обмена (русская раскладка)
+    # ------------------------------------------------------------------
     def _handle_clipboard(self, event):
         widget = event.widget
         try:
             toplevel = widget.winfo_toplevel()
-        except:
+        except Exception:
             return None
         if toplevel != self:
             return None
@@ -401,9 +306,9 @@ class OrderDialog(tk.Toplevel):
                     text = widget.selection_get()
                     self.clipboard_clear()
                     self.clipboard_append(text)
-                except:
+                except Exception:
                     pass
-        except:
+        except Exception:
             pass
         return "break"
 
@@ -417,12 +322,12 @@ class OrderDialog(tk.Toplevel):
                         start = widget.index(tk.SEL_FIRST)
                         end = widget.index(tk.SEL_LAST)
                         widget.delete(start, end)
-                    except:
+                    except Exception:
                         pass
                     widget.insert(tk.INSERT, clipboard_data)
-                except:
+                except Exception:
                     pass
-        except:
+        except Exception:
             pass
         return "break"
 
@@ -435,25 +340,27 @@ class OrderDialog(tk.Toplevel):
                     self.clipboard_clear()
                     self.clipboard_append(text)
                     widget.delete(tk.SEL_FIRST, tk.SEL_LAST)
-                except:
+                except Exception:
                     pass
-        except:
+        except Exception:
             pass
         return "break"
 
+    # ------------------------------------------------------------------
+    # Справочники и фильтры
+    # ------------------------------------------------------------------
     def load_manufacturers_filter(self):
         c = self.db_manager.conn.cursor()
-        c.execute("SELECT DISTINCT manufacturer FROM orders WHERE manufacturer IS NOT NULL AND manufacturer != '' ORDER BY manufacturer")
-        manufacturers = [row[0] for row in c.fetchall()]
-        self.combo_filter_manufacturer['values'] = [''] + manufacturers
+        c.execute("SELECT DISTINCT manufacturer FROM orders WHERE manufacturer IS NOT NULL "
+                  "AND manufacturer != '' ORDER BY manufacturer")
+        self.combo_filter_manufacturer['values'] = [''] + [row[0] for row in c.fetchall()]
 
     def load_suppliers(self):
         if not hasattr(self, 'combo_batch_supplier'):
             return
         c = self.db_manager.conn.cursor()
         c.execute("SELECT DISTINCT name FROM suppliers ORDER BY name")
-        suppliers = [row[0] for row in c.fetchall()]
-        self.combo_batch_supplier['values'] = suppliers
+        self.combo_batch_supplier['values'] = [row[0] for row in c.fetchall()]
 
     def open_suppliers(self):
         dialog = SupplierDialog(self, self.db_manager)
@@ -473,10 +380,11 @@ class OrderDialog(tk.Toplevel):
             return
         c = self.db_manager.conn.cursor()
         c.execute("SELECT DISTINCT name FROM manufacturers ORDER BY name")
-        manufacturers = [row[0] for row in c.fetchall()]
-        self.combo_batch_manufacturer['values'] = manufacturers
+        self.combo_batch_manufacturer['values'] = [row[0] for row in c.fetchall()]
         self.load_subprojects_for_combo()
         self.load_kd_for_combo()
+        self.load_suppliers()
+        self.load_manufacturers_filter()
 
     def load_subprojects_for_combo(self):
         if not hasattr(self, 'combo_batch_subproject'):
@@ -484,12 +392,11 @@ class OrderDialog(tk.Toplevel):
         c = self.db_manager.conn.cursor()
         if self.project_name:
             c.execute('''SELECT DISTINCT name FROM subprojects
-                        WHERE (project_name=? OR project_name='' OR project_name IS NULL)
-                        ORDER BY name''', (self.project_name,))
+                         WHERE (project_name=? OR project_name='' OR project_name IS NULL)
+                         ORDER BY name''', (self.project_name,))
         else:
-            c.execute("SELECT DISTINCT name FROM subprojects ORDER BY name")
-        subprojects = [row[0] for row in c.fetchall()]
-        self.combo_batch_subproject['values'] = subprojects
+            c.execute("SELECT * FROM subprojects ORDER BY name")
+        self.combo_batch_subproject['values'] = [row[0] for row in c.fetchall()]
 
     def load_kd_for_combo(self):
         if not hasattr(self, 'combo_batch_kd'):
@@ -497,13 +404,15 @@ class OrderDialog(tk.Toplevel):
         c = self.db_manager.conn.cursor()
         if self.project_name:
             c.execute('''SELECT DISTINCT kd_number FROM kd_directory
-                        WHERE (project_name=? OR project_name='' OR project_name IS NULL)
-                        ORDER BY kd_number''', (self.project_name,))
+                         WHERE (project_name=? OR project_name='' OR project_name IS NULL)
+                         ORDER BY kd_number''', (self.project_name,))
         else:
-            c.execute("SELECT DISTINCT kd_number FROM kd_directory ORDER BY kd_number")
-        kd_list = [row[0] for row in c.fetchall()]
-        self.combo_batch_kd['values'] = kd_list
+            c.execute("SELECT * FROM kd_directory ORDER BY kd_number")
+        self.combo_batch_kd['values'] = [row[0] for row in c.fetchall()]
 
+    # ------------------------------------------------------------------
+    # Календари
+    # ------------------------------------------------------------------
     def select_order_date(self):
         current = self.entry_batch_date.get()
         dialog = CalendarDialog(self, current if current else None)
@@ -569,6 +478,31 @@ class OrderDialog(tk.Toplevel):
         except tk.TclError:
             pass
 
+    # ------------------------------------------------------------------
+    # Статус заказа (НОВОЕ)
+    # ------------------------------------------------------------------
+    def edit_status(self):
+        if self.current_batch_id is None:
+            messagebox.showwarning("Внимание", "Выберите заказ!")
+            return
+        try:
+            from dialogs.order_status_dialog import OrderStatusDialog
+        except ImportError:
+            messagebox.showerror("Ошибка", "dialogs/order_status_dialog.py не найден")
+            return
+        OrderStatusDialog(self, self.db_manager, self.current_batch_id)
+        self.load_batches()
+        for item in self.tree_batches.get_children():
+            v = self.tree_batches.item(item)['values']
+            if self._batch_of(v[0]) == self.current_batch_id:
+                self.tree_batches.selection_set(item)
+                self.tree_batches.see(item)
+                self._load_batch_to_form(v)
+                break
+
+    # ------------------------------------------------------------------
+    # Форма заказа
+    # ------------------------------------------------------------------
     def _load_batch_to_form(self, values):
         if not values or len(values) < 17:
             return
@@ -594,6 +528,10 @@ class OrderDialog(tk.Toplevel):
         self.entry_receipt_date.insert(0, values[15] if len(values) > 15 else "")
         self.entry_write_off_date.delete(0, tk.END)
         self.entry_write_off_date.insert(0, values[16] if len(values) > 16 else "")
+        try:
+            self.lbl_batch_status.config(text=values[18] if len(values) > 18 else "")
+        except Exception:
+            pass
 
     def calculate_delivery_dates(self):
         self._set_topmost(True)
@@ -609,12 +547,12 @@ class OrderDialog(tk.Toplevel):
                 return
             try:
                 payment_date = datetime.strptime(payment_date_str, "%d.%m.%Y")
-            except:
+            except ValueError:
                 messagebox.showerror("Ошибка", "Неверный формат даты оплаты!", parent=self)
                 return
             try:
                 delivery_days = int(self.entry_delivery_days.get())
-            except:
+            except ValueError:
                 messagebox.showerror("Ошибка", "Неверное количество дней доставки!", parent=self)
                 return
             delivery_unit = self.combo_delivery_unit.get()
@@ -634,7 +572,8 @@ class OrderDialog(tk.Toplevel):
                 delivery_date = add_months(payment_date, delivery_days)
                 delivery_days_total = (delivery_date - payment_date).days
             elif delivery_unit == "Рабочие дни":
-                delivery_date = add_working_days_with_holidays(payment_date, delivery_days, self.russian_holidays)
+                delivery_date = add_working_days_with_holidays(payment_date, delivery_days,
+                                                               self.russian_holidays)
                 delivery_days_total = (delivery_date - payment_date).days
             else:
                 delivery_days_total = delivery_days
@@ -653,7 +592,8 @@ class OrderDialog(tk.Toplevel):
                     supply_date = add_months(payment_date, item_days)
                     days_in_days = (supply_date - payment_date).days
                 elif item_unit == "Рабочие дни":
-                    supply_date = add_working_days_with_holidays(payment_date, item_days, self.russian_holidays)
+                    supply_date = add_working_days_with_holidays(payment_date, item_days,
+                                                                 self.russian_holidays)
                     days_in_days = (supply_date - payment_date).days
                 else:
                     days_in_days = item_days
@@ -709,6 +649,9 @@ class OrderDialog(tk.Toplevel):
         finally:
             self._set_topmost(False)
 
+    # ------------------------------------------------------------------
+    # Таблица заказов
+    # ------------------------------------------------------------------
     def load_batches(self):
         for item in self.tree_batches.get_children():
             self.tree_batches.delete(item)
@@ -765,9 +708,9 @@ class OrderDialog(tk.Toplevel):
             received_mark = "✓" if r['received'] else ""
             pr = r['price_request'] or 0
             prn = r['price_request_num'] or 0
-            # НОВОЕ: заказы-запросы цены нумеруются отдельно: Z1, Z2, ...
             disp = f"Z{prn}" if (pr and prn) else str(r['order_batch_id'])
             self._display2batch[disp] = r['order_batch_id']
+            status = r['status'] or ""
             values = (
                 disp, r['manufacturer'] or "",
                 r['subproject'] or "", r['kd'] or "",
@@ -778,23 +721,31 @@ class OrderDialog(tk.Toplevel):
                 r['invoice_number'] or "", r['supplier'] or "",
                 r['delivery_number'] or "",
                 received_mark, r['receipt_date'] or "", r['write_off_date'] or "",
-                r['status'] or "",        
-                "✓" if pr else ""
+                "✓" if pr else "", status
             )
             item_id = self.tree_batches.insert("", tk.END, values=values)
+            tags = []
+            if status in ("Получен", "Списан"):
+                tags.append('st_done')
+            elif status in ("Подтверждён", "Оплачен", "Отгружен"):
+                tags.append('st_active')
             if r['min_delivery_date'] and r['max_delivery_date']:
                 try:
                     min_date = datetime.strptime(r['min_delivery_date'], "%d.%m.%Y").date()
                     max_date = datetime.strptime(r['max_delivery_date'], "%d.%m.%Y").date()
                     if today < min_date and (min_date - today).days <= 7:
-                        self.tree_batches.item(item_id, tags=('warning',))
-                    elif today > max_date:
-                        self.tree_batches.item(item_id, tags=('overdue',))
-                except:
+                        tags.append('warning')
+                    elif today > max_date and not received_mark:
+                        tags.append('overdue')
+                except ValueError:
                     pass
+            if tags:
+                self.tree_batches.item(item_id, tags=tuple(tags))
 
         self.tree_batches.tag_configure('warning', background='lightgreen')
         self.tree_batches.tag_configure('overdue', background='lightcoral')
+        self.tree_batches.tag_configure('st_done', background='#d9ead3')
+        self.tree_batches.tag_configure('st_active', background='#d0e0f0')
         self.current_batch_id = None
         self.current_item_id = None
         self.clear_batch_form()
@@ -853,6 +804,10 @@ class OrderDialog(tk.Toplevel):
         self.combo_batch_kd.set('')
         self.combo_batch_supplier.set('')
         self.received_var.set(False)
+        try:
+            self.lbl_batch_status.config(text="")
+        except Exception:
+            pass
 
     def clear_items(self):
         for item in self.tree_items.get_children():
@@ -910,6 +865,9 @@ class OrderDialog(tk.Toplevel):
                 self._load_batch_to_form(v)
                 break
 
+    # ------------------------------------------------------------------
+    # Позиции
+    # ------------------------------------------------------------------
     def on_select_item(self, event):
         selected = self.tree_items.selection()
         if not selected:
@@ -950,7 +908,8 @@ class OrderDialog(tk.Toplevel):
                 self.db_manager.update_order_item(item_id, dialog.result)
                 self.load_items(self.current_batch_id)
                 if hasattr(self.parent, 'log_action'):
-                    self.parent.log_action(f"Позиция #{item_id} отредактирована: {dialog.result.get('article', '')}")
+                    self.parent.log_action(
+                        f"Позиция #{item_id} отредактирована: {dialog.result.get('article', '')}")
             except Exception as e:
                 messagebox.showerror("Ошибка", f"Не удалось сохранить изменения:\n{e}")
                 traceback.print_exc()
@@ -1010,7 +969,7 @@ class OrderDialog(tk.Toplevel):
         try:
             quantity = int(self.entry_item_quantity.get()) if self.entry_item_quantity.get() else 0
             delivery_term = int(self.entry_item_delivery_term.get()) if self.entry_item_delivery_term.get() else 0
-        except:
+        except ValueError:
             messagebox.showwarning("Ошибка", "Некорректное число!")
             return
         update_data = {
@@ -1039,9 +998,15 @@ class OrderDialog(tk.Toplevel):
             else:
                 self.load_items(self.current_batch_id)
 
+    # ------------------------------------------------------------------
+    # Импорт / экспорт
+    # ------------------------------------------------------------------
     def import_from_file(self):
         if self.current_batch_id is None:
             messagebox.showwarning("Внимание", "Сначала выберите заказ!")
+            return
+        if parse_file_to_rows_with_text is None or FileImportMatchDialog is None:
+            messagebox.showerror("Ошибка", "Модули импорта КП не найдены")
             return
         filepath = filedialog.askopenfilename(
             title="Выберите файл коммерческого предложения",
@@ -1071,7 +1036,7 @@ class OrderDialog(tk.Toplevel):
 
     @staticmethod
     def _sanitize_filename(s):
-        bad = '\\/:*?"<>|\r\n\t'
+        bad = '/:*?"<>|\r\n\t'
         out = []
         for ch in str(s):
             out.append('_' if ch in bad else ch)
@@ -1167,10 +1132,10 @@ class OrderDialog(tk.Toplevel):
         except Exception as e:
             error_msg = f"Не удалось создать файл.\nПричина: {e}"
             full_traceback = traceback.format_exc()
-            print("\n" + "="*50)
+            print("\n" + "=" * 50)
             print("ПОЛНАЯ ОШИБКА ЭКСПОРТА EXCEL:")
             print(full_traceback)
-            print("="*50 + "\n")
+            print("=" * 50 + "\n")
             if hasattr(self.parent, 'log_action'):
                 self.parent.log_action(f"Ошибка экспорта Excel: {e}")
             messagebox.showerror("Ошибка", error_msg + "\n\nПодробности смотрите в терминале.")
