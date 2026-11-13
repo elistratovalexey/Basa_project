@@ -12,7 +12,8 @@ from config import (
 )
 from utils import open_path
 from database import DatabaseManager
-from tabs import FinancesTab, SpecificationTab, PurchasesTab, PurchaseSpecTab, DeadlinesTab
+from tabs import (FinancesTab, SpecificationTab, PurchasesTab, PurchaseSpecTab,
+                  DeadlinesTab, DashboardTab, BudgetTab)\
 from settings_dialog import SettingsDialog
 from dialogs.window_geometry import restore_geometry, track_geometry
 import terminal_log
@@ -81,6 +82,12 @@ class ProjectManagerApp:
         if self.combo_projects["values"]:
             self.combo_projects.set(self.combo_projects["values"][0])
             self.on_project_select()
+            
+        try:
+            from reminders import start_reminders
+            start_reminders(self, interval_min=60)
+        except Exception as e:
+            print(f"Напоминания не запущены: {e}")
 
     def _open_database(self, db_path):
         path = setup_paths(db_path)
@@ -279,6 +286,11 @@ class ProjectManagerApp:
         self.notebook = ttk.Notebook(self.root)
         self.notebook.pack(fill="both", expand=True, padx=10, pady=5)
 
+        # --- v1.9: Дашборд (первая вкладка) ---
+        frame_dash = ttk.Frame(self.notebook)
+        self.notebook.add(frame_dash, text="Сегодня")
+        self.dashboard_tab = DashboardTab(self, frame_dash)
+
         tab_finances = ttk.Frame(self.notebook, padding=10)
         self.notebook.add(tab_finances, text="  Финансы  ")
         self.finances_tab = FinancesTab(self, tab_finances)
@@ -298,6 +310,11 @@ class ProjectManagerApp:
         tab_deadlines = ttk.Frame(self.notebook, padding=10)
         self.notebook.add(tab_deadlines, text="  Сроки  ")
         self.deadlines_tab = DeadlinesTab(self, tab_deadlines)
+
+        # --- v1.9: Бюджет (после «Сроки») ---
+        frame_budget = ttk.Frame(self.notebook)
+        self.notebook.add(frame_budget, text="Бюджет")
+        self.budget_tab = BudgetTab(self, frame_budget)        
 
         for cls in ("TEntry", "Entry", "TCombobox"):
             for seq in ("<Control-v>", "<Control-V>"):
@@ -505,6 +522,10 @@ class ProjectManagerApp:
         self.finances_tab.load_payments()
         self.specification_tab.load_specifications()
         self.purchases_tab.load_purchases()
+        if hasattr(self, "dashboard_tab"):
+            self.dashboard_tab.refresh()
+        if hasattr(self, "budget_tab"):
+            self.budget_tab.load_budget()
         self.entry_del_term.delete(0, tk.END)
         self.entry_del_term.insert(0, data.get("del_term", "") or "")
         self.combo_del_unit.set(data.get("del_unit", "") or "Календарные дни")

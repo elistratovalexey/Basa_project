@@ -155,7 +155,7 @@ class OrderDialog(tk.Toplevel):
         cols_b = ("batch_id", "manufacturer", "subproject", "kd", "order_date", "project_name",
                   "payment_date", "delivery_days", "delivery_unit_order", "min_delivery_date", "max_delivery_date",
                   "invoice_number", "supplier", "delivery_number", "received", "receipt_date",
-                  "write_off_date", "price_request")
+                  "write_off_date", "price_request","status")
         self.tree_batches = ttk.Treeview(top_frame, columns=cols_b, show="headings", height=6)
         self.tree_batches.heading("batch_id", text="№ заказа", command=lambda: self.sort_by_column("batch_id"))
         self.tree_batches.heading("manufacturer", text="Производитель")
@@ -194,6 +194,8 @@ class OrderDialog(tk.Toplevel):
         self.tree_batches.column("receipt_date", width=100, anchor="center")
         self.tree_batches.column("write_off_date", width=90, anchor="center", stretch=False)
         self.tree_batches.column("price_request", width=80, anchor="center")
+        self.tree_batches.heading("status", text="Статус")
+        self.tree_batches.column("status", width=110, anchor="w")       
 
         sb_b = ttk.Scrollbar(top_frame, orient=tk.VERTICAL, command=self.tree_batches.yview)
         sb_bx = ttk.Scrollbar(top_frame, orient=tk.HORIZONTAL, command=self.tree_batches.xview)
@@ -278,6 +280,7 @@ class OrderDialog(tk.Toplevel):
         ttk.Label(import_frame, text="— выберите файл коммерческого предложения").pack(side=tk.LEFT, padx=10)
         ttk.Separator(import_frame, orient=tk.VERTICAL).pack(side=tk.LEFT, fill=tk.Y, padx=10)
         ttk.Button(import_frame, text="Рассчитать даты", command=self.calculate_delivery_dates).pack(side=tk.LEFT, padx=5)
+        ttk.Button(import_frame, text="Статус / ETA", command=self.edit_status).pack(side=tk.LEFT, padx=5)
         ttk.Button(import_frame, text="Сохранить заказ", command=self.save_batch).pack(side=tk.LEFT, padx=5)
         ttk.Button(import_frame, text="Удалить заказ", command=self.delete_batch).pack(side=tk.LEFT, padx=5)
         ttk.Button(import_frame, text="Заказ в файл АНГ", command=self.export_order_to_excel).pack(side=tk.RIGHT, padx=5)
@@ -351,6 +354,15 @@ class OrderDialog(tk.Toplevel):
             self._bind_ids.append((seq, bid))
         self._original_destroy = self.destroy
         self.destroy = self._safe_destroy
+        
+    def edit_status(self):
+        if self.current_batch_id is None:
+            messagebox.showwarning("Внимание", "Выберите заказ!")
+            return
+        from dialogs.order_status_dialog import OrderStatusDialog
+        OrderStatusDialog(self, self.db_manager, self._batch_of(self.current_batch_id)
+                          if hasattr(self, "_batch_of") else self.current_batch_id)
+        self.load_batches()
 
     def _safe_destroy(self):
         for seq, bid in self._bind_ids:
@@ -728,7 +740,8 @@ class OrderDialog(tk.Toplevel):
             (SELECT receipt_date FROM orders WHERE order_batch_id = o.order_batch_id LIMIT 1) as receipt_date,
             (SELECT write_off_date FROM orders WHERE order_batch_id = o.order_batch_id LIMIT 1) as write_off_date,
             (SELECT price_request FROM orders WHERE order_batch_id = o.order_batch_id LIMIT 1) as price_request,
-            (SELECT price_request_num FROM orders WHERE order_batch_id = o.order_batch_id LIMIT 1) as price_request_num
+            (SELECT price_request_num FROM orders WHERE order_batch_id = o.order_batch_id LIMIT 1) as price_request_num,
+            (SELECT status FROM orders WHERE order_batch_id = o.order_batch_id LIMIT 1) as status
             FROM orders o'''
 
         where_clause = ""
@@ -765,6 +778,7 @@ class OrderDialog(tk.Toplevel):
                 r['invoice_number'] or "", r['supplier'] or "",
                 r['delivery_number'] or "",
                 received_mark, r['receipt_date'] or "", r['write_off_date'] or "",
+                r['status'] or "",        
                 "✓" if pr else ""
             )
             item_id = self.tree_batches.insert("", tk.END, values=values)

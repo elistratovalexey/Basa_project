@@ -105,12 +105,12 @@ class PurchaseDialog(tk.Toplevel):
                  db_manager=None, project_name=None):
         super().__init__(parent)
         self.title(title)
-        self.geometry("1100x380")
+        self.geometry("1100x420")
         self.resizable(False, False)
 
         try:
             from dialogs.window_geometry import restore_geometry, track_geometry
-            restore_geometry(self, "purchase_dialog", "1100x380")
+            restore_geometry(self, "purchase_dialog", "1100x420")
             track_geometry(self, "purchase_dialog")
         except Exception:
             pass
@@ -146,6 +146,8 @@ class PurchaseDialog(tk.Toplevel):
         self.entry_article = ttk.Entry(self, width=25)
         self.entry_article.grid(row=1, column=3, sticky="ew", padx=5, pady=5)
         self.entry_article.bind('<KeyRelease>', lambda e: self.on_article_change())
+        # НОВОЕ: подсказка истории цен при уходе из поля артикула
+        self.entry_article.bind('<FocusOut>', lambda e: self.update_price_hint(), add="+")
 
         ttk.Label(self, text="Наименование (рус):").grid(row=1, column=4, sticky="w", padx=10, pady=5)
         self.entry_name = ttk.Entry(self, width=40)
@@ -171,7 +173,8 @@ class PurchaseDialog(tk.Toplevel):
 
         # Строка 4: Заказано, Дата заказа, В заказ
         self.ordered_var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(self, text="Заказано", variable=self.ordered_var).grid(row=4, column=0, sticky="w", padx=10, pady=5)
+        ttk.Checkbutton(self, text="Заказано", variable=self.ordered_var).grid(
+            row=4, column=0, sticky="w", padx=10, pady=5)
         ttk.Label(self, text="Дата заказа:").grid(row=4, column=1, sticky="w", padx=10, pady=5)
         self.entry_order_date = ttk.Entry(self, width=18)
         self.entry_order_date.grid(row=4, column=2, sticky="w", padx=5, pady=5)
@@ -179,18 +182,19 @@ class PurchaseDialog(tk.Toplevel):
         self.btn_cal_order.grid(row=4, column=3, padx=5, pady=5)
 
         self.in_order_var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(self, text="В заказ", variable=self.in_order_var).grid(row=4, column=4, sticky="w", padx=10, pady=5)
+        ttk.Checkbutton(self, text="В заказ", variable=self.in_order_var).grid(
+            row=4, column=4, sticky="w", padx=10, pady=5)
 
         # Строка 5: Получено, Дата получения, Запрос цены
         self.received_var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(self, text="Получено", variable=self.received_var).grid(row=5, column=0, sticky="w", padx=10, pady=5)
+        ttk.Checkbutton(self, text="Получено", variable=self.received_var).grid(
+            row=5, column=0, sticky="w", padx=10, pady=5)
         ttk.Label(self, text="Дата получения:").grid(row=5, column=1, sticky="w", padx=10, pady=5)
         self.entry_receipt_date = ttk.Entry(self, width=18)
         self.entry_receipt_date.grid(row=5, column=2, sticky="w", padx=5, pady=5)
         self.btn_cal_receipt = ttk.Button(self, text="📅", width=3, command=self.select_receipt_date)
         self.btn_cal_receipt.grid(row=5, column=3, padx=5, pady=5)
 
-        # НОВОЕ: флаг "Запрос цены" (колонка purchases.price_request)
         self.price_request_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(self, text="Запрос цены", variable=self.price_request_var).grid(
             row=5, column=4, sticky="w", padx=10, pady=5)
@@ -224,12 +228,18 @@ class PurchaseDialog(tk.Toplevel):
         btn_frame.grid(row=6, column=0, columnspan=7, pady=15)
         ttk.Button(btn_frame, text="Сохранить", command=self.save).pack(side=tk.LEFT, padx=5)
         ttk.Button(btn_frame, text="Отмена", command=self.destroy).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_frame, text="История цен", command=self.open_price_history).pack(side=tk.LEFT, padx=5)
 
-        # НОВОЕ: безопасный grab_set — ждём отрисовки окна
+        # НОВОЕ: строка подсказки по истории цен
+        self.lbl_price_hint = ttk.Label(self, text="", foreground="#0066cc")
+        self.lbl_price_hint.grid(row=7, column=0, columnspan=7, sticky="w", padx=10, pady=(0, 8))
+        self.update_price_hint()
+
+        # Безопасный захват фокуса (лечит "grab failed: window not viewable")
         self._safe_grab()
 
     # ------------------------------------------------------------------
-    # Безопасный захват фокуса (лечит "grab failed: window not viewable")
+    # Безопасный grab
     # ------------------------------------------------------------------
     def _safe_grab(self, attempts=10):
         try:
@@ -240,6 +250,44 @@ class PurchaseDialog(tk.Toplevel):
         except tk.TclError:
             if attempts > 0:
                 self.after(50, lambda a=attempts - 1: self._safe_grab(a))
+
+    # ------------------------------------------------------------------
+    # НОВОЕ: история цен по артикулу
+    # ------------------------------------------------------------------
+    def update_price_hint(self):
+        """Показывает последнюю/минимальную цену и отклонение от прошлой закупки."""
+        if not hasattr(self, "lbl_price_hint"):
+            return
+        if not self.db_manager or not hasattr(self.db_manager, "get_price_summary"):
+            self.lbl_price_hint.config(text="")
+            return
+        art = self.entry_article.get().strip()
+        if len(art) < 3:
+            self.lbl_price_hint.config(text="")
+            return
+        try:
+            s = self.db_manager.get_price_summary(art)
+        except Exception:
+            s = None
+        if not s:
+            self.lbl_price_hint.config(text="История цен: нет данных по этому артикулу")
+            return
+        last = s["last"]
+        delta = f" · Δ {s['delta']:+.1f}% к прошлой" if s.get("delta") is not None else ""
+        text = (f"Последняя цена: {last['price']:,.2f} {last['currency']} "
+                f"({last['supplier'] or '—'}, {last['date'] or '—'}) · "
+                f"мин {s['min']:,.2f} ({s['best']['supplier'] or '—'}) · "
+                f"записей {s['count']}{delta}").replace(",", " ")
+        self.lbl_price_hint.config(text=text)
+
+    def open_price_history(self):
+        try:
+            from dialogs.price_history_dialog import PriceHistoryDialog
+        except ImportError:
+            messagebox.showinfo("История цен", "Модуль dialogs/price_history_dialog.py не установлен.")
+            return
+        PriceHistoryDialog(self, self.db_manager, self.entry_article.get().strip())
+        self.update_price_hint()
 
     # ------------------------------------------------------------------
     # Справочники
@@ -273,6 +321,7 @@ class PurchaseDialog(tk.Toplevel):
                     self.entry_name.insert(0, results[0]['name_rus'] or results[0]['name_eng'])
                     self.entry_name_eng.delete(0, tk.END)
                     self.entry_name_eng.insert(0, results[0]['name_eng'] or "")
+        self.update_price_hint()
 
     def on_name_change(self):
         if self.db_manager:
@@ -283,6 +332,7 @@ class PurchaseDialog(tk.Toplevel):
                     self.entry_article.delete(0, tk.END)
                     self.entry_article.insert(0, results[0]['article'])
                     self.combo_manufacturer.set(results[0]['manufacturer'])
+                    self.update_price_hint()
 
     # ------------------------------------------------------------------
     # Календари
@@ -323,7 +373,6 @@ class PurchaseDialog(tk.Toplevel):
             messagebox.showwarning("Внимание", "Поле 'Наименование (рус)' пустое!")
             return
 
-        # Показываем индикатор загрузки
         try:
             self.btn_translate.config(text=" Перевожу...", state="disabled")
             self.update_idletasks()
@@ -355,7 +404,7 @@ class PurchaseDialog(tk.Toplevel):
                     self.translation_cache[cache_key] = translated
                     save_translation_cache(self.translation_cache)
 
-            # ШАГ 4: НОВОЕ — резервный сервис MyMemory, если Google ответил 429
+            # ШАГ 4: резервный сервис MyMemory, если Google ответил 429
             if not translated and HAS_TRANSLATOR and MyMemoryTranslator is not None:
                 translated = self._translate_mymemory(russian_text)
                 if translated:
@@ -389,7 +438,6 @@ class PurchaseDialog(tk.Toplevel):
                 except tk.TclError:
                     pass
         finally:
-            # НОВОЕ: обновляем кнопку только если окно ещё существует
             try:
                 if self.winfo_exists() and self.btn_translate.winfo_exists():
                     self.btn_translate.config(text=" Перевести", state="normal")
@@ -401,7 +449,6 @@ class PurchaseDialog(tk.Toplevel):
         а возвращает None — вызывающий код переключится на MyMemory."""
         for attempt in range(max_retries):
             try:
-                # НОВОЕ: ждём 1.5 сек между запросами, чтобы не упереться в лимит
                 delay = 1.5 + attempt * 2
                 print(f"[GOOGLE] Попытка {attempt + 1}/{max_retries}, пауза {delay} с...")
                 time.sleep(delay)
@@ -420,8 +467,8 @@ class PurchaseDialog(tk.Toplevel):
         return None
 
     def _translate_mymemory(self, text):
-        """НОВОЕ: резервный бесплатный сервис MyMemory на случай блокировки Google.
-        ВАЖНО: MyMemory требует полные коды ru-RU / en-GB, иначе падает
+        """Резервный бесплатный сервис MyMemory.
+        ВАЖНО: требует полные коды ru-RU / en-GB, иначе падает
         с 'No support for the provided language'."""
         if MyMemoryTranslator is None:
             return None
@@ -430,7 +477,6 @@ class PurchaseDialog(tk.Toplevel):
             translator = MyMemoryTranslator(source='ru-RU', target='en-GB')
             result = translator.translate(text)
             if result:
-                # MyMemory иногда возвращает HTML-сущности — чистим
                 result = result.replace('&amp;', '&').replace('&#39;', "'")
                 return result
         except Exception as e:
@@ -438,21 +484,17 @@ class PurchaseDialog(tk.Toplevel):
         return None
 
     def _translate_local(self, text):
-        """Перевод, используя локальный словарь технических терминов"""
+        """Перевод по локальному словарю технических терминов"""
         text_lower = text.lower().strip()
-
-        # Точное совпадение всей фразы
         if text_lower in TECH_DICT:
             return TECH_DICT[text_lower]
 
-        # Попытка перевести по словам/фразам
         words = text_lower.split()
         translated_words = []
         any_translated = False
         i = 0
         while i < len(words):
             matched = False
-            # Пробуем найти совпадение из 3 слов, затем 2, затем 1
             for phrase_len in range(3, 0, -1):
                 if i + phrase_len <= len(words):
                     phrase = ' '.join(words[i:i + phrase_len])
@@ -472,7 +514,6 @@ class PurchaseDialog(tk.Toplevel):
                     translated_words.append(words[i])
                 i += 1
 
-        # Если хотя бы одно слово переведено - возвращаем результат
         if any_translated:
             return ' '.join(translated_words)
         return None
@@ -481,14 +522,12 @@ class PurchaseDialog(tk.Toplevel):
     # Сохранение
     # ------------------------------------------------------------------
     def save(self):
-        """Сохраняем данные и закрываем диалог"""
         try:
             quantity = int(self.entry_quantity.get()) if self.entry_quantity.get() else 0
         except ValueError:
             messagebox.showwarning("Ошибка", "Некорректное количество!")
             return
 
-        # Формируем результат
         self.result = {
             "number": self.entry_number.get().strip(),
             "manufacturer": self.combo_manufacturer.get().strip(),
@@ -506,6 +545,4 @@ class PurchaseDialog(tk.Toplevel):
             "in_order": 1 if self.in_order_var.get() else 0,
             "price_request": 1 if self.price_request_var.get() else 0,
         }
-
-        # Закрываем диалог
         self.destroy()

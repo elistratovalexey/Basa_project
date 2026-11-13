@@ -30,6 +30,8 @@ class PurchasesTab(BaseTab):
         # НОВОЕ: перенос выделенных позиций в другой проект
         ttk.Button(frame_controls, text="Сменить проект", command=self.change_purchase_project).pack(side=tk.LEFT, padx=5)
         ttk.Button(frame_controls, text="Создать заказ", command=self.create_order).pack(side=tk.LEFT, padx=10)
+        ttk.Button(frame_controls, text="Приёмка", command=self.open_receiving).pack(side=tk.LEFT, padx=5)
+        ttk.Button(frame_controls, text="История цен", command=self.open_price_history).pack(side=tk.LEFT, padx=5)      
         ttk.Button(frame_controls, text="В справочник номенклатуры",
                    command=self.add_to_nomenclature).pack(side=tk.LEFT, padx=10)
         ttk.Button(frame_controls, text="Поиск по номенклатуре", command=self.open_nomenclature_search).pack(side=tk.LEFT, padx=5)
@@ -120,6 +122,20 @@ class PurchasesTab(BaseTab):
         scrollbar.pack(side=tk.RIGHT, fill="y")
         self.app.purchase_tree.bind("<Double-1>", lambda e: self.edit_purchase())
         self.app.purchase_tree.bind("<Button-1>", self.on_purchase_click)
+    
+    def open_receiving(self):
+        from dialogs.receiving_dialog import ReceivingDialog
+        ReceivingDialog(self.root, self.db_manager, self.app.current_project)
+        self.load_purchases()
+
+    def open_price_history(self):
+        from dialogs.price_history_dialog import PriceHistoryDialog
+        sel = self.app.purchase_tree.selection()
+        art = ""
+        if sel:
+            vals = self.app.purchase_tree.item(sel[0])["values"]
+            art = str(vals[4]) if len(vals) > 4 else ""
+        PriceHistoryDialog(self.root, self.db_manager, art)       
 
     def on_purchase_click(self, event):
         tree = self.app.purchase_tree

@@ -24,4 +24,4 @@ __all__ = [
     'KDDialog',
     'NomenclatureSearchDialog',
     'FileImportMatchDialog',
-]
+]
