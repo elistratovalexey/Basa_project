@@ -1594,6 +1594,154 @@ class DatabaseManager:
         c = self.conn.cursor()
         c.execute("DELETE FROM plan_fact WHERE project_id=? AND number=?", (project_id, number))
         self.conn.commit()
+        # === Сквозной поиск (Ctrl+K) ===
+    def search_everything(self, query, limit_per_kind=60):
+        """Ищет подстроку сразу во всех сущностях.
+        Возвращает список словарей: kind, project, ref, title, subtitle, extra, payload."""
+        q = (query or "").strip().lower()
+        if len(q) < 2:
+            return []
+        res = []
+
+        def hit(*vals):
+            return any(q in str(v).lower() for v in vals if v not in (None, ""))
+
+        c = self.conn.cursor()
+
+        # --- Проекты ---
+        for p in c.execute("""SELECT id, name, path, contract_date, delivery_address
+                              FROM projects""").fetchall():
+            if hit(p["name"], p["path"], p["delivery_address"]):
+                res.append({"kind": "Проект", "project": p["name"], "ref": p["id"],
+                            "title": p["name"], "subtitle": p["contract_date"] or "",
+                            "extra": p["path"] or "",
+                            "payload": {"type": "project", "project": p["name"]}})
+
+        # --- Закупки ---
+        for r in c.execute("""SELECT p.id, p.number, p.article, p.name, p.name_eng, p.manufacturer,
+                                     p.subproject, p.kd, p.note, p.order_date, pr.name AS proj
+                              FROM purchases p LEFT JOIN projects pr ON pr.id = p.project_id""").fetchall():
+            if hit(r["article"], r["name"], r["name_eng"], r["manufacturer"],
+                   r["subproject"], r["kd"], r["note"]):
+                res.append({"kind": "Закупка", "project": r["proj"] or "", "ref": r["number"],
+                            "title": f'{r["article"] or ""} — {r["name"] or ""}'.strip(" —"),
+                            "subtitle": r["manufacturer"] or "",
+                            "extra": f'подпроект: {r["subproject"] or "—"}; КД: {r["kd"] or "—"}',
+                            "payload": {"type": "purchase", "project": r["proj"] or "",
+                                        "number": r["number"]}})
+
+        # --- Заказы (шапки) ---
+        for b in c.execute("""SELECT order_batch_id, MAX(order_date) od, MAX(project_name) proj,
+                                     MAX(manufacturer) man, MAX(supplier) sup,
+                                     MAX(invoice_number) inv, MAX(delivery_number) dn,
+                                     MAX(payment_date) pd, MAX(price_request) pr,
+                                     MAX(price_request_num) prn
+                              FROM orders GROUP BY order_batch_id""").fetchall():
+            if hit(b["inv"], b["sup"], b["dn"], b["proj"], b["man"], b["od"]):
+                label = f'Z{b["prn"]}' if (b["pr"] and b["prn"]) else str(b["order_batch_id"])
+                res.append({"kind": "Заказ", "project": b["proj"] or "", "ref": label,
+                            "title": f'Инвойс {b["inv"] or "—"} · {b["sup"] or "—"}',
+                            "subtitle": b["man"] or "",
+                            "extra": f'поставка: {b["dn"] or "—"}; оплата: {b["pd"] or "—"}',
+                            "payload": {"type": "order", "batch_id": b["order_batch_id"],
+                                        "project": b["proj"] or ""}})
+
+        # --- Позиции заказов ---
+        for it in c.execute("""SELECT id, order_batch_id, article, name, name_eng, manufacturer,
+                                      project_name, quantity, price, currency
+                               FROM orders""").fetchall():
+            if hit(it["article"], it["name"], it["name_eng"], it["manufacturer"]):
+                res.append({"kind": "Позиция заказа", "project": it["project_name"] or "",
+                            "ref": it["order_batch_id"],
+                            "title": f'{it["article"] or ""} — {it["name"] or ""}'.strip(" —"),
+                            "subtitle": it["manufacturer"] or "",
+                            "extra": f'кол-во {it["quantity"] or 0}; цена {it["price"] or "—"} {it["currency"] or ""}',
+                            "payload": {"type": "order", "batch_id": it["order_batch_id"],
+                                        "project": it["project_name"] or ""}})
+
+        # --- Счета (спецификации закупок) ---
+        for s in c.execute("""SELECT s.id, s.supplier, s.name, s.total, s.currency, s.payment_date,
+                                     s.note, s.delivery_address, pr.name AS proj
+                              FROM purchase_specifications s
+                              LEFT JOIN projects pr ON pr.id = s.project_id""").fetchall():
+            if hit(s["supplier"], s["name"], s["note"], s["delivery_address"]):
+                res.append({"kind": "Счёт", "project": s["proj"] or "", "ref": s["id"],
+                            "title": f'{s["supplier"] or "—"} · {s["name"] or ""}',
+                            "subtitle": f'{s["total"] or 0} {s["currency"] or ""}',
+                            "extra": f'оплата: {s["payment_date"] or "—"}',
+                            "payload": {"type": "spec", "spec_id": s["id"],
+                                        "project": s["proj"] or ""}})
+
+        # --- Позиции счетов ---
+        for i in c.execute("""SELECT i.id, i.spec_id, i.name, i.quantity, i.price, i.total,
+                                     s.supplier, s.currency, pr.name AS proj
+                              FROM purchase_spec_items i
+                              JOIN purchase_specifications s ON s.id = i.spec_id
+                              LEFT JOIN projects pr ON pr.id = s.project_id""").fetchall():
+            if hit(i["name"], i["supplier"]):
+                res.append({"kind": "Позиция счёта", "project": i["proj"] or "", "ref": i["spec_id"],
+                            "title": i["name"] or "",
+                            "subtitle": f'{i["quantity"] or 0} × {i["price"] or 0} {i["currency"] or ""}',
+                            "extra": i["supplier"] or "",
+                            "payload": {"type": "spec", "spec_id": i["spec_id"],
+                                        "project": i["proj"] or ""}})
+
+        # --- Платежи поставщикам ---
+        for pay in c.execute("""SELECT pp.id, pp.spec_id, pp.number, pp.date, pp.amount, pp.currency,
+                                       pp.invoice_number, pp.supplier_name, pp.payment_purpose,
+                                       pr.name AS proj
+                                FROM purchase_payments pp
+                                JOIN purchase_specifications s ON s.id = pp.spec_id
+                                LEFT JOIN projects pr ON pr.id = s.project_id""").fetchall():
+            if hit(pay["invoice_number"], pay["supplier_name"], pay["payment_purpose"]):
+                res.append({"kind": "Платёж", "project": pay["proj"] or "",
+                            "ref": pay["number"],
+                            "title": f'{pay["supplier_name"] or "—"} · счёт {pay["invoice_number"] or "—"}',
+                            "subtitle": f'{pay["amount"] or 0} {pay["currency"] or ""}',
+                            "extra": pay["date"] or "",
+                            "payload": {"type": "payments", "spec_id": pay["spec_id"],
+                                        "project": pay["proj"] or ""}})
+
+        # --- Номенклатура ---
+        for n in c.execute("""SELECT id, manufacturer, article, name_rus, name_eng
+                              FROM nomenclature""").fetchall():
+            if hit(n["article"], n["name_rus"], n["name_eng"], n["manufacturer"]):
+                res.append({"kind": "Номенклатура", "project": "", "ref": n["id"],
+                            "title": f'{n["article"] or ""} — {n["name_rus"] or n["name_eng"] or ""}'.strip(" —"),
+                            "subtitle": n["manufacturer"] or "", "extra": n["name_eng"] or "",
+                            "payload": {"type": "nomenclature", "article": n["article"] or "",
+                                        "name": n["name_rus"] or "", "name_eng": n["name_eng"] or "",
+                                        "manufacturer": n["manufacturer"] or ""}})
+
+        # --- Поставщики ---
+        for s in c.execute("""SELECT id, name, contact, phone, email, address, note
+                              FROM suppliers""").fetchall():
+            if hit(s["name"], s["contact"], s["phone"], s["email"], s["address"], s["note"]):
+                res.append({"kind": "Поставщик", "project": "", "ref": s["id"],
+                            "title": s["name"] or "", "subtitle": s["contact"] or "",
+                            "extra": f'{s["phone"] or ""} {s["email"] or ""}'.strip(),
+                            "payload": {"type": "supplier", "supplier_id": s["id"]}})
+
+        # --- Спецификации (план продажи) ---
+        for sp in c.execute("""SELECT s.id, s.number, s.name, s.quantity, s.price, s.currency, pr.name AS proj
+                               FROM specifications s LEFT JOIN projects pr ON pr.id = s.project_id""").fetchall():
+            if hit(sp["name"]):
+                res.append({"kind": "Спецификация", "project": sp["proj"] or "", "ref": sp["number"],
+                            "title": sp["name"] or "",
+                            "subtitle": f'{sp["quantity"] or ""} × {sp["price"] or ""} {sp["currency"] or ""}',
+                            "extra": "", "payload": {"type": "project", "project": sp["proj"] or ""}})
+
+        # ограничение по каждому типу
+        out, counts = [], {}
+        order = ["Проект", "Закупка", "Заказ", "Позиция заказа", "Счёт",
+                 "Позиция счёта", "Платёж", "Номенклатура", "Поставщик", "Спецификация"]
+        res.sort(key=lambda r: order.index(r["kind"]) if r["kind"] in order else 99)
+        for r in res:
+            k = r["kind"]
+            counts[k] = counts.get(k, 0) + 1
+            if counts[k] <= limit_per_kind:
+                out.append(r)
+        return out
             
     def close(self):
         if self.conn:

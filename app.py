@@ -74,6 +74,10 @@ class ProjectManagerApp:
         self.log_text_popup = None
 
         self.create_widgets()
+         # --- Сквозной поиск: Ctrl+K (и Ctrl+Л в русской раскладке) ---
+        self._search_dialog = None
+        for seq in ("<Control-k>", "<Control-K>", "<Control-л>", "<Control-Л>"):
+            self.root.bind_all(seq, self.open_global_search)       
         self.load_projects()
         self.log_action(f"Программа запущена v{VERSION}")
         self.log_action(f"База данных: {cfg.get_db_path()}")
@@ -253,6 +257,8 @@ class ProjectManagerApp:
         self.lbl_datetime.pack(side=tk.RIGHT)
         ttk.Button(frame_top, text="Сохранить проект", command=self.save_current_project).pack(side=tk.RIGHT, padx=10)
         ttk.Button(frame_top, text="📄 Лог терминала", command=self.open_terminal_log).pack(side=tk.RIGHT, padx=5)
+        ttk.Button(frame_top, text="🔍 Поиск (Ctrl+K)",
+                   command=self.open_global_search).pack(side=tk.RIGHT, padx=5)
         ttk.Button(frame_top, text="📋 Журнал (окно)", command=self.toggle_log_window).pack(side=tk.RIGHT, padx=5)
 
         frame_project = ttk.LabelFrame(self.root, text="Проект", padding=10)
@@ -575,6 +581,19 @@ class ProjectManagerApp:
             for handler in self.logger.handlers[:]:
                 handler.close()
                 self.logger.removeHandler(handler)
+    def open_global_search(self, event=None):
+        dlg = getattr(self, "_search_dialog", None)
+        if dlg is not None:
+            try:
+                if dlg.winfo_exists():
+                    dlg.lift()
+                    dlg.entry.focus_set()
+                    return "break"
+            except Exception:
+                pass
+        from dialogs.global_search_dialog import GlobalSearchDialog
+        self._search_dialog = GlobalSearchDialog(self.root, self.db_manager, app=self)
+        return "break"               
 
 
 if __name__ == "__main__":
