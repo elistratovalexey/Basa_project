@@ -75,9 +75,14 @@ class ProjectManagerApp:
 
         self.create_widgets()
          # --- Сквозной поиск: Ctrl+K (и Ctrl+Л в русской раскладке) ---
+        # --- Сквозной поиск: Ctrl+K (русская раскладка ловится по keycode) ---
         self._search_dialog = None
-        for seq in ("<Control-k>", "<Control-K>", "<Control-л>", "<Control-Л>"):
-            self.root.bind_all(seq, self.open_global_search)       
+        for seq in ("<Control-k>", "<Control-K>"):
+            try:
+                self.root.bind_all(seq, self.open_global_search)
+            except tk.TclError:
+                pass
+        self.root.bind_all("<Control-KeyPress>", self._on_control_keypress)       
         self.load_projects()
         self.log_action(f"Программа запущена v{VERSION}")
         self.log_action(f"База данных: {cfg.get_db_path()}")
@@ -581,6 +586,13 @@ class ProjectManagerApp:
             for handler in self.logger.handlers[:]:
                 handler.close()
                 self.logger.removeHandler(handler)
+    def _on_control_keypress(self, event):
+        """Ctrl+K работает в любой раскладке: проверяем физическую клавишу K.
+        keycode: X11 = 45, Windows = 75, macOS = 40."""
+        ch = (getattr(event, "char", "") or "").lower()
+        if ch in ("k", "л") or getattr(event, "keycode", None) in (45, 75, 40):
+            return self.open_global_search()
+        return None   # остальные Ctrl-сочетания (C/V/X) обрабатываются как раньше
     def open_global_search(self, event=None):
         dlg = getattr(self, "_search_dialog", None)
         if dlg is not None:

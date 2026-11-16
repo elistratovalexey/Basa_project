@@ -1,0 +1,26 @@
+
+===== СЕССИЯ ЗАПУЩЕНА 16.11.2026 14:43:04 =====
+Миграция v1.9: статусы/приёмка/история цен/курсы — OK
+[16.11.2026 14:43:04] Программа запущена v1.8.0
+[16.11.2026 14:43:04] База данных: /home/elistratov/PROJECTS_PERPLEXETY/projects.db
+[16.11.2026 14:43:04] Резервная копия БД: /home/elistratov/PROJECTS_PERPLEXETY/backups/projects_20261116_144304.db
+[16.11.2026 14:43:05] Выбран проект: МЭЩ
+[16.11.2026 14:43:25] Напоминания: 102 (просрочек 39)
+[16.11.2026 16:53:35] План-Факт: добавлена работа №2 (Спроектировать переходную плиту на каретку линейной оси)
+===== СЕССИЯ ЗАВЕРШЕНА 16.11.2026 17:03:59 =====
+
+===== СЕССИЯ ЗАПУЩЕНА 16.11.2026 17:04:05 =====
+Миграция v1.9: статусы/приёмка/история цен/курсы — OK
+Traceback (most recent call last):
+  File "/home/elistratov/PROJECTS_PERPLEXETY/app.py", line 602, in <module>
+    app = ProjectManagerApp(root)
+  File "/home/elistratov/PROJECTS_PERPLEXETY/app.py", line 80, in __init__
+    self.root.bind_all(seq, self.open_global_search)
+    ~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.14/tkinter/__init__.py", line 1593, in bind_all
+    return self._root()._bind(('bind', 'all'), sequence, func, add, True)
+           ~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.14/tkinter/__init__.py", line 1516, in _bind
+    self.tk.call(what + (sequence, cmd))
+    ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^
+_tkinter.TclError: bad event type or keysym "л"
