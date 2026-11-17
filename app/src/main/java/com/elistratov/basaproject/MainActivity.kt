@@ -7,6 +7,7 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.viewpager2.widget.ViewPager2
 import com.elistratov.basaproject.databinding.ActivityMainBinding
 import com.google.android.material.tabs.TabLayoutMediator
+import androidx.fragment.app.Fragment
 
 class MainActivity : AppCompatActivity() {
     private lateinit var binding: ActivityMainBinding
@@ -19,9 +20,10 @@ class MainActivity : AppCompatActivity() {
         val tabs = arrayOf("Проекты", "Закупки", "Спецификации", "Финансы", "Сроки")
         binding.viewPager.adapter = object : androidx.viewpager2.adapter.FragmentStateAdapter(this) {
             override fun getItemCount() = tabs.size
-            override fun createFragment(position: Int) = android.app.Fragment() // Заглушка, замените на реальные фрагменты
+            override fun createFragment(position: Int): Fragment {
+                return object : Fragment() {} // Безопасная заглушка
+            }
         }
-
         TabLayoutMediator(binding.tabLayout, binding.viewPager) { tab, position ->
             tab.text = tabs[position]
         }.attach()
