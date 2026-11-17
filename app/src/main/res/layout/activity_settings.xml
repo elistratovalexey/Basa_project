@@ -1,0 +1,19 @@
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android" android:layout_width="match_parent" android:layout_height="match_parent" android:padding="16dp">
+    <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical">
+        <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="WebDAV URL:" />
+        <EditText android:id="@+id/etWebdavUrl" android:layout_width="match_parent" android:layout_height="wrap_content" android:inputType="textUri" />
+        
+        <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Логин (полный email):" android:layout_marginTop="8dp"/>
+        <EditText android:id="@+id/etLogin" android:layout_width="match_parent" android:layout_height="wrap_content" android:inputType="textEmailAddress" />
+        
+        <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Пароль (для внешних приложений):" android:layout_marginTop="8dp"/>
+        <EditText android:id="@+id/etPassword" android:layout_width="match_parent" android:layout_height="wrap_content" android:inputType="textPassword" />
+        
+        <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Путь к БД в облаке:" android:layout_marginTop="8dp"/>
+        <EditText android:id="@+id/etRemotePath" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="/projects.db" />
+
+        <Button android:id="@+id/btnSave" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Сохранить" android:layout_marginTop="16dp"/>
+        
+        <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="⚠️ Пароль нужно создать в настройках Mail.ru: 'Пароли для внешних приложений'" android:textColor="#FF0000" android:layout_marginTop="16dp"/>
+    </LinearLayout>
+</ScrollView>

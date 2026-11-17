@@ -1,0 +1,10 @@
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent" android:layout_height="match_parent" android:orientation="vertical">
+    <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:padding="8dp">
+        <Button android:id="@+id/btnSync" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:text="Синхронизировать" />
+        <Button android:id="@+id/btnOrders" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:text="Заказы" android:backgroundTint="@color/design_default_color_secondary" />
+        <Button android:id="@+id/btnSettings" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="⚙️" />
+    </LinearLayout>
+    <com.google.android.material.tabs.TabLayout android:id="@+id/tabLayout" android:layout_width="match_parent" android:layout_height="wrap_content" />
+    <androidx.viewpager2.widget.ViewPager2 android:id="@+id/viewPager" android:layout_width="match_parent" android:layout_height="0dp" android:layout_weight="1" />
+</LinearLayout>
