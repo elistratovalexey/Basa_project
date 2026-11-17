@@ -23,8 +23,23 @@ jobs:
         with:
           gradle-version: '8.5'
 
-      - name: Build Debug APK
-        run: gradle assembleDebug --no-daemon --stacktrace
+      - name: Prepare signing key
+        env:
+          SIGNING_KEY_BASE64: ${{ secrets.SIGNING_KEY_BASE64 }}
+        run: |
+          if [ -n "$SIGNING_KEY_BASE64" ]; then
+            echo "$SIGNING_KEY_BASE64" | base64 -d > "$RUNNER_TEMP/basa.keystore"
+            echo "KEYSTORE_FILE=$RUNNER_TEMP/basa.keystore" >> "$GITHUB_ENV"
+            echo "Постоянный ключ подписи подключён"
+          else
+            echo "::warning::Секрет SIGNING_KEY_BASE64 не задан! APK будет подписан случайным ключом."
+          fi
+
+      - name: Build APK
+        env:
+          VERSION_CODE: ${{ github.run_number }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+        run: gradle assembleDebug --no-daemon
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
