@@ -31,36 +31,64 @@ DEFAULT_URL = "https://webdav.cloud.mail.ru"
 class WebDavError(Exception):
     pass
 
-
 class WebDavClient:
-    def __init__(self, base_url, user, password, timeout=45):
+    def __init__(self, base_url, user, password, timeout=180, retries=3, log=None):
         self.base_url = (base_url or DEFAULT_URL).rstrip("/")
         self.user = user
         self.password = password
-        self.timeout = timeout
+        self.timeout = int(timeout or 180)
+        self.retries = max(1, int(retries or 3))
+        self.log = log or (lambda m: None)
 
     def _url(self, path):
         parts = [urllib.parse.quote(p) for p in path.strip("/").split("/") if p]
         return self.base_url + "/" + "/".join(parts)
 
+    def _retry(self, desc, fn):
+        """Повтор операции при таймаутах и сетевых сбоях."""
+        last = None
+        for attempt in range(1, self.retries + 1):
+            try:
+                return fn()
+            except urllib.error.HTTPError as e:
+                if e.code == 404:
+                    return None
+                if e.code in (401, 403):
+                    raise WebDavError(f"{desc}: доступ запрещён ({e.code}) — "
+                                      f"проверьте логин и пароль приложения") from e
+                if e.code == 412:
+                    raise WebDavError("REMOTE_CHANGED") from e
+                last = WebDavError(f"{desc}: HTTP {e.code} {e.reason}")
+            except (TimeoutError, socket.timeout):
+                last = WebDavError(f"{desc}: таймаут {self.timeout} с")
+            except urllib.error.URLError as e:
+                reason = getattr(e, "reason", e)
+                if isinstance(reason, (TimeoutError, socket.timeout)):
+                    last = WebDavError(f"{desc}: таймаут {self.timeout} с")
+                else:
+                    last = WebDavError(f"{desc}: сеть недоступна ({reason})")
+            except OSError as e:
+                last = WebDavError(f"{desc}: сетевая ошибка ({e})")
+            if attempt < self.retries:
+                pause = 2 * attempt
+                self.log(f"{desc}: попытка {attempt}/{self.retries} не удалась, "
+                         f"повтор через {pause} с…")
+                time.sleep(pause)
+        raise last
+
     def _request(self, method, path, data=None, headers=None):
-        req = urllib.request.Request(self._url(path), data=data, method=method)
-        token = base64.b64encode(f"{self.user}:{self.password}".encode()).decode()
-        req.add_header("Authorization", "Basic " + token)
-        req.add_header("User-Agent", "BasaProject-Sync/1.0")
-        for k, v in (headers or {}).items():
-            req.add_header(k, v)
-        try:
+        def call():
+            req = urllib.request.Request(self._url(path), data=data, method=method)
+            token = base64.b64encode(f"{self.user}:{self.password}".encode()).decode()
+            req.add_header("Authorization", "Basic " + token)
+            req.add_header("User-Agent", "BasaProject-Sync/1.1")
+            req.add_header("Connection", "close")   # не даём keep-alive зависать
+            for k, v in (headers or {}).items():
+                req.add_header(k, v)
             return urllib.request.urlopen(req, timeout=self.timeout)
-        except urllib.error.HTTPError as e:
-            if e.code == 404:
-                return None
-            raise WebDavError(f"{method} {path} → HTTP {e.code} {e.reason}") from e
-        except urllib.error.URLError as e:
-            raise WebDavError(f"{method} {path} → сеть недоступна: {e.reason}") from e
+        return self._retry(f"{method} {path}", call)
 
     def ensure_dir(self, path):
-        """Создаёт коллекцию и всех родителей (MKCOL идемпотентен)."""
         parts = [p for p in path.strip("/").split("/") if p]
         for i in range(len(parts)):
             sub = "/".join(parts[:i + 1])
@@ -71,7 +99,6 @@ class WebDavClient:
                     raise
 
     def head(self, path):
-        """→ {'etag', 'size', 'modified'} или None."""
         r = self._request("HEAD", path)
         if r is None:
             return None
@@ -81,29 +108,36 @@ class WebDavClient:
         except ValueError:
             size = 0
         return {"etag": (h.get("ETag") or "").strip('"'),
-                "size": size,
-                "modified": h.get("Last-Modified") or ""}
+                "size": size, "modified": h.get("Last-Modified") or ""}
 
     def get(self, path, dest_file):
-        r = self._request("GET", path)
-        if r is None:
-            return None
-        with open(dest_file, "wb") as f:
-            shutil.copyfileobj(r, f)
-        return (r.headers.get("ETag") or "").strip('"')
+        def call():
+            r = self._request("GET", path)
+            if r is None:
+                return None
+            total = 0
+            with open(dest_file, "wb") as f:
+                while True:
+                    chunk = r.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    f.write(chunk)
+                    total += len(chunk)
+                    if total % (5 * 1024 * 1024) < 1024 * 1024:
+                        self.log(f"GET {path}: скачано {total // 1048576} МБ…")
+            return (r.headers.get("ETag") or "").strip('"')
+        return self._retry(f"чтение {path}", call)
 
     def put(self, path, src_file, if_match=None):
+        size = os.path.getsize(src_file)
         with open(src_file, "rb") as f:
             data = f.read()
-        headers = {"Content-Type": "application/octet-stream"}
+        headers = {"Content-Type": "application/octet-stream",
+                   "Content-Length": str(size)}
         if if_match:
             headers["If-Match"] = f'"{if_match}"'
-        try:
-            r = self._request("PUT", path, data=data, headers=headers)
-        except WebDavError as e:
-            if "412" in str(e):
-                raise WebDavError("REMOTE_CHANGED") from e
-            raise
+        self.log(f"PUT {path}: отправка {size / 1048576:.1f} МБ…")
+        r = self._request("PUT", path, data=data, headers=headers)
         return (r.headers.get("ETag") or "").strip('"') if r is not None else ""
 
     def delete(self, path):
@@ -112,26 +146,28 @@ class WebDavClient:
     def list_dir(self, path):
         body = ('<?xml version="1.0"?><propfind xmlns="DAV:">'
                 '<prop><getetag/><getcontentlength/><resourcetype/></prop></propfind>')
-        r = self._request("PROPFIND", path, data=body.encode(),
-                          headers={"Depth": "1", "Content-Type": "application/xml"})
-        if r is None:
-            return []
-        root = ET.fromstring(r.read())
-        out = []
-        for resp in root.findall(f"{DAV_NS}response"):
-            href = resp.findtext(f"{DAV_NS}href") or ""
-            name = urllib.parse.unquote(href.rstrip("/").split("/")[-1])
-            is_dir = resp.find(f".//{DAV_NS}collection") is not None
-            prop = resp.find(f".//{DAV_NS}prop")
-            etag = (prop.findtext(f"{DAV_NS}getetag") or "").strip('"') if prop is not None else ""
-            try:
-                size = int(prop.findtext(f"{DAV_NS}getcontentlength") or 0) if prop is not None else 0
-            except ValueError:
-                size = 0
-            if name and not is_dir:
-                out.append({"name": name, "etag": etag, "size": size})
-        return out
 
+        def call():
+            r = self._request("PROPFIND", path, data=body.encode(),
+                              headers={"Depth": "1", "Content-Type": "application/xml"})
+            if r is None:
+                return []
+            root = ET.fromstring(r.read())
+            out = []
+            for resp in root.findall(f"{DAV_NS}response"):
+                href = resp.findtext(f"{DAV_NS}href") or ""
+                name = urllib.parse.unquote(href.rstrip("/").split("/")[-1])
+                is_dir = resp.find(f".//{DAV_NS}collection") is not None
+                prop = resp.find(f".//{DAV_NS}prop")
+                etag = (prop.findtext(f"{DAV_NS}getetag") or "").strip('"') if prop is not None else ""
+                try:
+                    size = int(prop.findtext(f"{DAV_NS}getcontentlength") or 0) if prop is not None else 0
+                except ValueError:
+                    size = 0
+                if name and not is_dir:
+                    out.append({"name": name, "etag": etag, "size": size})
+            return out
+        return self._retry(f"список {path}", call)
 
 # ==================================================================
 # Конфигурация и состояние
@@ -190,16 +226,26 @@ class SyncState:
 # ==================================================================
 # Снимки и хэши
 # ==================================================================
-def make_snapshot(conn, dest_path):
-    """Консистентный снимок живой БД (безопасно при открытых транзакциях)."""
+def make_snapshot(conn, dest_path, compact=True):
+    """Консистентный снимок. VACUUM INTO даёт компактный файл (быстрее выгрузка)."""
     os.makedirs(os.path.dirname(dest_path), exist_ok=True)
+    if os.path.exists(dest_path):
+        os.remove(dest_path)
+    if compact:
+        try:
+            conn.commit()
+            conn.execute("VACUUM INTO ?", (dest_path,))
+            return dest_path
+        except Exception as e:
+            print(f"[sync] VACUUM INTO недоступен ({e}), использую backup API")
+            if os.path.exists(dest_path):
+                os.remove(dest_path)
     dst = sqlite3.connect(dest_path)
     try:
         conn.backup(dst)
     finally:
         dst.close()
     return dest_path
-
 
 def file_sha(path):
     if not path or not os.path.exists(path):
@@ -427,8 +473,11 @@ class SyncManager:
     def client(self):
         if not self.cfg.get("user") or not self.cfg.get("password"):
             raise WebDavError("Не заданы логин/пароль WebDAV (Настройки → Облако)")
-        return WebDavClient(self.cfg.get("url"), self.cfg["user"], self.cfg["password"])
-
+        return WebDavClient(self.cfg.get("url"), self.cfg["user"], self.cfg["password"],
+                            timeout=self.cfg.get("timeout_sec", 180),
+                            retries=self.cfg.get("retries", 3),
+                            log=self.log)
+    
     # ---------- подготовка (GUI-поток) ----------
     def prepare(self):
         ensure_sync_tables(self.conn)
@@ -509,7 +558,16 @@ class SyncManager:
         c = self.client()
         gz = os.path.join(self.work, "upload.db.gz")
         gzip_file(snapshot_path, gz)
+        # копия в backups/ — не чаще, чем раз в backup_every_min минут
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        every = int(self.cfg.get("backup_every_min", 60) or 0)
+        last_bk = self.state.data.get("last_backup_ts", 0)
+        if every <= 0 or (time.time() - float(last_bk)) >= every * 60:
+            c.put(self.rpath(f"backups/projects_{stamp}.db.gz"), gz)
+            self.state.data["last_backup_ts"] = time.time()
+            self._rotate(c)
+        etag = c.put(self.rpath("projects.db.gz"), gz,
+                     if_match=self.state.data.get("remote_etag") or None)
         c.put(self.rpath(f"backups/projects_{stamp}.db.gz"), gz)
         etag = c.put(self.rpath("projects.db.gz"), gz,
                      if_match=self.state.data.get("remote_etag") or None)
@@ -518,7 +576,7 @@ class SyncManager:
         self.state.data["last_error"] = ""
         self.state.save()
         shutil.copyfile(snapshot_path, self.snap_base)
-        self._rotate(c)
+        
         return stamp
 
     def _rotate(self, c):
