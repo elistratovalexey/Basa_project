@@ -20,9 +20,12 @@ class SettingsDialog(tk.Toplevel):
         super().__init__(parent)
         self.title("Настройки")
         self.geometry("640x200")
-        from dialogs.window_geometry import restore_geometry, track_geometry
-        restore_geometry(self, "КЛЮЧ", "ШИРИНАxВЫСОТА")
-        track_geometry(self, "КЛЮЧ")
+        try:
+            from dialogs.window_geometry import restore_geometry, track_geometry
+            restore_geometry(self, "settings_dialog", "640x200")
+            track_geometry(self, "settings_dialog")
+        except Exception:
+            pass
         self.transient(parent)
         self.config_manager = config_manager
         self.result = False
@@ -51,7 +54,18 @@ class SettingsDialog(tk.Toplevel):
         ttk.Button(btn_frame, text="Сохранить", command=self.save).pack(side=tk.LEFT, padx=5)
         ttk.Button(btn_frame, text="Отмена", command=self.destroy).pack(side=tk.LEFT, padx=5)
         self.bind("<Escape>", lambda e: self.destroy())
-        self.grab_set()
+        self._safe_grab()
+
+    def _safe_grab(self, attempts=10):
+        """grab_set только после реальной отрисовки окна."""
+        try:
+            if self.winfo_exists() and self.winfo_viewable():
+                self.grab_set()
+            elif attempts > 0:
+                self.after(60, lambda a=attempts - 1: self._safe_grab(a))
+        except tk.TclError:
+            if attempts > 0:
+                self.after(60, lambda a=attempts - 1: self._safe_grab(a))
 
     def browse(self):
         directory = filedialog.askdirectory(initialdir=self.entry_db.get(), parent=self)
@@ -78,7 +92,8 @@ class SettingsDialog(tk.Toplevel):
         from config import DEFAULT_DB_NAME, CONFIG_NAME
         new_db = os.path.join(db_dir, DEFAULT_DB_NAME)
         old_db = self.config_manager.get("db_path", "")
-        self.db_changed = os.path.normcase(os.path.abspath(new_db)) != os.path.normcase(os.path.abspath(old_db or ""))
+        self.db_changed = os.path.normcase(os.path.abspath(new_db)) != os.path.normcase(
+            os.path.abspath(old_db or ""))
 
         sort_key = next((k for k, v in SORT_OPTIONS.items() if v == self.combo_sort.get()), "name")
         self.config_manager.config["sort_by"] = sort_key
