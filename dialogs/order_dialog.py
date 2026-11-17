@@ -37,6 +37,12 @@ class OrderDialog(tk.Toplevel):
     def __init__(self, parent, db_manager, batch_id=None,
                  russian_holidays=None, project_name=None):
         super().__init__(parent)
+        self.parent = parent
+        # log_action живёт у приложения, а не у Tk-окна: ищем владельца журнала
+        if not hasattr(self.parent, "log_action"):
+            _app = getattr(parent, "app", None)
+            if _app is not None and hasattr(_app, "log_action"):
+                self.parent = _app
         self.title("База заказов")
         self.geometry("1600x1000")
         try:

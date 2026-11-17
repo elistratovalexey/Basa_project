@@ -445,8 +445,9 @@ class PurchasesTab(BaseTab):
         dialog = OrderDialog(self.root, self.db_manager,
                              russian_holidays=self.app.russian_holidays,
                              project_name=self.app.current_project)
+        dialog.parent = self.app          # ← НОВОЕ: журнал приложения
         self.root.wait_window(dialog)
-
+        
     def open_nomenclature_search(self):
         dialog = NomenclatureSearchDialog(self.root, self.db_manager)
         self.root.wait_window(dialog)

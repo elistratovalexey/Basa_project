@@ -302,3 +302,65 @@ Traceback (most recent call last):
     var = getattr(self, f"{key}_var")
 AttributeError: 'CloudSyncDialog' object has no attribute 'interval_min_var'. Did you mean: 'interval_var'?
 
+[17.11.2026 14:49:34] ОШИБКА:
+Traceback (most recent call last):
+  File "/usr/lib/python3.14/tkinter/__init__.py", line 2096, in __call__
+    return self.func(*args)
+           ~~~~~~~~~^^^^^^^
+  File "/home/elistratov/PROJECTS_PERPLEXETY/dialogs/cloud_sync_dialog.py", line 170, in test_connection
+    self.save_cfg()
+    ~~~~~~~~~~~~~^^
+  File "/home/elistratov/PROJECTS_PERPLEXETY/dialogs/cloud_sync_dialog.py", line 154, in save_cfg
+    var = getattr(self, f"{key}_var")
+AttributeError: 'CloudSyncDialog' object has no attribute 'interval_min_var'. Did you mean: 'interval_var'?
+
+[17.11.2026 15:02:09] Облако: применено изменений 1
+[17.11.2026 15:02:09] Выбран проект: МЭЩ
+[17.11.2026 15:02:10] Облако: база выгружена
+[17.11.2026 15:37:38] Программа запущена v1.8.0
+[17.11.2026 15:37:38] База данных: /home/elistratov/PROJECTS_PERPLEXETY/projects.db
+[17.11.2026 15:37:38] Резервная копия БД: /home/elistratov/PROJECTS_PERPLEXETY/backups/projects_20261117_153738.db
+[17.11.2026 15:37:38] Выбран проект: МЭЩ
+[17.11.2026 15:57:56] Программа запущена v1.8.0
+[17.11.2026 15:57:56] База данных: /home/elistratov/PROJECTS_PERPLEXETY/projects.db
+[17.11.2026 15:57:56] Резервная копия БД: /home/elistratov/PROJECTS_PERPLEXETY/backups/projects_20261117_155756.db
+[17.11.2026 15:57:56] Выбран проект: МЭЩ
+[17.11.2026 15:58:16] Напоминания: 2 (просрочек 0)
+[17.11.2026 16:33:10] Программа запущена v1.8.0
+[17.11.2026 16:33:10] База данных: /home/elistratov/PROJECTS_PERPLEXETY/projects.db
+[17.11.2026 16:33:10] Резервная копия БД: /home/elistratov/PROJECTS_PERPLEXETY/backups/projects_20261117_163310.db
+[17.11.2026 16:33:10] Выбран проект: МЭЩ
+[17.11.2026 16:37:50] ОШИБКА:
+Traceback (most recent call last):
+  File "/usr/lib/python3.14/tkinter/__init__.py", line 2096, in __call__
+    return self.func(*args)
+           ~~~~~~~~~^^^^^^^
+  File "/home/elistratov/PROJECTS_PERPLEXETY/dialogs/order_dialog.py", line 787, in on_batch_click
+    if hasattr(self.parent, 'log_action'):
+               ^^^^^^^^^^^
+AttributeError: 'OrderDialog' object has no attribute 'parent'
+
+[17.11.2026 16:38:51] ОШИБКА:
+Traceback (most recent call last):
+  File "/usr/lib/python3.14/tkinter/__init__.py", line 2096, in __call__
+    return self.func(*args)
+           ~~~~~~~~~^^^^^^^
+  File "/home/elistratov/PROJECTS_PERPLEXETY/dialogs/order_dialog.py", line 787, in on_batch_click
+    if hasattr(self.parent, 'log_action'):
+               ^^^^^^^^^^^
+AttributeError: 'OrderDialog' object has no attribute 'parent'
+
+[17.11.2026 16:38:54] ОШИБКА:
+Traceback (most recent call last):
+  File "/usr/lib/python3.14/tkinter/__init__.py", line 2096, in __call__
+    return self.func(*args)
+           ~~~~~~~~~^^^^^^^
+  File "/home/elistratov/PROJECTS_PERPLEXETY/dialogs/order_dialog.py", line 787, in on_batch_click
+    if hasattr(self.parent, 'log_action'):
+               ^^^^^^^^^^^
+AttributeError: 'OrderDialog' object has no attribute 'parent'
+
+[17.11.2026 16:47:01] Программа запущена v1.8.0
+[17.11.2026 16:47:01] База данных: /home/elistratov/PROJECTS_PERPLEXETY/projects.db
+[17.11.2026 16:47:01] Резервная копия БД: /home/elistratov/PROJECTS_PERPLEXETY/backups/projects_20261117_164701.db
+[17.11.2026 16:47:01] Выбран проект: МЭЩ
