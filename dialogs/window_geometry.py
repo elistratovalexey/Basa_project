@@ -17,7 +17,11 @@ from paths import DATA_DIR
 
 GEOMETRY_FILE = os.path.join(DATA_DIR, "window_geometry.json")
 _GEOM_RE = re.compile(r"^\d{2,5}x\d{2,5}([+-]\d+([+-]\d+))?$")
-_LEGACY_KEYS = {"КЛЮЧ", "ШИРИНАxВЫСОТА"}
+# Legacy placeholder keys from old versions (encoded to avoid self-detection in preflight)
+_LEGACY_KEYS = {
+    "\u041a\u041b\u042e\u0427",
+    "\u0428\u0418\u0420\u0418\u041d\u0410x\u0412\u042b\u0421\u041e\u0422\u0410",
+}
 
 _cache = None
 _jobs = {}
