@@ -127,7 +127,7 @@ class CloudSyncDialog(tk.Toplevel):
                 items = c.list_dir(self.sm.remote_dir)
                 self.after(0, lambda: self.say(f"Связь OK. Файлов в папке: {len(items)}"))
             except Exception as e:
-                self.after(0, lambda: self.say(f"Ошибка связи: {e}"))
+                self.after(0, lambda e=e: self.say(f"Ошибка связи: {e}")) 
         threading.Thread(target=work, daemon=True).start()
 
     # ---------- синхронизация ----------
@@ -151,9 +151,9 @@ class CloudSyncDialog(tk.Toplevel):
                     res["ops"] = []
                 self.after(0, lambda: self._apply(res))
             except WebDavError as e:
-                self.after(0, lambda: self._fail(str(e)))
+                self.after(0, lambda e=e: self._fail(str(e)))  
             except Exception as e:
-                self.after(0, lambda: self._fail(f"{type(e).__name__}: {e}"))
+                self.after(0, lambda e=e: self._fail(f"{type(e).__name__}: {e}"))
         threading.Thread(target=work, daemon=True).start()
 
     def _apply(self, res):
@@ -183,7 +183,7 @@ class CloudSyncDialog(tk.Toplevel):
                         stamp = self.sm.publish(snap)
                         self.after(0, lambda: self._done(stamp))
                     except Exception as e:
-                        self.after(0, lambda: self._fail(str(e)))
+                        self.after(0, lambda e=e: self._fail(str(e)))  
                 threading.Thread(target=publish, daemon=True).start()
             else:
                 self._done(None)

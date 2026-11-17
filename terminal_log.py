@@ -91,7 +91,6 @@ def get_path():
 
 def session_end():
     """Помечает конец сессии в файле (вызывать при закрытии приложения)."""
-    global _file_handle
     if _file_handle:
         try:
             _file_handle.write(

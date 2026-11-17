@@ -556,7 +556,7 @@ class ProjectManagerApp:
                 res = sm.worker(local_hash)
                 self.root.after(0, lambda: apply_and_publish(res))
             except Exception as e:
-                self.root.after(0, lambda: fail(str(e)))
+                self.root.after(0, lambda e=e: fail(str(e)))
 
         def apply_and_publish(res):
             try:
@@ -576,7 +576,7 @@ class ProjectManagerApp:
                             stamp = sm.publish(snap)
                             self.root.after(0, lambda: done(stamp))
                         except Exception as e:
-                            self.root.after(0, lambda: fail(str(e)))
+                            self.root.after(0, lambda e=e: fail(str(e)))
                     threading.Thread(target=pub, daemon=True).start()
                 else:
                     done(None)
