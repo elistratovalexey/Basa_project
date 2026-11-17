@@ -30,9 +30,8 @@ jobs:
           if [ -n "$SIGNING_KEY_BASE64" ]; then
             echo "$SIGNING_KEY_BASE64" | base64 -d > "$RUNNER_TEMP/basa.keystore"
             echo "KEYSTORE_FILE=$RUNNER_TEMP/basa.keystore" >> "$GITHUB_ENV"
-            echo "Постоянный ключ подписи подключён"
           else
-            echo "::warning::Секрет SIGNING_KEY_BASE64 не задан! APK будет подписан случайным ключом."
+            echo "::warning::Секрет SIGNING_KEY_BASE64 не задан — APK со случайным ключом"
           fi
 
       - name: Build APK

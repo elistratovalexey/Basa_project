@@ -2,6 +2,8 @@ package com.elistratov.basaproject
 
 import android.content.Intent
 import android.os.Bundle
+import android.widget.LinearLayout
+import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.fragment.app.Fragment
@@ -16,6 +18,15 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
+
+        val ver = try { packageManager.getPackageInfo(packageName, 0).versionName } catch (e: Exception) { "?" }
+        val dp = { v: Int -> (resources.displayMetrics.density * v).toInt() }
+        val tvVersion = TextView(this).apply {
+            text = "Управление проектами v$ver"
+            textSize = 12f
+            setPadding(dp(12), dp(6), dp(12), 0)
+        }
+        (binding.root as LinearLayout).addView(tvVersion, 0)
 
         val tabs = listOf(
             "Сегодня" to "dashboard",

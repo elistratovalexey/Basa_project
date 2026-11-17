@@ -11,14 +11,12 @@ android {
         applicationId = "com.elistratov.basaproject"
         minSdk = 24
         targetSdk = 34
-        // Номер версии растёт автоматически с каждой сборкой на GitHub
         versionCode = (System.getenv("VERSION_CODE")?.toIntOrNull() ?: 1)
         versionName = "1.0." + (System.getenv("VERSION_CODE") ?: "1")
     }
 
     signingConfigs {
         getByName("debug") {
-            // Постоянный ключ из секретов GitHub (если задан)
             val ksPath = System.getenv("KEYSTORE_FILE")
             if (ksPath != null && file(ksPath).exists()) {
                 storeFile = file(ksPath)
@@ -39,12 +37,8 @@ android {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
-    kotlinOptions {
-        jvmTarget = "17"
-    }
-    buildFeatures {
-        viewBinding = true
-    }
+    kotlinOptions { jvmTarget = "17" }
+    buildFeatures { viewBinding = true }
 }
 
 dependencies {

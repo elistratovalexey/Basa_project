@@ -16,6 +16,8 @@ class DatabaseHelper(private val context: Context) : SQLiteOpenHelper(context, "
     override fun onCreate(db: SQLiteDatabase?) {}
     override fun onUpgrade(db: SQLiteDatabase?, oldVersion: Int, newVersion: Int) {}
 
+    data class TabRecord(val title: String, val details: String)
+
     // ================= служебные =================
     fun isDatabaseReady(): Boolean {
         val f = context.getDatabasePath("projects.db")
@@ -38,6 +40,14 @@ class DatabaseHelper(private val context: Context) : SQLiteOpenHelper(context, "
         readableDatabase.rawQuery("SELECT name FROM sqlite_master WHERE type='table' AND name=?", arrayOf(name)).use { it.moveToFirst() }
     } catch (e: Exception) { false }
 
+    private fun columnExists(table: String, col: String): Boolean = try {
+        readableDatabase.rawQuery("PRAGMA table_info($table)", null).use { c ->
+            var found = false
+            while (c.moveToNext()) if (c.getString(1) == col) found = true
+            found
+        }
+    } catch (e: Exception) { false }
+
     fun getProjectNames(): List<String> {
         val list = mutableListOf<String>()
         rows("SELECT name FROM projects ORDER BY name") { list.add(it.s("name")) }
@@ -45,6 +55,7 @@ class DatabaseHelper(private val context: Context) : SQLiteOpenHelper(context, "
     }
 
     private fun mark(v: Int) = if (v == 1) "✓" else "—"
+    private fun short(s: String, n: Int = 45) = if (s.length > n) s.take(n) + "…" else s
 
     fun parseNum(s: String?): Double {
         if (s.isNullOrBlank()) return 0.0
@@ -129,8 +140,8 @@ class DatabaseHelper(private val context: Context) : SQLiteOpenHelper(context, "
         return fmtDate(cal.time)
     }
 
-    // ================= входная точка для вкладок =================
-    fun tabData(tab: String, project: String?, search: String): List<String> {
+    // ================= вкладки: список + расшифровка =================
+    fun tabData(tab: String, project: String?, search: String): List<TabRecord> {
         val out = when (tab) {
             "dashboard" -> dashboard(project)
             "finances" -> finances(project)
@@ -143,12 +154,10 @@ class DatabaseHelper(private val context: Context) : SQLiteOpenHelper(context, "
             else -> emptyList()
         }
         val q = search.trim().lowercase()
-        return if (q.isEmpty()) out else out.filter { it.lowercase().contains(q) }
+        return if (q.isEmpty()) out else out.filter { (it.title + "\n" + it.details).lowercase().contains(q) }
     }
 
-    // ================= Сегодня =================
-    private fun dashboard(project: String?): List<String> {
-        val out = mutableListOf<String>()
+    private fun dashboard(project: String?): List<TabRecord> {
         val today = Calendar.getInstance().apply {
             set(Calendar.HOUR_OF_DAY, 0); set(Calendar.MINUTE, 0); set(Calendar.SECOND, 0); set(Calendar.MILLISECOND, 0)
         }.time
@@ -156,8 +165,9 @@ class DatabaseHelper(private val context: Context) : SQLiteOpenHelper(context, "
         val noConfirm = mutableListOf<String>(); val priceReq = mutableListOf<String>()
         val where = if (project != null) "WHERE project_name=?" else ""
         val args = if (project != null) arrayOf(project) else emptyArray()
-        val base = "SELECT order_batch_id AS bid, MAX(order_date) AS od, MAX(project_name) AS proj, MAX(supplier) AS sup, MAX(invoice_number) AS inv, MAX(payment_date) AS pd, MAX(max_delivery_date) AS maxd, MAX(received) AS rec, MAX(price_request) AS pr, MAX(price_request_num) AS prn"
-        val block: (Cursor) -> Unit = { c ->
+        val opt = listOf("status" to "st", "eta_date" to "eta").filter { columnExists("orders", it.first) }
+            .joinToString("") { ", MAX(${it.first}) AS ${it.second}" }
+        rows("SELECT order_batch_id AS bid, MAX(order_date) AS od, MAX(project_name) AS proj, MAX(supplier) AS sup, MAX(invoice_number) AS inv, MAX(payment_date) AS pd, MAX(max_delivery_date) AS maxd, MAX(received) AS rec, MAX(price_request) AS pr, MAX(price_request_num) AS prn$opt FROM orders $where GROUP BY order_batch_id", args) { c ->
             val label = if (c.i("pr") == 1 && c.i("prn") > 0) "Z${c.i("prn")}" else c.s("bid")
             val head = "№$label · ${c.s("proj")} · ${c.s("sup")} · инвойс ${c.s("inv")}"
             val eta = parseDate(c.s("eta").ifEmpty { c.s("maxd") })
@@ -173,11 +183,6 @@ class DatabaseHelper(private val context: Context) : SQLiteOpenHelper(context, "
                 if (age > 5) noConfirm.add("📨 $head\nЗаказ от ${c.s("od")} · без подтверждения $age дн.")
             }
         }
-        try {
-            readableDatabase.rawQuery("$base, MAX(status) AS st, MAX(eta_date) AS eta FROM orders $where GROUP BY order_batch_id", args)
-                .use { c -> while (c.moveToNext()) block(c) }
-        } catch (e: Exception) { rows("$base FROM orders $where GROUP BY order_batch_id", args, block) }
-
         val unpaid = mutableListOf<String>(); val payWeek = mutableListOf<String>()
         val w2 = if (project != null) "WHERE pr.name=?" else ""
         rows("SELECT s.supplier, s.name, s.total, s.currency, s.payment_date, s.fully_paid, pr.name AS proj FROM purchase_specifications s LEFT JOIN projects pr ON pr.id=s.project_id $w2", args) { c ->
@@ -188,22 +193,21 @@ class DatabaseHelper(private val context: Context) : SQLiteOpenHelper(context, "
                 if (pd != null && daysBetween(pd, today) in 0..7) payWeek.add("💸 $line")
             }
         }
-        out.add("🔴 Просроченные поставки: ${overdue.size}"); out.addAll(overdue)
-        out.add("🟡 Поставка ≤ 7 дней: ${soon.size}"); out.addAll(soon)
-        out.add("💸 Оплаты на неделе: ${payWeek.size}"); out.addAll(payWeek)
-        out.add("🧾 Неоплаченные счета: ${unpaid.size}"); out.addAll(unpaid)
-        out.add("📨 Нет подтверждения > 5 дн.: ${noConfirm.size}"); out.addAll(noConfirm)
-        out.add("📩 Запросы цены без оплаты: ${priceReq.size}"); out.addAll(priceReq)
+        val out = mutableListOf<TabRecord>()
+        out.add(TabRecord("📊 Сводка",
+            "🔴 Просроченные поставки: ${overdue.size}\n🟡 Поставка ≤ 7 дней: ${soon.size}\n💸 Оплаты на неделе: ${payWeek.size}\n🧾 Неоплаченные счета: ${unpaid.size}\n📨 Нет подтверждения > 5 дн.: ${noConfirm.size}\n📩 Запросы цены без оплаты: ${priceReq.size}"))
+        for (group in listOf(overdue, soon, payWeek, unpaid, noConfirm, priceReq))
+            for (r in group) out.add(TabRecord(r.substringBefore('\n'), r))
         return out
     }
 
-    // ================= Финансы =================
-    private fun finances(project: String?): List<String> {
-        val out = mutableListOf<String>()
+    private fun finances(project: String?): List<TabRecord> {
+        val out = mutableListOf<TabRecord>()
         val totals = linkedMapOf<String, Double>()
+        val header = StringBuilder()
         if (project != null) {
             rows("SELECT contract_date, contract_amount, contract_currency, delivery_address FROM projects WHERE name=?", arrayOf(project)) { c ->
-                out.add("Договор: ${c.s("contract_date")} · ${c.s("contract_amount")} ${c.s("contract_currency")}\nАдрес доставки: ${c.s("delivery_address")}")
+                header.append("Договор: ${c.s("contract_date")} · ${c.s("contract_amount")} ${c.s("contract_currency")}\nАдрес доставки: ${c.s("delivery_address")}\n")
             }
         }
         val where = if (project != null) "WHERE pr.name=?" else ""
@@ -211,71 +215,75 @@ class DatabaseHelper(private val context: Context) : SQLiteOpenHelper(context, "
         rows("SELECT p.number, p.date, p.amount, p.currency, p.percent, p.paid, p.contract_date, pr.name AS proj FROM payments p LEFT JOIN projects pr ON pr.id=p.project_id $where ORDER BY pr.name, p.number", args) { c ->
             val cur = c.s("currency").ifEmpty { "—" }
             totals[cur] = (totals[cur] ?: 0.0) + parseNum(c.s("amount"))
-            out.add("№${c.i("number")} · ${c.s("proj")}\n${c.s("date")} · ${c.s("amount")} $cur · ${c.s("percent")}%\n${if (c.i("paid") == 1) "✓ оплачено" else "— не оплачено"} · когда: ${c.s("contract_date")}")
+            val paid = if (c.i("paid") == 1) "✓ оплачено" else "— не оплачено"
+            out.add(TabRecord(
+                "№${c.i("number")} · ${c.s("date")} · ${c.s("amount")} $cur · ${if (c.i("paid") == 1) "✓" else "—"}",
+                "Проект: ${c.s("proj")}\nПлатёж №${c.i("number")}\nДата: ${c.s("date")}\nСумма: ${c.s("amount")} $cur\nПроцент: ${c.s("percent")}%\nСтатус: $paid\nКогда: ${c.s("contract_date")}"
+            ))
         }
-        if (totals.isNotEmpty()) out.add("ИТОГО: " + totals.entries.joinToString(" | ") { "${fmtMoney(it.value)} ${it.key}" })
+        if (totals.isNotEmpty()) header.append("ИТОГО: ").append(totals.entries.joinToString(" | ") { "${fmtMoney(it.value)} ${it.key}" })
+        if (header.isNotEmpty()) out.add(0, TabRecord("💰 Итоги / договор", header.toString()))
         return out
     }
 
-    // ================= Спецификация =================
-    private fun specification(project: String?): List<String> {
-        val out = mutableListOf<String>()
+    private fun specification(project: String?): List<TabRecord> {
+        val out = mutableListOf<TabRecord>()
         val totals = linkedMapOf<String, Double>()
         val where = if (project != null) "WHERE pr.name=?" else ""
         val args = if (project != null) arrayOf(project) else emptyArray()
         rows("SELECT s.number, s.name, s.quantity, s.price, s.currency, pr.name AS proj FROM specifications s LEFT JOIN projects pr ON pr.id=s.project_id $where ORDER BY pr.name, s.number", args) { c ->
-            val qty = parseNum(c.s("quantity")); val price = parseNum(c.s("price"))
-            val total = qty * price
+            val total = parseNum(c.s("quantity")) * parseNum(c.s("price"))
             val cur = c.s("currency").ifEmpty { "—" }
             totals[cur] = (totals[cur] ?: 0.0) + total
-            out.add("№${c.i("number")} · ${c.s("proj")}\n${c.s("name")}\n${c.s("quantity")} × ${c.s("price")} $cur = ${fmtMoney(total)} $cur (с НДС 22%)")
+            out.add(TabRecord(
+                "№${c.i("number")} · ${short(c.s("name"))} · ${fmtMoney(total)} $cur",
+                "Проект: ${c.s("proj")}\nПозиция №${c.i("number")}\nНаименование: ${c.s("name")}\nКол-во: ${c.s("quantity")}\nЦена (с НДС 22%): ${c.s("price")} $cur\nСумма (с НДС 22%): ${fmtMoney(total)} $cur"
+            ))
         }
-        if (totals.isNotEmpty()) out.add("ИТОГО: " + totals.entries.joinToString(" | ") {
-            "${fmtMoney(it.value)} ${it.key} (НДС 22%: ${fmtMoney(it.value * 0.22 / 1.22)})"
-        })
+        if (totals.isNotEmpty()) out.add(0, TabRecord("💰 Итоги спецификации",
+            totals.entries.joinToString("\n") { "${fmtMoney(it.value)} ${it.key} · НДС 22%: ${fmtMoney(it.value * 0.22 / 1.22)}" }))
         return out
     }
 
-    // ================= Закупки =================
-    private fun purchases(project: String?): List<String> {
-        val out = mutableListOf<String>()
+    private fun purchases(project: String?): List<TabRecord> {
+        val out = mutableListOf<TabRecord>()
         val where = if (project != null) "WHERE pr.name=?" else ""
         val args = if (project != null) arrayOf(project) else emptyArray()
         rows("SELECT p.number, p.manufacturer, p.subproject, p.kd, p.article, p.name, p.name_eng, p.quantity, p.ordered, p.order_date, p.in_order, p.received, p.price_request, p.note, pr.name AS proj FROM purchases p LEFT JOIN projects pr ON pr.id=p.project_id $where ORDER BY pr.name, p.number", args) { c ->
-            out.add(("№${c.i("number")} · ${c.s("proj")}\n" +
-                "${c.s("article")} — ${c.s("name")}\n" +
-                "${c.s("manufacturer")} · подпроект: ${c.s("subproject")} · КД: ${c.s("kd")} · ${c.i("quantity")} шт\n" +
-                "Заказано ${mark(c.i("ordered"))} ${c.s("order_date")} · В заказе ${mark(c.i("in_order"))} · Получено ${mark(c.i("received"))} · Запрос цены ${mark(c.i("price_request"))}\n" +
-                c.s("note")).trim())
+            out.add(TabRecord(
+                "№${c.i("number")} · ${short(c.s("article"), 20)} · ${short(c.s("name"), 30)} · ${c.i("quantity")} шт",
+                "Проект: ${c.s("proj")}\nЗакупка №${c.i("number")}\nАртикул: ${c.s("article")}\nНаименование (рус): ${c.s("name")}\nНаименование (анг): ${c.s("name_eng")}\nПроизводитель: ${c.s("manufacturer")}\nПодпроект: ${c.s("subproject")}\nКД: ${c.s("kd")}\nКол-во: ${c.i("quantity")}\nЗаказано: ${mark(c.i("ordered"))} ${c.s("order_date")}\nВ заказе: ${mark(c.i("in_order"))}\nПолучено: ${mark(c.i("received"))}\nЗапрос цены: ${mark(c.i("price_request"))}\nПримечание: ${c.s("note")}"
+            ))
         }
         return out
     }
 
-    // ================= Спецификация Закупок =================
-    private fun purchaseSpec(project: String?): List<String> {
-        val out = mutableListOf<String>()
+    private fun purchaseSpec(project: String?): List<TabRecord> {
+        val out = mutableListOf<TabRecord>()
         val where = if (project != null) "WHERE pr.name=?" else ""
         val args = if (project != null) arrayOf(project) else emptyArray()
         rows("SELECT s.id, s.supplier, s.name, s.total, s.currency, s.payment_date, s.delivery_date, s.fully_paid, s.received, s.note, pr.name AS proj FROM purchase_specifications s LEFT JOIN projects pr ON pr.id=s.project_id $where ORDER BY s.id DESC", args) { c ->
             val id = c.i("id")
             val sb = StringBuilder()
-            sb.append("Счёт №$id · ${c.s("proj")}\n${c.s("supplier")} · ${c.s("name")}\n")
-            sb.append("${fmtMoney(c.d("total"))} ${c.s("currency")} · оплата: ${c.s("payment_date")} · поставка: ${c.s("delivery_date")}\n")
+            sb.append("Проект: ${c.s("proj")}\nПоставщик: ${c.s("supplier")}\nСпецификация: ${c.s("name")}\n")
+            sb.append("Сумма: ${fmtMoney(c.d("total"))} ${c.s("currency")}\nДата оплаты: ${c.s("payment_date")}\nДата поставки: ${c.s("delivery_date")}\n")
             sb.append(if (c.i("fully_paid") == 1) "✓ оплачен полностью" else "— не оплачен полностью")
             sb.append(if (c.i("received") == 1) " · ✓ получен" else " · — не получен")
             rows("SELECT name, quantity, price, total, delivery_term, delivery_unit FROM purchase_spec_items WHERE spec_id=? ORDER BY id", arrayOf(id.toString())) { it2 ->
                 sb.append("\n  • ${it2.s("name")} · ${fmtMoney(it2.d("quantity"))} × ${fmtMoney(it2.d("price"))} = ${fmtMoney(it2.d("total"))} · срок ${it2.s("delivery_term")} ${it2.s("delivery_unit")}")
             }
             rows("SELECT number, date, amount, currency, percent, paid FROM purchase_payments WHERE spec_id=? ORDER BY number", arrayOf(id.toString())) { p ->
-                sb.append("\n  💰 №${p.i("number")} · ${p.s("date")} · ${fmtMoney(p.d("amount"))} ${p.s("currency")} · ${p.s("percent")}% · ${mark(p.i("paid"))}")
+                sb.append("\n  💰 платёж №${p.i("number")} · ${p.s("date")} · ${fmtMoney(p.d("amount"))} ${p.s("currency")} · ${p.s("percent")}% · ${mark(p.i("paid"))}")
             }
-            if (c.s("note").isNotEmpty()) sb.append("\n${c.s("note")}")
-            out.add(sb.toString())
+            if (c.s("note").isNotEmpty()) sb.append("\nПримечание: ${c.s("note")}")
+            out.add(TabRecord(
+                "Счёт №$id · ${short(c.s("supplier"), 20)} · ${fmtMoney(c.d("total"))} ${c.s("currency")} · ${if (c.i("fully_paid") == 1) "✓" else "—"}",
+                sb.toString()
+            ))
         }
         return out
     }
 
-    // ================= Сроки =================
     private fun firstPaymentDate(project: String): String {
         var best: Date? = null
         rows("SELECT p.date FROM payments p JOIN projects pr ON pr.id=p.project_id WHERE pr.name=?", arrayOf(project)) { c ->
@@ -285,8 +293,8 @@ class DatabaseHelper(private val context: Context) : SQLiteOpenHelper(context, "
         return fmtDate(best)
     }
 
-    private fun deadlines(project: String?): List<String> {
-        val out = mutableListOf<String>()
+    private fun deadlines(project: String?): List<TabRecord> {
+        val out = mutableListOf<TabRecord>()
         val where = if (project != null) "WHERE name=?" else ""
         val args = if (project != null) arrayOf(project) else emptyArray()
         rows("SELECT name, contract_date, contract_amount, contract_currency, del_term, del_unit, del_base_date, confirmation_date, work_start, work_term, work_unit, delivery_address FROM projects $where ORDER BY name", args) { c ->
@@ -299,30 +307,34 @@ class DatabaseHelper(private val context: Context) : SQLiteOpenHelper(context, "
             }
             val delivery = calcDeadline(baseDate, c.s("del_term"), c.s("del_unit").ifEmpty { "Календарные дни" })
             val work = calcDeadline(c.s("work_start"), c.s("work_term"), c.s("work_unit").ifEmpty { "Календарные дни" })
-            out.add("Проект: $name\nДоговор: ${c.s("contract_date")} · ${c.s("contract_amount")} ${c.s("contract_currency")}\n" +
-                "Поставка: ${c.s("del_term")} ${c.s("del_unit")} ($baseType: ${baseDate.ifEmpty { "нет даты" }}) → ${delivery.ifEmpty { "—" }}\n" +
-                "Работы: ${c.s("work_start")} + ${c.s("work_term")} ${c.s("work_unit")} → ${work.ifEmpty { "—" }}\n" +
-                "Подтверждение: ${c.s("confirmation_date").ifEmpty { "—" }}\nАдрес: ${c.s("delivery_address")}")
+            out.add(TabRecord(
+                "$name · поставка → ${delivery.ifEmpty { "—" }}",
+                "Проект: $name\nДоговор: ${c.s("contract_date")} · ${c.s("contract_amount")} ${c.s("contract_currency")}\n" +
+                    "Поставка: ${c.s("del_term")} ${c.s("del_unit")}\nСчитать от: $baseType (${baseDate.ifEmpty { "нет даты" }})\nДата поставки: ${delivery.ifEmpty { "—" }}\n" +
+                    "Работы: начало ${c.s("work_start")} + ${c.s("work_term")} ${c.s("work_unit")} → ${work.ifEmpty { "—" }}\n" +
+                    "Дата подтверждения: ${c.s("confirmation_date").ifEmpty { "—" }}\nАдрес доставки: ${c.s("delivery_address")}"
+            ))
         }
         return out
     }
 
-    // ================= План-Факт =================
-    private fun planFact(project: String?): List<String> {
-        if (!tableExists("plan_fact")) return listOf("Таблица «План-Факт» отсутствует в базе")
-        val out = mutableListOf<String>()
+    private fun planFact(project: String?): List<TabRecord> {
+        if (!tableExists("plan_fact")) return listOf(TabRecord("Нет данных", "Таблица «План-Факт» отсутствует в базе"))
+        val out = mutableListOf<TabRecord>()
         val where = if (project != null) "WHERE pr.name=?" else ""
         val args = if (project != null) arrayOf(project) else emptyArray()
         rows("SELECT f.number, f.name, f.work_type, f.status, f.note, pr.name AS proj FROM plan_fact f LEFT JOIN projects pr ON pr.id=f.project_id $where ORDER BY pr.name, f.number", args) { c ->
-            out.add(("№${c.i("number")} · ${c.s("proj")}\n${c.s("name")}\nТип: ${c.s("work_type")} · Статус: ${c.s("status")}\n" + c.s("note")).trim())
+            out.add(TabRecord(
+                "№${c.i("number")} · ${short(c.s("name"), 35)} · ${c.s("status")}",
+                "Проект: ${c.s("proj")}\nРабота №${c.i("number")}\nНаименование: ${c.s("name")}\nТип работ: ${c.s("work_type")}\nСтатус: ${c.s("status")}\nПримечание: ${c.s("note")}"
+            ))
         }
         return out
     }
 
-    // ================= Бюджет =================
-    private fun budget(project: String?): List<String> {
-        val out = mutableListOf<String>()
-        if (!tableExists("currency_rates")) out.add("⚠️ Курсы валют не найдены в базе — пересчёт в рубли по курсу 1")
+    private fun budget(project: String?): List<TabRecord> {
+        val out = mutableListOf<TabRecord>()
+        if (!tableExists("currency_rates")) out.add(TabRecord("⚠️ Курсы валют", "Курсы не найдены в базе — пересчёт в рубли по курсу 1"))
         val projects = if (project != null) listOf(project) else getProjectNames()
         for (name in projects) {
             var planSell = 0.0; var income = 0.0; var planBuy = 0.0; var received = 0.0; var paidSup = 0.0
@@ -340,14 +352,35 @@ class DatabaseHelper(private val context: Context) : SQLiteOpenHelper(context, "
             rows("SELECT pp.amount, pp.currency, pp.paid FROM purchase_payments pp JOIN purchase_specifications s ON s.id=pp.spec_id JOIN projects pr ON pr.id=s.project_id WHERE pr.name=?", arrayOf(name)) { c ->
                 if (c.i("paid") == 1) paidSup += parseNum(c.s("amount")) * getRate(c.s("currency"))
             }
-            out.add("Проект: $name\nПлан продажи: ${fmtMoney(planSell)} ₽\nОплачено заказчиком: ${fmtMoney(income)} ₽\n" +
-                "План закупки: ${fmtMoney(planBuy)} ₽\nПолучено товара: ${fmtMoney(received)} ₽\nОплачено поставщикам: ${fmtMoney(paidSup)} ₽\n" +
-                "Маржа (факт): ${fmtMoney(income - paidSup)} ₽\nМаржа (план): ${fmtMoney(planSell - planBuy)} ₽")
+            out.add(TabRecord(
+                "$name · маржа: ${fmtMoney(income - paidSup)} ₽",
+                "Проект: $name\nПлан продажи: ${fmtMoney(planSell)} ₽\nОплачено заказчиком: ${fmtMoney(income)} ₽\n" +
+                    "План закупки: ${fmtMoney(planBuy)} ₽\nПолучено товара: ${fmtMoney(received)} ₽\nОплачено поставщикам: ${fmtMoney(paidSup)} ₽\n" +
+                    "Маржа (факт): ${fmtMoney(income - paidSup)} ₽\nМаржа (план): ${fmtMoney(planSell - planBuy)} ₽"
+            ))
         }
         return out
     }
 
-    // ================= Заказы (экран «Заказы») =================
+    // ================= ЗАКАЗЫ (как в Python: шапки + позиции) =================
+    data class OrderBatch(
+        val batchId: Int, val label: String, val orderDate: String, val project: String,
+        val manufacturer: String, val subproject: String, val kd: String, val paymentDate: String,
+        val deliveryDays: Int, val deliveryUnit: String, val minDate: String, val maxDate: String,
+        val invoice: String, val supplier: String, val deliveryNumber: String,
+        val received: Boolean, val receiptDate: String, val writeOffDate: String,
+        val priceRequest: Boolean, val priceRequestNum: Int,
+        val status: String, val etaDate: String, val confirmDate: String, val shipDate: String, val tracking: String
+    )
+
+    data class OrderItem(
+        val id: Int, val article: String, val name: String, val nameEng: String,
+        val quantity: Int, val deliveryTerm: Int, val deliveryUnit: String,
+        val price: String, val currency: String, val note: String,
+        val manufacturer: String, val subproject: String, val kd: String,
+        val received: Boolean, val receiptDate: String, val qtyReceived: Double
+    )
+
     fun getDistinctProjects(): List<String> = distinctValues("project_name")
     fun getDistinctManufacturers(): List<String> = distinctValues("manufacturer")
 
@@ -358,34 +391,42 @@ class DatabaseHelper(private val context: Context) : SQLiteOpenHelper(context, "
         return list
     }
 
-    fun getOrders(project: String?, isReceived: Boolean?, manufacturer: String?): List<Order> {
-        val orders = mutableListOf<Order>()
-        if (!isDatabaseReady()) return orders
-        val query = StringBuilder("SELECT id, order_batch_id, project_name, manufacturer, article, name, quantity, price, currency, received, supplier, order_date FROM orders WHERE 1=1")
-        val args = mutableListOf<String>()
-        if (!project.isNullOrEmpty() && project != "Все") { query.append(" AND project_name = ?"); args.add(project) }
-        if (isReceived != null) { query.append(" AND received = ?"); args.add(if (isReceived) "1" else "0") }
-        if (!manufacturer.isNullOrEmpty() && manufacturer != "Все") { query.append(" AND manufacturer LIKE ?"); args.add("%$manufacturer%") }
-        query.append(" ORDER BY order_batch_id DESC, id")
-        rows(query.toString(), args.toTypedArray()) { c ->
-            orders.add(Order(
-                id = c.i("id"), batchId = c.i("order_batch_id"),
-                project = c.s("project_name"), manufacturer = c.s("manufacturer"),
-                article = c.s("article"), name = c.s("name"),
-                quantity = c.i("quantity"),
-                price = parseNum(c.s("price")),
-                currency = c.s("currency"), received = c.i("received") == 1,
-                supplier = c.s("supplier"), orderDate = c.s("order_date")
+    fun getOrderBatches(): List<OrderBatch> {
+        val list = mutableListOf<OrderBatch>()
+        if (!isDatabaseReady()) return list
+        val opt = listOf("status" to "st", "eta_date" to "eta", "confirm_date" to "cd", "ship_date" to "sd", "tracking" to "tr")
+            .filter { columnExists("orders", it.first) }
+            .joinToString("") { ", MAX(${it.first}) AS ${it.second}" }
+        rows("SELECT order_batch_id AS bid, MAX(order_date) AS od, MAX(project_name) AS proj, MAX(manufacturer) AS man, MAX(subproject) AS sub, MAX(kd) AS kd, MAX(payment_date) AS pd, MAX(delivery_days) AS dd, MAX(delivery_unit_order) AS du, MAX(min_delivery_date) AS mind, MAX(max_delivery_date) AS maxd, MAX(invoice_number) AS inv, MAX(supplier) AS sup, MAX(delivery_number) AS dn, MAX(received) AS rec, MAX(receipt_date) AS rdate, MAX(write_off_date) AS wdate, MAX(price_request) AS pr, MAX(price_request_num) AS prn$opt FROM orders GROUP BY order_batch_id ORDER BY order_batch_id DESC") { c ->
+            val pr = c.i("pr") == 1; val prn = c.i("prn")
+            list.add(OrderBatch(
+                batchId = c.i("bid"), label = if (pr && prn > 0) "Z$prn" else c.s("bid"),
+                orderDate = c.s("od"), project = c.s("proj"), manufacturer = c.s("man"),
+                subproject = c.s("sub"), kd = c.s("kd"), paymentDate = c.s("pd"),
+                deliveryDays = c.i("dd"), deliveryUnit = c.s("du"),
+                minDate = c.s("mind"), maxDate = c.s("maxd"),
+                invoice = c.s("inv"), supplier = c.s("sup"), deliveryNumber = c.s("dn"),
+                received = c.i("rec") == 1, receiptDate = c.s("rdate"), writeOffDate = c.s("wdate"),
+                priceRequest = pr, priceRequestNum = prn,
+                status = c.s("st"), etaDate = c.s("eta"), confirmDate = c.s("cd"),
+                shipDate = c.s("sd"), tracking = c.s("tr")
             ))
         }
-        return orders
+        return list
     }
 
-    data class Order(
-        val id: Int, val batchId: Int, val project: String, val manufacturer: String,
-        val article: String, val name: String, val quantity: Int, val price: Double,
-        val currency: String, val received: Boolean, val supplier: String, val orderDate: String
-    ) {
-        val total: Double get() = quantity * price
+    fun getOrderItems(batchId: Int): List<OrderItem> {
+        val list = mutableListOf<OrderItem>()
+        val opt = if (columnExists("orders", "qty_received")) ", IFNULL(qty_received,0) AS qrec" else ""
+        rows("SELECT id, article, name, name_eng, quantity, delivery_term, delivery_unit, price, currency, note, manufacturer, subproject, kd, received, receipt_date$opt FROM orders WHERE order_batch_id=? ORDER BY id", arrayOf(batchId.toString())) { c ->
+            list.add(OrderItem(
+                id = c.i("id"), article = c.s("article"), name = c.s("name"), nameEng = c.s("name_eng"),
+                quantity = c.i("quantity"), deliveryTerm = c.i("delivery_term"), deliveryUnit = c.s("delivery_unit"),
+                price = c.s("price"), currency = c.s("currency"), note = c.s("note"),
+                manufacturer = c.s("manufacturer"), subproject = c.s("subproject"), kd = c.s("kd"),
+                received = c.i("received") == 1, receiptDate = c.s("receipt_date"), qtyReceived = c.d("qrec")
+            ))
+        }
+        return list
     }
 }
