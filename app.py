@@ -32,7 +32,7 @@ from settings_dialog import SettingsDialog
 from dialogs.window_geometry import restore_geometry, track_geometry
 import terminal_log
 
-# --- Новые вкладки: мягкий импорт, чтобы отсутствие файла не роняло приложение ---
+# --- Новые вкладки: мягкий импорт (отсутствие файла не роняет приложение) ---
 try:
     from tabs.dashboard import DashboardTab
 except Exception as _e:
@@ -52,7 +52,9 @@ except Exception as _e:
 terminal_log.install(os.path.join(cfg.APP_DIR, "logs"))
 
 # =================================================================
-# ГЛОБАЛЬНАЯ ЗАЩИТА от "TclError: grab failed: window not viewable"
+# ГЛОБАЛЬНАЯ ЗАЩИТА от "TclError: grab failed: window not viewable".
+# Диалоги, открытые двойным кликом, иногда вызывают grab_set() раньше,
+# чем окно успевает отрисоваться. Патчим Toplevel.grab_set один раз.
 # =================================================================
 _original_toplevel_grab_set = tk.Toplevel.grab_set
 
@@ -118,8 +120,8 @@ class ProjectManagerApp:
             self.on_project_select()
 
         # === Сквозной поиск Ctrl+K ===
-        # Tk НЕ принимает кириллические keysym ("<Control-л>") — это роняло старт.
-        # Русская раскладка ловится по keycode физической клавиши.
+        # ВАЖНО: Tk не принимает кириллические keysym ("<Control-л>") —
+        # это роняло старт (TclError). Русская раскладка ловится по keycode.
         for seq in ("<Control-k>", "<Control-K>"):
             try:
                 self.root.bind_all(seq, self.open_global_search)
@@ -223,7 +225,8 @@ class ProjectManagerApp:
                     popup.config(state="disabled")
             except Exception:
                 pass
-        # ВАЖНО: сообщения самой синхронизации не должны запускать новую синхронизацию
+        # ВАЖНО: сообщения самой синхронизации НЕ запускают новую синхронизацию
+        # (иначе получается петля: выгрузка -> лог -> выгрузка каждые 47 секунд)
         if not str(message).startswith(("Облако:", "[sync]")):
             self.touch_sync()
 
@@ -246,7 +249,7 @@ class ProjectManagerApp:
             messagebox.showerror("Резервная копия", "Не удалось создать резервную копию (см. консоль)")
 
     # ==================================================================
-    # Закрытие
+    # Закрытие приложения
     # ==================================================================
     def on_close(self):
         try:
@@ -257,6 +260,7 @@ class ProjectManagerApp:
             self.save_current_project_data()
         except Exception as e:
             print(f"Ошибка сохранения при выходе: {e}")
+        # финальная выгрузка в облако (если настроено)
         try:
             sm = getattr(self, "sync_manager", None)
             if sm is not None and sm.cfg.get("auto", True) and sm.cfg.get("user"):
@@ -385,6 +389,7 @@ class ProjectManagerApp:
         self.notebook = ttk.Notebook(self.root)
         self.notebook.pack(fill="both", expand=True, padx=10, pady=5)
 
+        # --- Сегодня ---
         if DashboardTab is not None:
             frame_dash = ttk.Frame(self.notebook, padding=10)
             self.notebook.add(frame_dash, text="  Сегодня  ")
@@ -410,11 +415,13 @@ class ProjectManagerApp:
         self.notebook.add(tab_deadlines, text="  Сроки  ")
         self.deadlines_tab = DeadlinesTab(self, tab_deadlines)
 
+        # --- План-Факт ---
         if PlanFactTab is not None:
             tab_pf = ttk.Frame(self.notebook, padding=10)
             self.notebook.add(tab_pf, text="  План-Факт  ")
             self.plan_fact_tab = PlanFactTab(self, tab_pf)
 
+        # --- Бюджет ---
         if BudgetTab is not None:
             frame_budget = ttk.Frame(self.notebook, padding=10)
             self.notebook.add(frame_budget, text="  Бюджет  ")
@@ -464,14 +471,14 @@ class ProjectManagerApp:
         self.log_text_popup = None
 
     # ==================================================================
-    # Сквозной поиск
+    # Сквозной поиск Ctrl+K
     # ==================================================================
     def _on_control_keypress(self, event):
         """Ctrl+K в любой раскладке: физическая клавиша K (X11=45, Win=75, macOS=40)."""
         ch = (getattr(event, "char", "") or "").lower()
         if ch in ("k", "л") or getattr(event, "keycode", None) in (45, 75, 40):
             return self.open_global_search()
-        return None
+        return None   # Ctrl+C/V/X обрабатываются как раньше
 
     def open_global_search(self, event=None):
         dlg = getattr(self, "_search_dialog", None)
@@ -569,7 +576,9 @@ class ProjectManagerApp:
                 res = sm.worker(local_hash)
                 self.root.after(0, lambda: apply_and_publish(res))
             except Exception as e:
-                msg = f"{type(e).__name__}: {e}"     # фиксируем СРАЗУ
+                # ВАЖНО: имя 'e' удаляется на выходе из except — фиксируем текст СРАЗУ,
+                # иначе отложенная lambda упадёт с NameError: free variable 'e'
+                msg = f"{type(e).__name__}: {e}"
                 self.root.after(0, lambda m=msg: fail(m))
 
         def apply_and_publish(res):
@@ -622,6 +631,7 @@ class ProjectManagerApp:
         threading.Thread(target=work, daemon=True).start()
 
     def reload_after_sync(self):
+        """Перечитать данные после применения чужих правок (без каскадных синхронизаций)."""
         self._sync_muted = True
         try:
             self.load_projects()

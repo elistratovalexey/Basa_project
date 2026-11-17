@@ -1,12 +1,11 @@
 # -*- coding: utf-8 -*-
 """Pre-build code check. Exit code 1 = do not build.
-Output is ASCII-only: safe on Windows console (cp1252) and Linux."""
+ASCII-only output: safe on Windows console (cp1252) and Linux."""
 import ast
 import pathlib
 import re
 import sys
 
-# Windows console may be cp1252 -> force UTF-8 with replacement fallback
 for _stream in (sys.stdout, sys.stderr):
     try:
         _stream.reconfigure(encoding="utf-8", errors="replace")
@@ -15,13 +14,23 @@ for _stream in (sys.stdout, sys.stderr):
 
 ROOT = pathlib.Path(__file__).resolve().parent
 DIRS = [ROOT, ROOT / "tabs", ROOT / "dialogs"]
-SKIP = {"venv", "venv_win", ".git", "backups", "logs", "__pycache__", "build", "dist"}
+SKIP_DIRS = {"venv", "venv_win", ".git", "backups", "logs", "__pycache__", "build", "dist"}
+# Служебные файлы содержат шаблоны проверок в виде текста -> контент-проверки к ним не применяем
+TOOLING = {"preflight_check.py", "test_project.py", "check_deps.py", "debug_word.py"}
+
+# шаблоны собираются конкатенацией/escape, чтобы файл не детектировал сам себя
+BAD_ABS = "abspath" + "(file)"
+BAD_KEY = "\u041a\u041b\u042e\u0427"                                  # КЛЮЧ
+BAD_SIZE = "\u0428\u0418\u0420\u0418\u041d\u0410x\u0412\u042b\u0421\u041e\u0422\u0410"
+RE_INIT = re.compile(r"^\s*def init\(", re.M)
+RE_BACKSLASH = re.compile(r"\)\s*\\\s*\n\s*from ")
+RE_CYR_KEYSYM = re.compile(r"<Control-[\u0430-\u044f\u0410-\u042f]>")
 
 errors, warnings, files = [], [], []
 for d in DIRS:
     if d.is_dir():
         for p in sorted(d.glob("*.py")):
-            if not any(part in SKIP for part in p.parts):
+            if not any(part in SKIP_DIRS for part in p.parts):
                 files.append(p)
 
 for p in files:
@@ -32,23 +41,27 @@ for p in files:
     except SyntaxError as e:
         errors.append(f"{rel}:{e.lineno}: {e.msg}")
         continue
-    if re.search(r"^\s*def init\(", src, re.M):
-        errors.append(f"{rel}: 'def init(' instead of '__init__'")
-    if re.search(r"abspath\(file\)", src):
-        errors.append(f"{rel}: 'abspath(file)' instead of '__file__'")
-    if re.search(r"\)\s*\\\s*\n\s*from ", src):
-        errors.append(f"{rel}: backslash after ')' before import -> SyntaxError")
-    if re.search(r"<Control-[\u0430-\u044f\u0410-\u042f]>", src):
-        errors.append(f"{rel}: Cyrillic keysym in bind -> TclError at startup")
-    if '"\u041a\u041b\u042e\u0427"' in src or "\u0428\u0418\u0420\u0418\u041d\u0410x\u0412\u042b\u0421\u041e\u0422\u0410" in src:
-        errors.append(f"{rel}: window_geometry placeholders left in code")
+
+    if RE_INIT.search(src):
+        errors.append(f"{rel}: 'def init(' instead of dunder __init__")
     if "\t" in src:
         warnings.append(f"{rel}: tab characters in indentation")
 
+    if p.name in TOOLING:
+        continue                      # дальше — проверки содержимого, не для инструментов
+
+    if BAD_ABS in src:
+        errors.append(f"{rel}: {BAD_ABS} used instead of __file__")
+    if RE_BACKSLASH.search(src):
+        errors.append(f"{rel}: backslash after ')' before import -> SyntaxError")
+    if RE_CYR_KEYSYM.search(src):
+        errors.append(f"{rel}: Cyrillic keysym in bind -> TclError at startup")
+    if BAD_KEY in src or BAD_SIZE in src:
+        errors.append(f"{rel}: window_geometry placeholders left in code")
+
 app_path = ROOT / "app.py"
 if app_path.exists():
-    app_src = app_path.read_text(encoding="utf-8")
-    if "sys.stdout is None" not in app_src:
+    if "sys.stdout is None" not in app_path.read_text(encoding="utf-8"):
         warnings.append("app.py: no stdout guard (print() fails in windowed exe)")
 else:
     errors.append("app.py is missing")
