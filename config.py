@@ -1,7 +1,15 @@
 import os
 import re
 import json
+import sys
+import os
 
+if getattr(sys, "frozen", False):
+    APP_DIR = os.path.dirname(sys.executable)        # сюда пишем БД/конфиг/логи
+    BUNDLE_DIR = getattr(sys, "_MEIPASS", APP_DIR)   # отсюда только читаем ресурсы
+else:
+    APP_DIR = os.path.dirname(os.path.abspath(__file__))
+    BUNDLE_DIR = APP_DIR
 # Попытка импорта tkcalendar
 try:
     from tkcalendar import Calendar
@@ -124,4 +132,4 @@ class ConfigManager:
 
     def set(self, key, value):
         self.config[key] = value
-        self.save_config()
+        self.save_config()

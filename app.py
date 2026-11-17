@@ -1,6 +1,18 @@
+import sys
+import os
+
+# === Windows-сборка без консоли: sys.stdout/stderr = None, а парсер PDF пишет print() ===
+if getattr(sys, "frozen", False) and (sys.stdout is None or sys.stderr is None):
+    _log_dir = os.path.join(os.path.dirname(sys.executable), "logs")
+    os.makedirs(_log_dir, exist_ok=True)
+    _stream = open(os.path.join(_log_dir, "stdout.log"), "a", encoding="utf-8", buffering=1)
+    if sys.stdout is None:
+        sys.stdout = _stream
+    if sys.stderr is None:
+        sys.stderr = _stream
+
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, simpledialog, scrolledtext
-import os
 import holidays
 import traceback
 import logging
@@ -20,7 +32,7 @@ from settings_dialog import SettingsDialog
 from dialogs.window_geometry import restore_geometry, track_geometry
 import terminal_log
 
-# --- Новые вкладки: импортируем мягко, чтобы отсутствие файла не роняло приложение ---
+# --- Новые вкладки: мягкий импорт, чтобы отсутствие файла не роняло приложение ---
 try:
     from tabs.dashboard import DashboardTab
 except Exception as _e:
@@ -73,7 +85,7 @@ class ProjectManagerApp:
         self.root.geometry("1300x950")
         self.root.minsize(1200, 800)
         restore_geometry(self.root, "main_window", "1300x950")
-        track_geometry(self, "main_window") if False else track_geometry(self.root, "main_window")
+        track_geometry(self.root, "main_window")
 
         self.config_manager = ConfigManager(cfg.LOCAL_CONFIG_FILE)
         self.db_manager = self._open_database(self.config_manager.get("db_path", DEFAULT_DB_NAME))
@@ -106,7 +118,9 @@ class ProjectManagerApp:
             self.combo_projects.set(self.combo_projects["values"][0])
             self.on_project_select()
 
-        # --- Сквозной поиск: Ctrl+K (русская раскладка ловится по keycode) ---
+        # === Сквозной поиск Ctrl+K ===
+        # ВАЖНО: Tk не принимает кириллические keysym ("<Control-л>") —
+        # это вызывало TclError при старте. Русская раскладка ловится по keycode.
         for seq in ("<Control-k>", "<Control-K>"):
             try:
                 self.root.bind_all(seq, self.open_global_search)
@@ -117,14 +131,14 @@ class ProjectManagerApp:
         except tk.TclError:
             pass
 
-        # --- Напоминания ---
+        # === Напоминания ===
         try:
             from reminders import start_reminders
             start_reminders(self, interval_min=60)
         except Exception as e:
             print(f"Напоминания не запущены: {e}")
 
-        # --- Облако Mail.ru (опционально) ---
+        # === Облако Mail.ru (опционально) ===
         try:
             from cloud_sync import SyncManager
             self.sync_manager = SyncManager(cfg.APP_DIR, cfg.get_db_path(),
@@ -231,7 +245,7 @@ class ProjectManagerApp:
             messagebox.showerror("Резервная копия", "Не удалось создать резервную копию (см. консоль)")
 
     # ==================================================================
-    # Закрытие приложения
+    # Закрытие
     # ==================================================================
     def on_close(self):
         try:
@@ -242,7 +256,6 @@ class ProjectManagerApp:
             self.save_current_project_data()
         except Exception as e:
             print(f"Ошибка сохранения при выходе: {e}")
-        # финальная выгрузка в облако (если настроено)
         try:
             sm = getattr(self, "sync_manager", None)
             if sm is not None and sm.cfg.get("auto", True) and sm.cfg.get("user"):
@@ -460,7 +473,7 @@ class ProjectManagerApp:
         ch = (getattr(event, "char", "") or "").lower()
         if ch in ("k", "л") or getattr(event, "keycode", None) in (45, 75, 40):
             return self.open_global_search()
-        return None
+        return None   # Ctrl+C/V/X обрабатываются как раньше
 
     def open_global_search(self, event=None):
         dlg = getattr(self, "_search_dialog", None)
@@ -481,7 +494,7 @@ class ProjectManagerApp:
         return "break"
 
     # ==================================================================
-    # Облако Mail.ru
+    # Облако Mail.ru (опционально)
     # ==================================================================
     def open_cloud_sync(self):
         if getattr(self, "sync_manager", None) is None:
@@ -556,7 +569,7 @@ class ProjectManagerApp:
                 res = sm.worker(local_hash)
                 self.root.after(0, lambda: apply_and_publish(res))
             except Exception as e:
-                self.root.after(0, lambda e=e: fail(str(e)))
+                self.root.after(0, lambda: fail(str(e)))
 
         def apply_and_publish(res):
             try:
@@ -576,7 +589,7 @@ class ProjectManagerApp:
                             stamp = sm.publish(snap)
                             self.root.after(0, lambda: done(stamp))
                         except Exception as e:
-                            self.root.after(0, lambda e=e: fail(str(e)))
+                            self.root.after(0, lambda: fail(str(e)))
                     threading.Thread(target=pub, daemon=True).start()
                 else:
                     done(None)
@@ -599,7 +612,6 @@ class ProjectManagerApp:
         threading.Thread(target=work, daemon=True).start()
 
     def reload_after_sync(self):
-        """Перечитать данные после применения чужих правок."""
         try:
             self.load_projects()
             if self.current_project:

@@ -42,13 +42,44 @@ def collect(db, project_name=None):
 
 
 def _notify(title, body, urgency="normal"):
-    try:
-        subprocess.Popen(["notify-send", "-u", urgency, title, body],
-                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        return True
-    except Exception:
-        return False
+    import platform
+    import tempfile
+    system = platform.system()
+    title = str(title).replace("'", "''")
+    body = str(body).replace("\n", " · ").replace("'", "''")[:240]
 
+    if system == "Linux":
+        try:
+            subprocess.Popen(["notify-send", "-u", urgency, title, body],
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            return True
+        except Exception:
+            return False
+
+    if system == "Windows":
+        try:
+            ps1 = os.path.join(tempfile.gettempdir(), "basa_notify.ps1")
+            script = (
+                "Add-Type -AssemblyName System.Windows.Forms;"
+                "Add-Type -AssemblyName System.Drawing;"
+                "$n = New-Object System.Windows.Forms.NotifyIcon;"
+                "$n.Icon = [System.Drawing.SystemIcons]::Information;"
+                f"$n.BalloonTipTitle = '{title}';"
+                f"$n.BalloonTipText = '{body}';"
+                "$n.Visible = $true; $n.ShowBalloonTip(8000);"
+                "Start-Sleep -Seconds 9; $n.Dispose();"
+            )
+            with open(ps1, "w", encoding="utf-8-sig") as f:
+                f.write(script)
+            subprocess.Popen(
+                ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
+                 "-WindowStyle", "Hidden", "-File", ps1],
+                creationflags=0x08000000,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            return True
+        except Exception:
+            return False
+    return False
 
 def run_once(app, force=False):
     db = getattr(app, "db_manager", None)
