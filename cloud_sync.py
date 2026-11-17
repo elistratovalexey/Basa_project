@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
 """Умная синхронизация SQLite-базы с облаком Mail.ru по WebDAV.
 
-Живая БД не копируется напрямую: снимок через sqlite3 backup API,
-сжатие gzip, загрузка по WebDAV. Перед загрузкой — проверка ETag,
-скачивание чужой версии и трёхстороннее слияние по строкам.
+Живая БД не отдаётся в облако напрямую: снимок через VACUUM INTO / backup API,
+сжатие gzip, загрузка по WebDAV. Перед загрузкой — проверка ETag, скачивание
+чужой версии и трёхстороннее слияние по строкам.
 """
 import base64
 import gzip
@@ -25,27 +25,29 @@ DAV_NS = "{DAV:}"
 DEFAULT_URL = "https://webdav.cloud.mail.ru"
 
 
-# ==================================================================
-# WebDAV-клиент
-# ==================================================================
 class WebDavError(Exception):
     pass
 
+
+# ==================================================================
+# WebDAV-клиент
+# ==================================================================
 class WebDavClient:
-    def __init__(self, base_url, user, password, timeout=180, retries=3, log=None):
+    def __init__(self, base_url, user, password, timeout=300, retries=4, log=None):
         self.base_url = (base_url or DEFAULT_URL).rstrip("/")
         self.user = user
         self.password = password
-        self.timeout = int(timeout or 180)
-        self.retries = max(1, int(retries or 3))
+        self.timeout = int(timeout or 300)
+        self.retries = max(1, int(retries or 4))
         self.log = log or (lambda m: None)
+        self._dirs_ok = set()
 
     def _url(self, path):
         parts = [urllib.parse.quote(p) for p in path.strip("/").split("/") if p]
         return self.base_url + "/" + "/".join(parts)
 
     def _retry(self, desc, fn):
-        """Повтор операции при таймаутах и сетевых сбоях."""
+        """Повтор при таймаутах/сетевых сбоях. Ошибки 4xx (кроме 408/429) не повторяем."""
         last = None
         for attempt in range(1, self.retries + 1):
             try:
@@ -58,6 +60,10 @@ class WebDavClient:
                                       f"проверьте логин и пароль приложения") from e
                 if e.code == 412:
                     raise WebDavError("REMOTE_CHANGED") from e
+                if e.code == 405:
+                    raise WebDavError(f"{desc}: HTTP 405 (уже существует)") from e
+                if 400 <= e.code < 500 and e.code not in (408, 429):
+                    raise WebDavError(f"{desc}: HTTP {e.code} {e.reason}") from e
                 last = WebDavError(f"{desc}: HTTP {e.code} {e.reason}")
             except (TimeoutError, socket.timeout):
                 last = WebDavError(f"{desc}: таймаут {self.timeout} с")
@@ -81,8 +87,8 @@ class WebDavClient:
             req = urllib.request.Request(self._url(path), data=data, method=method)
             token = base64.b64encode(f"{self.user}:{self.password}".encode()).decode()
             req.add_header("Authorization", "Basic " + token)
-            req.add_header("User-Agent", "BasaProject-Sync/1.1")
-            req.add_header("Connection", "close")   # не даём keep-alive зависать
+            req.add_header("User-Agent", "BasaProject-Sync/1.2")
+            req.add_header("Connection", "close")
             for k, v in (headers or {}).items():
                 req.add_header(k, v)
             return urllib.request.urlopen(req, timeout=self.timeout)
@@ -92,11 +98,14 @@ class WebDavClient:
         parts = [p for p in path.strip("/").split("/") if p]
         for i in range(len(parts)):
             sub = "/".join(parts[:i + 1])
+            if sub in self._dirs_ok:
+                continue
             try:
                 self._request("MKCOL", sub)
             except WebDavError as e:
                 if "405" not in str(e) and "409" not in str(e):
                     raise
+            self._dirs_ok.add(sub)
 
     def head(self, path):
         r = self._request("HEAD", path)
@@ -169,11 +178,11 @@ class WebDavClient:
             return out
         return self._retry(f"список {path}", call)
 
+
 # ==================================================================
 # Конфигурация и состояние
 # ==================================================================
 def load_config(app_dir):
-    """Приоритет: переменные окружения → cloud_config.json."""
     cfg = {
         "url": os.environ.get("MAILRU_WEBDAV_URL", DEFAULT_URL),
         "user": os.environ.get("MAILRU_USER", ""),
@@ -181,8 +190,11 @@ def load_config(app_dir):
         "remote_dir": "BasaProject",
         "auto": True,
         "interval_min": 15,
-        "debounce_sec": 45,
+        "debounce_sec": 120,
         "keep_remote": 10,
+        "timeout_sec": 300,
+        "retries": 4,
+        "backup_every_min": 60,
         "encrypt": False,
     }
     path = os.path.join(app_dir, "cloud_config.json")
@@ -209,7 +221,8 @@ class SyncState:
     def __init__(self, work_dir):
         self.path = os.path.join(work_dir, "sync_state.json")
         self.data = {"remote_etag": "", "last_sync": "", "last_error": "",
-                     "device": socket.gethostname(), "device_id": uuid.uuid4().hex[:8]}
+                     "device": socket.gethostname(), "device_id": uuid.uuid4().hex[:8],
+                     "last_backup_ts": 0}
         if os.path.exists(self.path):
             try:
                 with open(self.path, "r", encoding="utf-8") as f:
@@ -246,6 +259,7 @@ def make_snapshot(conn, dest_path, compact=True):
     finally:
         dst.close()
     return dest_path
+
 
 def file_sha(path):
     if not path or not os.path.exists(path):
@@ -297,6 +311,7 @@ KEY_COLUMNS = {
     "work_statuses": ["name"],
     "plan_fact": ["project_id", "number"],
     "sync_tombstones": ["tbl", "row_key"],
+    "sync_log": ["id"],
 }
 
 TS_COLUMNS = ("updated_at", "receipt_date", "order_date", "date",
@@ -351,8 +366,7 @@ def _key_of(row, cols, keys):
 def _read_table(conn, tbl, cols, keys):
     out = {}
     for r in conn.execute(f"SELECT {', '.join(cols)} FROM {tbl}"):
-        d = dict(zip(cols, r))
-        out[_key_of(r, cols, keys)] = d
+        out[_key_of(r, cols, keys)] = dict(zip(cols, r))
     return out
 
 
@@ -365,11 +379,7 @@ def _ts_of(row):
 
 
 def compute_merge(local_conn, remote_conn, base_conn):
-    """Трёхстороннее сравнение. Возвращает (ops, conflicts).
-
-    ops: [{'op': 'upsert'|'delete', 'table', 'cols', 'values'|'keys'}]
-    conflictos: список словарей с описанием спорных строк.
-    """
+    """Трёхстороннее сравнение → (ops, conflicts)."""
     ops, conflicts = [], []
     lt, rt = set(_tables(local_conn)), set(_tables(remote_conn))
     for tbl in sorted(lt & rt):
@@ -401,13 +411,13 @@ def compute_merge(local_conn, remote_conn, base_conn):
                 continue
             if l == b and r != b:
                 if r is None:
-                    ops.append({"op": "delete", "table": tbl, "cols": cols, "keys": keys,
-                                "key_values": list(k)})
+                    ops.append({"op": "delete", "table": tbl, "cols": cols,
+                                "keys": keys, "key_values": list(k)})
                 else:
                     ops.append({"op": "upsert", "table": tbl, "cols": cols,
                                 "values": [r[c] for c in cols]})
             elif r == b and l != b:
-                continue  # локаль уже новее — оставляем как есть
+                continue
             elif l != r:
                 conflicts.append({"table": tbl, "key": k, "local": l, "remote": r})
                 pick = r if _ts_of(r) > _ts_of(l) else l
@@ -417,7 +427,7 @@ def compute_merge(local_conn, remote_conn, base_conn):
 
 
 def apply_ops(conn, ops):
-    """Применяет операции в живойconn ОДНОЙ транзакцией (вызывать из GUI-потока)."""
+    """Применяет операции в живой conn ОДНОЙ транзакцией (только GUI-поток)."""
     if not ops:
         return 0
     with conn:
@@ -437,7 +447,7 @@ def apply_ops(conn, ops):
 # Менеджер синхронизации
 # ==================================================================
 class SyncManager:
-    """Оркестратор. Сеть — в рабочем потоке, живая БД — только в GUI-потоке."""
+    """Сеть — в рабочем потоке, живая БД — только в GUI-потоке."""
 
     def __init__(self, app_dir, db_path, conn, log=print):
         self.app_dir = app_dir
@@ -450,7 +460,6 @@ class SyncManager:
         self.cfg = load_config(app_dir)
         self.busy = False
 
-    # ---------- пути ----------
     @property
     def remote_dir(self):
         return self.cfg.get("remote_dir", "BasaProject").strip("/")
@@ -472,26 +481,41 @@ class SyncManager:
 
     def client(self):
         if not self.cfg.get("user") or not self.cfg.get("password"):
-            raise WebDavError("Не заданы логин/пароль WebDAV (Настройки → Облако)")
+            raise WebDavError("Не заданы логин/пароль WebDAV (Облако → Подключение)")
         return WebDavClient(self.cfg.get("url"), self.cfg["user"], self.cfg["password"],
-                            timeout=self.cfg.get("timeout_sec", 180),
-                            retries=self.cfg.get("retries", 3),
+                            timeout=self.cfg.get("timeout_sec", 300),
+                            retries=self.cfg.get("retries", 4),
                             log=self.log)
-    
-    # ---------- подготовка (GUI-поток) ----------
+
+    # ---------- GUI-поток ----------
     def prepare(self):
         ensure_sync_tables(self.conn)
         make_snapshot(self.conn, self.snap_local)
         return file_sha(self.snap_local)
 
-    # ---------- сеть + сравнение (рабочий поток) ----------
+    def safety_backup(self):
+        d = os.path.join(self.app_dir, "backups")
+        os.makedirs(d, exist_ok=True)
+        p = os.path.join(d, "presync_" + datetime.now().strftime("%Y%m%d_%H%M%S") + ".db")
+        make_snapshot(self.conn, p)
+        return p
+
+    def log_sync(self, action, details=""):
+        try:
+            self.conn.execute("INSERT INTO sync_log (ts, device, action, details) VALUES (?,?,?,?)",
+                              (datetime.now().isoformat(timespec="seconds"),
+                               self.state.data["device"], action, details))
+            self.conn.commit()
+        except Exception:
+            pass
+
+    # ---------- рабочий поток ----------
     def worker(self, local_hash):
         c = self.client()
         c.ensure_dir(self.remote_dir)
         c.ensure_dir(self.rpath("backups"))
         result = {"ops": [], "conflicts": [], "push": False, "message": ""}
 
-        # 1. Лок: другая машина сейчас синхронизируется?
         lock_name = self.rpath("sync.lock")
         lock_tmp = os.path.join(self.work, "lock.json")
         if c.get(lock_name, lock_tmp):
@@ -511,9 +535,7 @@ class SyncManager:
         c.put(lock_name, lock_tmp)
 
         try:
-            # 2. Что в облаке?
             meta = c.head(self.rpath("projects.db.gz"))
-            base_conn = None
             if meta:
                 known = self.state.data.get("remote_etag", "")
                 if meta["etag"] != known or not os.path.exists(self.snap_remote):
@@ -525,22 +547,23 @@ class SyncManager:
 
                 rc = sqlite3.connect(self.snap_remote)
                 rc.row_factory = sqlite3.Row
+                bc = None
+                lc = None
                 try:
                     if os.path.exists(self.snap_base):
                         bc = sqlite3.connect(self.snap_base)
                         bc.row_factory = sqlite3.Row
-                        base_conn = bc
                     lc = sqlite3.connect(self.snap_local)
                     lc.row_factory = sqlite3.Row
-                    try:
-                        ops, conflicts = compute_merge(lc, rc, base_conn)
-                        result["ops"], result["conflicts"] = ops, conflicts
-                    finally:
-                        lc.close()
-                        if base_conn:
-                            base_conn.close()
+                    ops, conflicts = compute_merge(lc, rc, bc)
+                    result["ops"], result["conflicts"] = ops, conflicts
                 finally:
-                    rc.close()
+                    for conn in (lc, bc, rc):
+                        if conn is not None:
+                            try:
+                                conn.close()
+                            except Exception:
+                                pass
 
             local_changed = local_hash != file_sha(self.snap_base)
             result["push"] = bool(local_changed or result["ops"] or not meta)
@@ -553,22 +576,19 @@ class SyncManager:
             except Exception:
                 pass
 
-    # ---------- публикация снимка (рабочий поток, после apply_ops) ----------
     def publish(self, snapshot_path):
         c = self.client()
         gz = os.path.join(self.work, "upload.db.gz")
         gzip_file(snapshot_path, gz)
-        # копия в backups/ — не чаще, чем раз в backup_every_min минут
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
         every = int(self.cfg.get("backup_every_min", 60) or 0)
-        last_bk = self.state.data.get("last_backup_ts", 0)
-        if every <= 0 or (time.time() - float(last_bk)) >= every * 60:
+        last_bk = float(self.state.data.get("last_backup_ts", 0) or 0)
+        if every <= 0 or (time.time() - last_bk) >= every * 60:
             c.put(self.rpath(f"backups/projects_{stamp}.db.gz"), gz)
             self.state.data["last_backup_ts"] = time.time()
             self._rotate(c)
-        etag = c.put(self.rpath("projects.db.gz"), gz,
-                     if_match=self.state.data.get("remote_etag") or None)
-        c.put(self.rpath(f"backups/projects_{stamp}.db.gz"), gz)
+
         etag = c.put(self.rpath("projects.db.gz"), gz,
                      if_match=self.state.data.get("remote_etag") or None)
         self.state.data["remote_etag"] = etag
@@ -576,7 +596,6 @@ class SyncManager:
         self.state.data["last_error"] = ""
         self.state.save()
         shutil.copyfile(snapshot_path, self.snap_base)
-        
         return stamp
 
     def _rotate(self, c):
@@ -589,20 +608,3 @@ class SyncManager:
                 c.delete(self.rpath("backups/" + old["name"]))
         except Exception as e:
             self.log(f"[sync] ротация копий: {e}")
-
-    # ---------- аварийная копия перед применением ----------
-    def safety_backup(self):
-        d = os.path.join(self.app_dir, "backups")
-        os.makedirs(d, exist_ok=True)
-        p = os.path.join(d, "presync_" + datetime.now().strftime("%Y%m%d_%H%M%S") + ".db")
-        make_snapshot(self.conn, p)
-        return p
-
-    def log_sync(self, action, details=""):
-        try:
-            self.conn.execute("INSERT INTO sync_log (ts, device, action, details) VALUES (?,?,?,?)",
-                              (datetime.now().isoformat(timespec="seconds"),
-                               self.state.data["device"], action, details))
-            self.conn.commit()
-        except Exception:
-            pass

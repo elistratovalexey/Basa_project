@@ -52,9 +52,7 @@ except Exception as _e:
 terminal_log.install(os.path.join(cfg.APP_DIR, "logs"))
 
 # =================================================================
-# ГЛОБАЛЬНАЯ ЗАЩИТА от "TclError: grab failed: window not viewable".
-# Диалоги, открытые двойным кликом, иногда вызывают grab_set() раньше,
-# чем окно успевает отрисоваться. Патчим Toplevel.grab_set один раз.
+# ГЛОБАЛЬНАЯ ЗАЩИТА от "TclError: grab failed: window not viewable"
 # =================================================================
 _original_toplevel_grab_set = tk.Toplevel.grab_set
 
@@ -106,6 +104,7 @@ class ProjectManagerApp:
         self._search_dialog = None
         self._sync_job = None
         self._sync_debounce = None
+        self._sync_muted = False
         self.sync_manager = None
 
         self.create_widgets()
@@ -119,8 +118,8 @@ class ProjectManagerApp:
             self.on_project_select()
 
         # === Сквозной поиск Ctrl+K ===
-        # ВАЖНО: Tk не принимает кириллические keysym ("<Control-л>") —
-        # это вызывало TclError при старте. Русская раскладка ловится по keycode.
+        # Tk НЕ принимает кириллические keysym ("<Control-л>") — это роняло старт.
+        # Русская раскладка ловится по keycode физической клавиши.
         for seq in ("<Control-k>", "<Control-K>"):
             try:
                 self.root.bind_all(seq, self.open_global_search)
@@ -224,7 +223,9 @@ class ProjectManagerApp:
                     popup.config(state="disabled")
             except Exception:
                 pass
-        self.touch_sync()
+        # ВАЖНО: сообщения самой синхронизации не должны запускать новую синхронизацию
+        if not str(message).startswith(("Облако:", "[sync]")):
+            self.touch_sync()
 
     def on_tk_exception(self, exc_type, exc_value, exc_tb):
         tb_text = "".join(traceback.format_exception(exc_type, exc_value, exc_tb))
@@ -384,7 +385,6 @@ class ProjectManagerApp:
         self.notebook = ttk.Notebook(self.root)
         self.notebook.pack(fill="both", expand=True, padx=10, pady=5)
 
-        # --- Сегодня ---
         if DashboardTab is not None:
             frame_dash = ttk.Frame(self.notebook, padding=10)
             self.notebook.add(frame_dash, text="  Сегодня  ")
@@ -410,13 +410,11 @@ class ProjectManagerApp:
         self.notebook.add(tab_deadlines, text="  Сроки  ")
         self.deadlines_tab = DeadlinesTab(self, tab_deadlines)
 
-        # --- План-Факт ---
         if PlanFactTab is not None:
             tab_pf = ttk.Frame(self.notebook, padding=10)
             self.notebook.add(tab_pf, text="  План-Факт  ")
             self.plan_fact_tab = PlanFactTab(self, tab_pf)
 
-        # --- Бюджет ---
         if BudgetTab is not None:
             frame_budget = ttk.Frame(self.notebook, padding=10)
             self.notebook.add(frame_budget, text="  Бюджет  ")
@@ -466,14 +464,14 @@ class ProjectManagerApp:
         self.log_text_popup = None
 
     # ==================================================================
-    # Сквозной поиск Ctrl+K
+    # Сквозной поиск
     # ==================================================================
     def _on_control_keypress(self, event):
         """Ctrl+K в любой раскладке: физическая клавиша K (X11=45, Win=75, macOS=40)."""
         ch = (getattr(event, "char", "") or "").lower()
         if ch in ("k", "л") or getattr(event, "keycode", None) in (45, 75, 40):
             return self.open_global_search()
-        return None   # Ctrl+C/V/X обрабатываются как раньше
+        return None
 
     def open_global_search(self, event=None):
         dlg = getattr(self, "_search_dialog", None)
@@ -494,7 +492,7 @@ class ProjectManagerApp:
         return "break"
 
     # ==================================================================
-    # Облако Mail.ru (опционально)
+    # Облако Mail.ru
     # ==================================================================
     def open_cloud_sync(self):
         if getattr(self, "sync_manager", None) is None:
@@ -537,16 +535,18 @@ class ProjectManagerApp:
         self.restart_sync_timer()
 
     def touch_sync(self, event=None):
-        """Дебаунс: после правки данных откладываем синхронизацию."""
+        """Дебаунс после правок. Не запускаем во время синхронизации и при mute."""
+        if getattr(self, "_sync_muted", False):
+            return
         sm = getattr(self, "sync_manager", None)
-        if sm is None or not sm.cfg.get("auto", True) or not sm.cfg.get("user"):
+        if sm is None or sm.busy or not sm.cfg.get("auto", True) or not sm.cfg.get("user"):
             return
         if self._sync_debounce:
             try:
                 self.root.after_cancel(self._sync_debounce)
             except Exception:
                 pass
-        sec = max(5, int(sm.cfg.get("debounce_sec", 45)))
+        sec = max(10, int(sm.cfg.get("debounce_sec", 120)))
         self._sync_debounce = self.root.after(sec * 1000, self.sync_now_silent)
 
     def sync_now_silent(self):
@@ -569,7 +569,8 @@ class ProjectManagerApp:
                 res = sm.worker(local_hash)
                 self.root.after(0, lambda: apply_and_publish(res))
             except Exception as e:
-                self.root.after(0, lambda: fail(str(e)))
+                msg = f"{type(e).__name__}: {e}"     # фиксируем СРАЗУ
+                self.root.after(0, lambda m=msg: fail(m))
 
         def apply_and_publish(res):
             try:
@@ -578,7 +579,11 @@ class ProjectManagerApp:
                     sm.safety_backup()
                     n = apply_ops(sm.conn, ops)
                     sm.log_sync("auto-merge", f"ops={n}")
-                    self.log_action(f"Облако: применено изменений {n}")
+                    self._sync_muted = True
+                    try:
+                        self.log_action(f"Облако: применено изменений {n}")
+                    finally:
+                        self._sync_muted = False
                     self.reload_after_sync()
                 if res.get("push"):
                     make_snapshot(sm.conn, sm.snap_local)
@@ -589,18 +594,23 @@ class ProjectManagerApp:
                             stamp = sm.publish(snap)
                             self.root.after(0, lambda: done(stamp))
                         except Exception as e:
-                            self.root.after(0, lambda: fail(str(e)))
+                            msg = f"{type(e).__name__}: {e}"
+                            self.root.after(0, lambda m=msg: fail(m))
                     threading.Thread(target=pub, daemon=True).start()
                 else:
                     done(None)
             except Exception as e:
-                fail(str(e))
+                fail(f"{type(e).__name__}: {e}")
 
         def done(stamp):
             sm.busy = False
             self.update_sync_label()
             if stamp:
-                self.log_action("Облако: база выгружена")
+                self._sync_muted = True
+                try:
+                    self.log_action("Облако: база выгружена")
+                finally:
+                    self._sync_muted = False
 
         def fail(err):
             sm.busy = False
@@ -612,6 +622,7 @@ class ProjectManagerApp:
         threading.Thread(target=work, daemon=True).start()
 
     def reload_after_sync(self):
+        self._sync_muted = True
         try:
             self.load_projects()
             if self.current_project:
@@ -620,6 +631,8 @@ class ProjectManagerApp:
             self.update_sync_label()
         except Exception as e:
             print("[sync] обновление UI:", e)
+        finally:
+            self._sync_muted = False
 
     # ==================================================================
     # Настройки

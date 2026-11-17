@@ -445,3 +445,74 @@ NameError: cannot access free variable 'e' where it is not associated with a val
 [17.11.2026 12:41:53] Облако: база выгружена
 [17.11.2026 12:42:41] Облако: база выгружена
 [17.11.2026 12:43:30] Облако: база выгружена
+[17.11.2026 12:52:06] Облако: база выгружена
+Миграция v1.9: статусы/приёмка/история цен/курсы — OK
+[sync] Настройки сохранены.
+[sync] Связь OK. Файлов в папке: 1
+[sync] — Старт синхронизации —
+[sync] Скачана свежая версия из облака. 
+[sync] Выгружено в облако. Копия: projects_20261117_095209.db.gz
+[sync] — Готово —
+[sync] ошибка: The read operation timed out
+[sync] ошибка: The read operation timed out
+[sync] ошибка: The read operation timed out
+[sync] ошибка: The read operation timed out
+[sync] ошибка: The read operation timed out
+[sync] ошибка: The read operation timed out
+[sync] ошибка: The read operation timed out
+[sync] ротация копий: The read operation timed out
+[sync] ошибка: The read operation timed out
+[sync] ошибка: The read operation timed out
+[sync] ошибка: The read operation timed out
+[sync] ротация копий: The read operation timed out
+[sync] финальная выгрузка 20261117_125748
+[17.11.2026 14:14:53] Запуск: /home/elistratov/PROJECTS_PERPLEXETY/venv/bin/python (Python 3.14.4)
+[17.11.2026 14:14:55] Программа запущена v1.8.0
+[17.11.2026 14:14:55] База данных: /home/elistratov/PROJECTS_PERPLEXETY/projects.db
+[17.11.2026 14:14:55] Резервная копия БД: /home/elistratov/PROJECTS_PERPLEXETY/backups/projects_20261117_141455.db
+[17.11.2026 14:14:55] Выбран проект: МЭЩ
+[17.11.2026 14:14:56] Успех: PID 4911
+Миграция v1.9: статусы/приёмка/история цен/курсы — OK
+[sync] — Старт синхронизации —
+[sync] ОШИБКА: TimeoutError: The read operation timed out
+[sync] финальная выгрузка 20261117_141702
+[17.11.2026 14:18:04] Запуск: /home/elistratov/PROJECTS_PERPLEXETY/venv/bin/python (Python 3.14.4)
+[17.11.2026 14:18:05] Программа запущена v1.8.0
+[17.11.2026 14:18:05] База данных: /home/elistratov/PROJECTS_PERPLEXETY/projects.db
+[17.11.2026 14:18:05] Резервная копия БД: /home/elistratov/PROJECTS_PERPLEXETY/backups/projects_20261117_141805.db
+[17.11.2026 14:18:05] Выбран проект: МЭЩ
+[17.11.2026 14:18:07] Успех: PID 5188
+[17.11.2026 14:33:08] Облако: база выгружена
+[17.11.2026 14:33:55] Облако: база выгружена
+[17.11.2026 14:35:02] Облако: база выгружена
+[17.11.2026 14:35:55] Облако: база выгружена
+[17.11.2026 14:36:43] Облако: база выгружена
+[17.11.2026 14:37:30] Облако: база выгружена
+[17.11.2026 14:38:19] Облако: база выгружена
+[17.11.2026 14:39:07] Облако: база выгружена
+[17.11.2026 14:39:55] Облако: база выгружена
+[17.11.2026 14:41:27] Облако: база выгружена
+[17.11.2026 14:42:15] Облако: база выгружена
+[17.11.2026 14:43:04] Облако: база выгружена
+Миграция v1.9: статусы/приёмка/история цен/курсы — OK
+[sync] — Старт синхронизации —
+[sync] ОШИБКА: TimeoutError: The read operation timed out
+[sync] финальная выгрузка 20261117_144431
+[17.11.2026 14:45:47] Запуск: /home/elistratov/PROJECTS_PERPLEXETY/venv/bin/python (Python 3.14.4)
+[17.11.2026 14:45:49] Программа запущена v1.8.0
+[17.11.2026 14:45:49] База данных: /home/elistratov/PROJECTS_PERPLEXETY/projects.db
+[17.11.2026 14:45:49] Резервная копия БД: /home/elistratov/PROJECTS_PERPLEXETY/backups/projects_20261117_144549.db
+[17.11.2026 14:45:49] Выбран проект: МЭЩ
+[17.11.2026 14:45:50] Успех: PID 6339
+[17.11.2026 14:46:54] ОШИБКА:
+Traceback (most recent call last):
+  File "/usr/lib/python3.14/tkinter/__init__.py", line 2096, in __call__
+    return self.func(*args)
+           ~~~~~~~~~^^^^^^^
+  File "/home/elistratov/PROJECTS_PERPLEXETY/dialogs/cloud_sync_dialog.py", line 170, in test_connection
+    self.save_cfg()
+    ~~~~~~~~~~~~~^^
+  File "/home/elistratov/PROJECTS_PERPLEXETY/dialogs/cloud_sync_dialog.py", line 154, in save_cfg
+    var = getattr(self, f"{key}_var")
+AttributeError: 'CloudSyncDialog' object has no attribute 'interval_min_var'. Did you mean: 'interval_var'?
+

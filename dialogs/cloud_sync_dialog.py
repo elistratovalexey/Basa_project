@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
 """Окно «Облако Mail.ru»: настройки WebDAV, статус, синхронизация, копии, диагностика.
 
-Потоковая модель: сеть работает в фоновых потоках, живая БД изменяется
-только в GUI-потоке (через self.after(0, ...)). Журнал потокобезопасен.
+Сеть — в фоновых потоках, живая БД — только в GUI-потоке. Журнал потокобезопасен.
 """
 import os
+import tempfile
 import threading
 import time
 import tkinter as tk
@@ -15,13 +15,23 @@ from cloud_sync import (WebDavError, save_config, apply_ops,
 
 
 class CloudSyncDialog(tk.Toplevel):
+    # совместимость с разными именами виджетов (старая/новая разметка)
+    _VAR_ALIASES = {
+        "interval_min": ("interval_min_var", "interval_var"),
+        "debounce_sec": ("debounce_sec_var", "debounce_var"),
+        "keep_remote": ("keep_remote_var", "keep_var"),
+        "timeout_sec": ("timeout_sec_var",),
+        "retries": ("retries_var",),
+        "backup_every_min": ("backup_every_min_var",),
+    }
+
     def __init__(self, parent, app):
         super().__init__(parent)
         self.app = app
         self.sm = app.sync_manager
-        self.sm.log = self.say          # логи WebDAV-клиента идут в журнал окна
+        self.sm.log = self.say
         self.title("Облако Mail.ru — синхронизация базы")
-        self.geometry("830x640")
+        self.geometry("830x660")
         self.resizable(False, False)
 
         nb = ttk.Notebook(self)
@@ -31,7 +41,7 @@ class CloudSyncDialog(tk.Toplevel):
         nb.add(tab_cfg, text="  Подключение  ")
         nb.add(tab_run, text="  Синхронизация  ")
 
-        # ================= Вкладка «Подключение» =================
+        # ================= Подключение =================
         cfg = self.sm.cfg
         self.vars = {}
         rows = [
@@ -59,17 +69,17 @@ class CloudSyncDialog(tk.Toplevel):
         f = ttk.Frame(tab_cfg)
         f.grid(row=5, column=1, sticky="w")
         ttk.Label(f, text="каждые").pack(side=tk.LEFT)
-        self.interval_var = tk.StringVar(value=str(cfg.get("interval_min", 15)))
-        ttk.Entry(f, textvariable=self.interval_var, width=5).pack(side=tk.LEFT, padx=4)
-        ttk.Label(f, text="мин · задержка после правки").pack(side=tk.LEFT)
-        self.debounce_var = tk.StringVar(value=str(cfg.get("debounce_sec", 45)))
-        ttk.Entry(f, textvariable=self.debounce_var, width=5).pack(side=tk.LEFT, padx=4)
+        self.interval_min_var = tk.StringVar(value=str(cfg.get("interval_min", 15)))
+        ttk.Entry(f, textvariable=self.interval_min_var, width=5).pack(side=tk.LEFT, padx=4)
+        ttk.Label(f, text="мин · пауза после правки").pack(side=tk.LEFT)
+        self.debounce_sec_var = tk.StringVar(value=str(cfg.get("debounce_sec", 120)))
+        ttk.Entry(f, textvariable=self.debounce_sec_var, width=5).pack(side=tk.LEFT, padx=4)
         ttk.Label(f, text="с").pack(side=tk.LEFT)
 
         num_rows = [
             ("keep_remote", "Хранить копий в облаке:", cfg.get("keep_remote", 10), 6),
-            ("timeout_sec", "Таймаут запроса, с:", cfg.get("timeout_sec", 180), 7),
-            ("retries", "Повторов при сбое:", cfg.get("retries", 3), 8),
+            ("timeout_sec", "Таймаут запроса, с:", cfg.get("timeout_sec", 300), 7),
+            ("retries", "Повторов при сбое:", cfg.get("retries", 4), 8),
             ("backup_every_min", "Копия в облако каждые, мин (0 = каждый раз):",
              cfg.get("backup_every_min", 60), 9),
         ]
@@ -85,7 +95,7 @@ class CloudSyncDialog(tk.Toplevel):
         ttk.Button(bf, text="Проверить связь", command=self.test_connection).pack(side=tk.LEFT, padx=4)
         ttk.Button(bf, text="Полная диагностика", command=self.run_diagnostics).pack(side=tk.LEFT, padx=4)
 
-        # ================= Вкладка «Синхронизация» =================
+        # ================= Синхронизация =================
         self.lbl_state = ttk.Label(tab_run, text="", justify="left", foreground="#0066cc")
         self.lbl_state.pack(anchor="w", pady=(0, 8))
         bar = ttk.Frame(tab_run)
@@ -111,8 +121,6 @@ class CloudSyncDialog(tk.Toplevel):
             pass
 
     # ------------------------------------------------------------------
-    # Служебное
-    # ------------------------------------------------------------------
     def _on_close(self):
         try:
             self.sm.log = print
@@ -121,7 +129,7 @@ class CloudSyncDialog(tk.Toplevel):
         self.destroy()
 
     def say(self, msg):
-        """Потокобезопасный вывод в журнал (можно вызывать из worker-потоков)."""
+        """Потокобезопасный вывод (можно вызывать из worker-потоков)."""
         def _put():
             try:
                 if self.winfo_exists():
@@ -144,27 +152,32 @@ class CloudSyncDialog(tk.Toplevel):
             f"Последняя синхронизация: {d.get('last_sync') or 'ещё не выполнялась'}\n"
             f"Последняя ошибка: {d.get('last_error') or 'нет'}"))
 
+    def _num_var(self, key, default):
+        for name in self._VAR_ALIASES.get(key, (f"{key}_var",)):
+            var = getattr(self, name, None)
+            if var is not None:
+                try:
+                    return int(var.get())
+                except (ValueError, tk.TclError):
+                    return default
+        return default
+
     def save_cfg(self):
         cfg = dict(self.sm.cfg)
         for k, v in self.vars.items():
             cfg[k] = v.get().strip()
         cfg["auto"] = self.auto_var.get()
-        for key, default in (("interval_min", 15), ("debounce_sec", 45), ("keep_remote", 10),
-                             ("timeout_sec", 180), ("retries", 3), ("backup_every_min", 60)):
-            var = getattr(self, f"{key}_var")
-            try:
-                val = int(var.get())
-                cfg[key] = max(0 if key == "backup_every_min" else 1, val)
-            except ValueError:
-                cfg[key] = default
+        for key, default, minimum in (("interval_min", 15, 1), ("debounce_sec", 120, 10),
+                                      ("keep_remote", 10, 1), ("timeout_sec", 300, 30),
+                                      ("retries", 4, 1), ("backup_every_min", 60, 0)):
+            cfg[key] = max(minimum, self._num_var(key, cfg.get(key, default)))
         save_config(self.sm.app_dir, cfg)
         self.sm.cfg = cfg
-        self.say("Настройки сохранены.")
+        self.say(f"Настройки сохранены: таймаут {cfg['timeout_sec']} с, "
+                 f"повторов {cfg['retries']}, пауза после правки {cfg['debounce_sec']} с")
         if hasattr(self.app, "restart_sync_timer"):
             self.app.restart_sync_timer()
 
-    # ------------------------------------------------------------------
-    # Проверки связи
     # ------------------------------------------------------------------
     def test_connection(self):
         self.save_cfg()
@@ -183,7 +196,8 @@ class CloudSyncDialog(tk.Toplevel):
                 self.say(f"Связь OK за {time.time() - t0:.1f} с. "
                          f"Файлов в папке: {len(items)}; projects.db.gz: {size}")
             except Exception as e:
-                self.say(f"Ошибка связи ({time.time() - t0:.1f} с): {e}")
+                msg = f"{type(e).__name__}: {e}"
+                self.say(f"Ошибка связи ({time.time() - t0:.1f} с): {msg}")
         threading.Thread(target=work, daemon=True).start()
 
     def run_diagnostics(self):
@@ -191,7 +205,6 @@ class CloudSyncDialog(tk.Toplevel):
         self.save_cfg()
 
         def work():
-            import tempfile
             t0 = time.time()
             try:
                 c = self.sm.client()
@@ -222,14 +235,12 @@ class CloudSyncDialog(tk.Toplevel):
                 self.say(f"[diag] DELETE выполнен. Итого {time.time() - t0:.1f} с — "
                          f"WebDAV полностью рабочий")
             except Exception as e:
-                self.say(f"[diag] ошибка ({time.time() - t0:.1f} с): {e}")
+                msg = f"{type(e).__name__}: {e}"
+                self.say(f"[diag] ошибка ({time.time() - t0:.1f} с): {msg}")
                 self.say("[diag] подсказка: «таймаут» → увеличьте таймаут/повторы; "
-                         "401/403 → проверьте пароль приложения; "
-                         "«сеть недоступна» → прокси/фаервол/DNS")
+                         "401/403 → пароль приложения; «сеть недоступна» → прокси/фаервол/DNS")
         threading.Thread(target=work, daemon=True).start()
 
-    # ------------------------------------------------------------------
-    # Синхронизация
     # ------------------------------------------------------------------
     def sync_now(self, push_only=False):
         if self.sm.busy:
@@ -238,10 +249,10 @@ class CloudSyncDialog(tk.Toplevel):
         self.sm.busy = True
         self.say("— Старт синхронизации —")
         try:
-            local_hash = self.sm.prepare()          # GUI-поток: снимок живой БД
+            local_hash = self.sm.prepare()
         except Exception as e:
             self.sm.busy = False
-            self.say(f"Не удалось сделать снимок: {e}")
+            self.say(f"Не удалось сделать снимок: {type(e).__name__}: {e}")
             return
 
         def work():
@@ -252,13 +263,15 @@ class CloudSyncDialog(tk.Toplevel):
                     res["conflicts"] = []
                 self.after(0, lambda: self._apply(res))
             except WebDavError as e:
-                self.after(0, lambda: self._fail(str(e)))
+                msg = str(e)                      # фиксируем СРАЗУ (замыкание на e недопустимо)
+                self.after(0, lambda m=msg: self._fail(m))
             except Exception as e:
-                self.after(0, lambda: self._fail(f"{type(e).__name__}: {e}"))
+                msg = f"{type(e).__name__}: {e}"
+                self.after(0, lambda m=msg: self._fail(m))
         threading.Thread(target=work, daemon=True).start()
 
     def _apply(self, res):
-        """GUI-поток: применяем чужие правки к живой БД, затем публикуем снимок."""
+        """GUI-поток: применяем чужие правки, затем публикуем снимок."""
         try:
             if res.get("message"):
                 self.say(res["message"])
@@ -284,7 +297,8 @@ class CloudSyncDialog(tk.Toplevel):
                         stamp = self.sm.publish(snap)
                         self.after(0, lambda: self._done(stamp))
                     except Exception as e:
-                        self.after(0, lambda: self._fail(str(e)))
+                        msg = f"{type(e).__name__}: {e}"
+                        self.after(0, lambda m=msg: self._fail(m))
                 threading.Thread(target=publish, daemon=True).start()
             else:
                 self._done(None)
@@ -309,9 +323,8 @@ class CloudSyncDialog(tk.Toplevel):
         low = err.lower()
         if "таймаут" in low or "timeout" in low:
             self.say("Подсказка: увеличьте «Таймаут запроса, с» до 300–600 и "
-                     "«Повторов при сбое» до 4 на вкладке «Подключение», затем "
-                     "запустите «Полную диагностику» — она покажет, на каком шаге "
-                     "(PUT/GET/PROPFIND) обрывается связь.")
+                     "«Повторов при сбое» до 4, затем запустите «Полную диагностику» — "
+                     "она покажет, на каком шаге (PUT/GET/PROPFIND) обрывается связь.")
         elif "401" in err or "403" in err or "доступ запрещён" in low:
             self.say("Подсказка: проверьте логин и пароль приложения Mail.ru "
                      "(Настройки аккаунта → Пароли для внешних приложений).")
@@ -325,5 +338,5 @@ class CloudSyncDialog(tk.Toplevel):
                 lines = [f"{fi['name']}  ·  {fi['size'] // 1024} КБ" for fi in items]
                 self.say("Копии в облаке:\n" + "\n".join(lines or ["пусто"]))
             except Exception as e:
-                self.say(f"Ошибка списка копий: {e}")
+                self.say(f"Ошибка списка копий: {type(e).__name__}: {e}")
         threading.Thread(target=work, daemon=True).start()
