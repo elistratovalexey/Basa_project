@@ -7,6 +7,9 @@ on:
 jobs:
   build:
     runs-on: windows-latest
+    env:
+      PYTHONUTF8: "1"
+      PYTHONIOENCODING: "utf-8"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -23,7 +26,7 @@ jobs:
         shell: bash
         run: |
           for f in app.py requirements.txt basa.spec preflight_check.py; do
-            if [ ! -f "$f" ]; then echo "НЕТ ФАЙЛА: $f"; exit 1; fi
+            if [ ! -f "$f" ]; then echo "MISSING FILE: $f"; exit 1; fi
             echo "OK: $f"
           done
 
