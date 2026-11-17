@@ -5,7 +5,19 @@ import ast
 import pathlib
 import re
 import sys
+import io
+import tokenize
 
+
+def code_only(src):
+    """Текст без комментариев — проверки не срабатывают на пояснения в коде."""
+    try:
+        toks = [t for t in tokenize.generate_tokens(io.StringIO(src).readline)
+                if t.type != tokenize.COMMENT]
+        return tokenize.untokenize(toks)
+    except Exception:
+        return src
+    
 for _stream in (sys.stdout, sys.stderr):
     try:
         _stream.reconfigure(encoding="utf-8", errors="replace")

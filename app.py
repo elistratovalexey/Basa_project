@@ -120,8 +120,8 @@ class ProjectManagerApp:
             self.on_project_select()
 
         # === Сквозной поиск Ctrl+K ===
-        # ВАЖНО: Tk не принимает кириллические keysym ("<Control-л>") —
-        # это роняло старт (TclError). Русская раскладка ловится по keycode.
+        # ВАЖНО: Tk не принимает кириллические keysym в bind (TclError при старте)
+        #         # это роняло старт (TclError). Русская раскладка ловится по keycode.
         for seq in ("<Control-k>", "<Control-K>"):
             try:
                 self.root.bind_all(seq, self.open_global_search)
