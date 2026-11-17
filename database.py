@@ -39,6 +39,7 @@ class DatabaseManager:
         self._ensure_order_delivery_number_column()
         self._ensure_order_write_off_column()
         self._ensure_price_request_columns()
+        self._ensure_article_aliases()
         self._ensure_plan_fact_tables()        
         self._ensure_v19()       
         self._ensure_delivery_addresses_table()
@@ -811,13 +812,17 @@ class DatabaseManager:
     # === Номенклатура ===
     def search_nomenclature(self, query, field='article'):
         c = self.conn.cursor()
+        q = f"%{query}%"
         if field == 'article':
-            c.execute("SELECT * FROM nomenclature WHERE article LIKE ? LIMIT 10", (f"%{query}%",))
+            c.execute('''SELECT DISTINCT n.* FROM nomenclature n
+                         LEFT JOIN nomenclature_aliases a ON a.nomenclature_id = n.id
+                         WHERE n.article LIKE ? OR a.alias LIKE ?
+                         LIMIT 10''', (q, q))
         else:
             c.execute("SELECT * FROM nomenclature WHERE name_rus LIKE ? OR name_eng LIKE ? LIMIT 10",
-                      (f"%{query}%", f"%{query}%"))
+                      (q, q))
         return c.fetchall()
-
+    
     def add_nomenclature(self, data):
         c = self.conn.cursor()
         c.execute('''INSERT INTO nomenclature (manufacturer, article, name_rus, name_eng)
@@ -1742,6 +1747,149 @@ class DatabaseManager:
             if counts[k] <= limit_per_kind:
                 out.append(r)
         return out
+
+    # === Алиасы артикулов поставщиков ===
+    def _ensure_article_aliases(self):
+        c = self.conn.cursor()
+        c.execute('''CREATE TABLE IF NOT EXISTS nomenclature_aliases (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            nomenclature_id INTEGER NOT NULL,
+            alias TEXT NOT NULL,
+            alias_norm TEXT NOT NULL,
+            alias_compact TEXT NOT NULL,
+            supplier TEXT DEFAULT '',
+            note TEXT DEFAULT '',
+            FOREIGN KEY (nomenclature_id) REFERENCES nomenclature(id)
+        )''')
+        c.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_alias_norm ON nomenclature_aliases(alias_norm)")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_alias_nom ON nomenclature_aliases(nomenclature_id)")
+        self.conn.commit()
+
+    @staticmethod
+    def normalize_article(s):
+        """Верхний регистр + без пробелов (в т.ч. неразрывных)."""
+        s = (s or "").upper()
+        for ch in (" ", "\u00a0", "\u202f", "\t"):
+            s = s.replace(ch, "")
+        return s.strip()
+
+    @staticmethod
+    def compact_article(s):
+        """Дополнительно без разделителей - / . _ \\"""
+        s = DatabaseManager.normalize_article(s)
+        for ch in ("-", "/", ".", "_", "\\"):
+            s = s.replace(ch, "")
+        return s
+
+    def resolve_article(self, article):
+        """Возвращает {'row', 'matched_by', 'alias'} или None.
+        Порядок: точное → без пробелов → без разделителей → таблица алиасов."""
+        art = (article or "").strip()
+        if not art:
+            return None
+        c = self.conn.cursor()
+        c.execute("SELECT * FROM nomenclature WHERE UPPER(TRIM(article))=UPPER(TRIM(?)) LIMIT 1", (art,))
+        row = c.fetchone()
+        if row:
+            return {"row": row, "matched_by": "exact", "alias": ""}
+
+        norm = self.normalize_article(art)
+        comp = self.compact_article(art)
+        c.execute("""SELECT * FROM nomenclature
+                     WHERE UPPER(REPLACE(REPLACE(REPLACE(article,' ',''),CHAR(160),''),CHAR(8239),''))=?
+                     LIMIT 1""", (norm,))
+        row = c.fetchone()
+        if row:
+            return {"row": row, "matched_by": "norm", "alias": ""}
+        c.execute("""SELECT * FROM nomenclature
+                     WHERE UPPER(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(
+                           article,' ',''),'-',''),'/',''),'.',''),'_',''),CHAR(160),''))=?
+                     LIMIT 1""", (comp,))
+        row = c.fetchone()
+        if row:
+            return {"row": row, "matched_by": "compact", "alias": ""}
+
+        a = c.execute("SELECT * FROM nomenclature_aliases WHERE alias_norm=? LIMIT 1", (norm,)).fetchone()
+        if not a:
+            a = c.execute("SELECT * FROM nomenclature_aliases WHERE alias_compact=? LIMIT 1", (comp,)).fetchone()
+        if a:
+            row = c.execute("SELECT * FROM nomenclature WHERE id=?", (a["nomenclature_id"],)).fetchone()
+            if row:
+                return {"row": row, "matched_by": "alias", "alias": a["alias"]}
+        return None
+
+    def find_nomenclature_by_article(self, article):
+        """Совместимость со старым кодом + учёт алиасов."""
+        r = self.resolve_article(article)
+        return r["row"] if r else None
+
+    def get_aliases(self, nomenclature_id):
+        return self.conn.execute(
+            "SELECT * FROM nomenclature_aliases WHERE nomenclature_id=? ORDER BY alias",
+            (nomenclature_id,)).fetchall()
+
+    def add_alias(self, nomenclature_id, alias, supplier="", note=""):
+        alias = (alias or "").strip()
+        if not alias:
+            return False, "Пустой алиас"
+        try:
+            self.conn.execute('''INSERT INTO nomenclature_aliases
+                (nomenclature_id, alias, alias_norm, alias_compact, supplier, note)
+                VALUES (?, ?, ?, ?, ?, ?)''',
+                (nomenclature_id, alias, self.normalize_article(alias),
+                 self.compact_article(alias), supplier.strip(), note.strip()))
+            self.conn.commit()
+            return True, ""
+        except sqlite3.IntegrityError:
+            return False, "Такой алиас уже привязан к другой записи"
+
+    def delete_alias(self, alias_id):
+        self.conn.execute("DELETE FROM nomenclature_aliases WHERE id=?", (alias_id,))
+        self.conn.commit()
+
+    def find_duplicate_groups(self):
+        """Группы номенклатуры, совпадающие после нормализации."""
+        rows = self.conn.execute(
+            "SELECT id, article, manufacturer, name_rus FROM nomenclature").fetchall()
+        groups = {}
+        for r in rows:
+            key = self.compact_article(r["article"])
+            if key:
+                groups.setdefault(key, []).append(dict(r))
+        return [g for g in groups.values() if len(g) > 1]
+
+    def merge_nomenclature(self, keep_id, drop_ids, rewrite_refs=True):
+        """Объединяет записи: алиасы и старый артикул уходят в каноническую запись,
+        ссылки в закупках/заказах переписываются на канонический артикул."""
+        c = self.conn.cursor()
+        keep = c.execute("SELECT * FROM nomenclature WHERE id=?", (keep_id,)).fetchone()
+        if not keep:
+            return 0
+        canonical = keep["article"]
+        merged = 0
+        with self.conn:
+            for did in drop_ids:
+                if did == keep_id:
+                    continue
+                row = c.execute("SELECT article FROM nomenclature WHERE id=?", (did,)).fetchone()
+                if not row:
+                    continue
+                old = row["article"] or ""
+                self.conn.execute("UPDATE nomenclature_aliases SET nomenclature_id=? WHERE nomenclature_id=?",
+                                  (keep_id, did))
+                if old:
+                    self.conn.execute('''INSERT OR IGNORE INTO nomenclature_aliases
+                        (nomenclature_id, alias, alias_norm, alias_compact, supplier, note)
+                        VALUES (?, ?, ?, ?, '', 'из объединённой записи')''',
+                        (keep_id, old, self.normalize_article(old), self.compact_article(old)))
+                if rewrite_refs and old:
+                    self.conn.execute("UPDATE purchases SET article=? WHERE UPPER(TRIM(article))=UPPER(TRIM(?))",
+                                      (canonical, old))
+                    self.conn.execute("UPDATE orders SET article=? WHERE UPPER(TRIM(article))=UPPER(TRIM(?))",
+                                      (canonical, old))
+                self.conn.execute("DELETE FROM nomenclature WHERE id=?", (did,))
+                merged += 1
+        return merged    
             
     def close(self):
         if self.conn:

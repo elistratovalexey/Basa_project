@@ -75,6 +75,8 @@ class PurchasesTab(BaseTab):
         ttk.Button(frame_refs, text="Справочник поставщиков", command=self.open_suppliers).pack(side=tk.LEFT, padx=3)
         ttk.Button(frame_refs, text="Справочник подпроектов", command=self.open_subprojects).pack(side=tk.LEFT, padx=3)
         ttk.Button(frame_refs, text="Справочник КД", command=self.open_kd).pack(side=tk.LEFT, padx=3)
+        ttk.Button(frame_refs, text="Алиасы артикулов",
+                   command=self.open_article_aliases).pack(side=tk.LEFT, padx=3)
 
         frame_table = ttk.LabelFrame(self.parent, text="Закупки", padding=10)
         frame_table.pack(fill="both", expand=True)
@@ -664,6 +666,14 @@ class PurchasesTab(BaseTab):
             tb = traceback.format_exc()
             print(f"✗ Исключение при экспорте:\n{tb}")
             messagebox.showerror("Ошибка экспорта", f"Не удалось создать файл Excel:\n{e}\n\nПодробности в терминале.")
+    def open_article_aliases(self):
+        from dialogs.article_aliases_dialog import ArticleAliasesDialog
+        sel = self.app.purchase_tree.selection()
+        art = ""
+        if sel:
+            vals = self.app.purchase_tree.item(sel[0])["values"]
+            art = str(vals[4]) if len(vals) > 4 else ""
+        ArticleAliasesDialog(self.root, self.db_manager, art)
 
 
 class ProjectChoiceDialog(tk.Toplevel):

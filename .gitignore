@@ -2,6 +2,10 @@
 .venv/
 venv/
 
+cloud_config.json
+cloud_sync/
+
+
 # Кэш Python
 __pycache__/
 
