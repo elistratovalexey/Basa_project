@@ -2,7 +2,13 @@ import os
 import re
 import json
 import sys
-import os
+import is
+
+from paths import (INSTALL_DIR, BUNDLE_DIR, DATA_DIR, LOCAL_DIR, APP_DIR,
+                   CONFIG_DIR, LOG_DIR, BACKUP_DIR, SYNC_DIR,
+                   LOCAL_CONFIG_FILE, DEFAULT_DB_PATH, migrate_legacy_data)
+
+migrate_legacy_data()
 
 if getattr(sys, "frozen", False):
     APP_DIR = os.path.dirname(sys.executable)        # сюда пишем БД/конфиг/логи
