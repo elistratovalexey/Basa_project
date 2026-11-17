@@ -49,9 +49,9 @@ class OrdersActivity : AppCompatActivity() {
 
         root.addView(View(this).apply { setBackgroundColor(0xFFCCCCCC.toInt()) }, LinearLayout.LayoutParams(match, dp(1)))
 
-        tvHeader = TextView(this).apply { textSize = 14f; isTextSelectable = true; text = "Выберите заказ в списке выше" }  
+        tvHeader = TextView(this).apply { textSize = 14f; setTextIsSelectable(true); text = "Выберите заказ в списке выше" }
         itemsBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        tvItemDetail = TextView(this).apply { textSize = 14f; isTextSelectable = true; setPadding(0, dp(8), 0, dp(8)) }
+        tvItemDetail = TextView(this).apply { textSize = 14f; setTextIsSelectable(true); setPadding(0, dp(8), 0, dp(8)) }
         val bottomBox = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             addView(tvHeader)

@@ -51,7 +51,7 @@ class DataTabFragment : Fragment() {
         listAdapter = ArrayAdapter(ctx, android.R.layout.simple_list_item_activated_1, mutableListOf<String>())
         listView.adapter = listAdapter
 
-        details = TextView(ctx).apply { textSize = 14f; isTextSelectable = true; text = "Выберите запись в списке выше" }
+        details = TextView(ctx).apply { textSize = 14f; setTextIsSelectable(true); text = "Выберите запись в списке выше" }
         val scroll = ScrollView(ctx).apply { addView(details, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)); setPadding(0, dp(8), 0, 0) }
 
         root.addView(spinner, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
