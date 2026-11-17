@@ -14,7 +14,8 @@ for pkg in ("holidays", "babel", "tkcalendar", "pdfminer", "pdfplumber",
 hiddenimports += collect_submodules("tabs")
 hiddenimports += collect_submodules("dialogs")
 hiddenimports += ["sqlite3", "openpyxl", "docx", "PIL", "PIL._tkinter_finder",
-                  "cloud_sync", "reminders", "terminal_log", "settings_dialog"]
+                  "terminal_log", "cloud_sync", "reminders", "settings_dialog",
+                  "config", "database", "utils"]
 a = Analysis(["app.py"], pathex=[], binaries=binaries, datas=datas,
              hiddenimports=hiddenimports, hookspath=[], runtime_hooks=[],
              excludes=["matplotlib", "PyQt5", "PyQt6", "PySide2", "PySide6", "pytest", "IPython"],
