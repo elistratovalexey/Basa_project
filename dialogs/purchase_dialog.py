@@ -5,6 +5,8 @@ import time
 import json
 import os
 
+from paths import DATA_DIR
+
 try:
     from config import CURRENCIES
 except ImportError:
@@ -23,10 +25,8 @@ except ImportError:
         """Заглушка, если deep_translator не установлена"""
         pass
 
-# === КЭШ ПЕРЕВОДОВ ===
-CACHE_FILE = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-    "translation_cache.json")
+# === КЭШ ПЕРЕВОДОВ: в папке данных, переживает переустановку ===
+CACHE_FILE = os.path.join(DATA_DIR, "translation_cache.json")
 
 
 def load_translation_cache():
@@ -41,6 +41,7 @@ def load_translation_cache():
 
 def save_translation_cache(cache):
     try:
+        os.makedirs(os.path.dirname(CACHE_FILE), exist_ok=True)
         with open(CACHE_FILE, 'w', encoding='utf-8') as f:
             json.dump(cache, f, ensure_ascii=False, indent=2)
     except Exception as e:
@@ -99,7 +100,7 @@ TECH_DICT = {
     'сталь': 'steel', 'стальной': 'steel', 'нержавеющий': 'stainless', 'латунь': 'brass',
     'пластик': 'plastic', 'пластиковый': 'plastic',
     'распределитель': 'valve', 'фитинг': 'fitting', 'глушитель': 'silencer',
-    'шланг полиуретановый': 'polyurethane hose',
+    'шланг полиуретановый': 'polyurethane hose', 'шпиндель': 'spindle', 'набор': 'set',
 }
 
 
@@ -157,7 +158,7 @@ class PurchaseDialog(tk.Toplevel):
         self.entry_name.grid(row=1, column=5, sticky="ew", padx=5, pady=5)
         self.entry_name.bind('<KeyRelease>', lambda e: self.on_name_change())
 
-        # Строка 2: Наименование (анг), кнопка перевода, Количество
+        # Строка 2: Наименование (анг), перевод, Количество
         ttk.Label(self, text="Наименование (анг):").grid(row=2, column=0, sticky="w", padx=10, pady=5)
         self.entry_name_eng = ttk.Entry(self, width=40)
         self.entry_name_eng.grid(row=2, column=1, sticky="ew", padx=5, pady=5, columnspan=3)
@@ -209,15 +210,15 @@ class PurchaseDialog(tk.Toplevel):
         ttk.Button(btn_frame, text="Алиасы артикулов", command=self.open_article_aliases).pack(side=tk.LEFT, padx=5)
         ttk.Button(btn_frame, text="История цен", command=self.open_price_history).pack(side=tk.LEFT, padx=5)
 
-        # Строка 7: подсказка АЛИАСОВ (то, чего не хватало)
+        # Строка 7: подсказка алиасов
         self.lbl_alias_hint = ttk.Label(self, text="", foreground="#7d3c98")
         self.lbl_alias_hint.grid(row=7, column=0, columnspan=7, sticky="w", padx=10, pady=(0, 4))
 
-        # Строка 8: подсказка ИСТОРИИ ЦЕН (пустая, если слоя цен нет в БД)
+        # Строка 8: подсказка истории цен (пустая, если слоя цен нет в БД)
         self.lbl_price_hint = ttk.Label(self, text="", foreground="#0066cc")
         self.lbl_price_hint.grid(row=8, column=0, columnspan=7, sticky="w", padx=10, pady=(0, 8))
 
-        # Заполняем данные если есть
+        # Заполнение данных
         if purchase_data:
             self.combo_manufacturer.set(purchase_data.get("manufacturer", ""))
             self.combo_subproject.set(purchase_data.get("subproject", ""))
@@ -247,10 +248,10 @@ class PurchaseDialog(tk.Toplevel):
             if self.winfo_exists() and self.winfo_viewable():
                 self.grab_set()
             elif attempts > 0:
-                self.after(50, lambda a=attempts - 1: self._safe_grab(a))
+                self.after(60, lambda a=attempts - 1: self._safe_grab(a))
         except tk.TclError:
             if attempts > 0:
-                self.after(50, lambda a=attempts - 1: self._safe_grab(a))
+                self.after(60, lambda a=attempts - 1: self._safe_grab(a))
 
     # ---------------- Алиасы и цены ----------------
     def open_article_aliases(self):
@@ -271,13 +272,16 @@ class PurchaseDialog(tk.Toplevel):
         PriceHistoryDialog(self, self.db_manager, self.entry_article.get().strip())
 
     def update_price_hint(self):
-        """Дебаунс 400 мс, чтобы не сканировать БД на каждое нажатие клавиши."""
+        """Дебаунс 400 мс — не сканируем БД на каждое нажатие клавиши."""
         if self._price_job:
             try:
                 self.after_cancel(self._price_job)
             except Exception:
                 pass
-        self._price_job = self.after(400, self._do_price_hint)
+        try:
+            self._price_job = self.after(400, self._do_price_hint)
+        except Exception:
+            pass
 
     def _do_price_hint(self):
         self._price_job = None
@@ -536,7 +540,7 @@ class PurchaseDialog(tk.Toplevel):
             messagebox.showwarning("Ошибка", "Некорректное количество!")
             return
 
-        # ПОДМЕНА АРТИКУЛА НА КАНОНИЧЕСКИЙ (алиасы / нормализация)
+        # подмена артикула на канонический (алиасы / нормализация)
         canonical = getattr(self, "_canonical_article", None)
         if canonical and canonical != self.entry_article.get().strip():
             self.entry_article.delete(0, tk.END)

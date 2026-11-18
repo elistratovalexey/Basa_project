@@ -1,39 +1,89 @@
 name: Build Windows EXE
+
 on:
   push:
     branches: [ main ]
+    paths-ignore:
+      - 'logs/**'
+      - 'backups/**'
+      - '*.md'
+      - 'project_log.txt'
+      - 'translation_cache.json'
+      - 'window_geometry.json'
   workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-windows-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build:
     runs-on: windows-latest
+    timeout-minutes: 30
+
     env:
+      # Windows-консоль по умолчанию cp1252 -> кириллица в print() роняет скрипты
       PYTHONUTF8: "1"
       PYTHONIOENCODING: "utf-8"
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
+
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python 3.12 x64
+        uses: actions/setup-python@v5
         with:
           python-version: '3.12'
           architecture: 'x64'
+          cache: 'pip'
+          cache-dependency-path: requirements.txt
 
-      - name: Install deps
+      - name: Show environment
+        shell: pwsh
+        run: |
+          python -V
+          python -c "import sys, locale; print('stdout encoding:', sys.stdout.encoding); print('preferred:', locale.getpreferredencoding())"
+
+      - name: Install dependencies
         run: |
           python -m pip install --upgrade pip setuptools wheel
-          pip install -r requirements.txt pyinstaller
+          pip install -r requirements.txt
+          pip install pyinstaller
 
+<<<<<<< HEAD
       - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 0        # нужно для git rev-list --count HEAD
       - name: Check build files exist
+=======
+      # --- 1. Наличие обязательных файлов (ловит Errno 2 и потерянные модули) ---
+      - name: Check required files
+>>>>>>> eb530b97f2cefc0e88447bc32c25d0016fd68c35
         shell: bash
         run: |
-          for f in app.py requirements.txt basa.spec preflight_check.py; do
-            if [ ! -f "$f" ]; then echo "MISSING FILE: $f"; exit 1; fi
-            echo "OK: $f"
+          miss=0
+          for f in app.py config.py database.py utils.py settings_dialog.py \
+                   requirements.txt basa.spec preflight_check.py; do
+            if [ ! -f "$f" ]; then echo "::error file=$f::MISSING FILE: $f"; miss=1; else echo "OK: $f"; fi
+          done
+          for d in tabs dialogs; do
+            if [ ! -d "$d" ]; then echo "::error::MISSING DIR: $d"; miss=1; else echo "OK: $d/"; fi
+          done
+          if [ "$miss" -ne 0 ]; then exit 1; fi
+
+      - name: Report optional modules
+        shell: bash
+        run: |
+          for f in paths.py terminal_log.py reminders.py cloud_sync.py installer.iss app.ico; do
+            if [ -f "$f" ]; then echo "present : $f"; else echo "absent  : $f (не критично, если импорт защищён)"; fi
           done
 
+      # --- 2. Статическая проверка кода (keysym, заглушки, отступы, битые импорты) ---
       - name: Preflight
         run: python preflight_check.py
         
@@ -47,11 +97,115 @@ jobs:
           echo "version=$V" >> "$GITHUB_OUTPUT"
           echo "Собираем версию $V"
 
-      - name: Build
+      # --- 3. Компиляция всех файлов ---
+      - name: Compile all sources
+        shell: bash
+        run: |
+          python - <<'EOF'
+          import pathlib, py_compile, sys
+          skip = {"venv", "venv_win", ".git", "build", "dist", "__pycache__", "logs", "backups"}
+          bad = []
+          n = 0
+          for p in pathlib.Path(".").rglob("*.py"):
+              if any(part in skip for part in p.parts):
+                  continue
+              n += 1
+              try:
+                  py_compile.compile(str(p), doraise=True)
+              except Exception as e:
+                  bad.append(f"{p}: {e}")
+          print(f"compiled {n} files, errors: {len(bad)}")
+          for b in bad:
+              print("ERROR", b)
+          sys.exit(1 if bad else 0)
+          EOF
+
+      # --- 4. Импорт без запуска GUI: ловит ModuleNotFoundError ДО сборки exe ---
+      - name: Import smoke test
+        shell: bash
+        run: |
+          python - <<'EOF'
+          import importlib, sys, traceback
+          mods = ["paths", "config", "utils", "database", "terminal_log",
+                  "reminders", "cloud_sync", "settings_dialog",
+                  "tabs", "dialogs", "app"]
+          failed = []
+          for m in mods:
+              try:
+                  importlib.import_module(m)
+                  print(f"OK   import {m}")
+              except ModuleNotFoundError as e:
+                  print(f"FAIL import {m}: {e}")
+                  failed.append(m)
+              except Exception as e:
+                  # ошибки инициализации (например, нет DISPLAY) не считаются фатальными
+                  print(f"WARN import {m}: {type(e).__name__}: {e}")
+          if failed:
+              print("::error::Отсутствуют модули: " + ", ".join(failed))
+              sys.exit(1)
+          print("IMPORT SMOKE TEST OK")
+          EOF
+
+      - name: Detect version
+        id: ver
+        shell: bash
+        run: |
+          v=$(python -c "import config; print(config.VERSION)" 2>/dev/null || echo "0.0.0")
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          echo "Версия: $v"
+
+      # --- 5. Сборка exe ---
+      - name: Build EXE (PyInstaller)
         run: pyinstaller --noconfirm --clean basa.spec
 
-      - uses: actions/upload-artifact@v4
+      - name: Verify build output
+        shell: pwsh
+        run: |
+          $exe = "dist\BasaProject\BasaProject.exe"
+          if (-not (Test-Path $exe)) {
+            Write-Host "::error::Не найден $exe"
+            Get-ChildItem -Recurse dist -ErrorAction SilentlyContinue | Select-Object -First 40
+            exit 1
+          }
+          $size = (Get-ChildItem -Recurse dist\BasaProject | Measure-Object -Property Length -Sum).Sum / 1MB
+          Write-Host ("Готово: {0}  ({1:N1} МБ всего)" -f $exe, $size)
+
+      # --- 6. Установщик (если есть installer.iss) ---
+      - name: Build installer (Inno Setup)
+        if: hashFiles('installer.iss') != ''
+        shell: pwsh
+        run: |
+          choco install innosetup -y --no-progress
+          $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { $iscc = "C:\Program Files\Inno Setup 6\ISCC.exe" }
+          & $iscc installer.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      # --- 7. Артефакты ---
+      - name: Upload portable app
+        uses: actions/upload-artifact@v4
         with:
           name: BasaProject-windows-${{ steps.ver.outputs.version }}-run${{ github.run_number }}
           path: dist/BasaProject
           retention-days: 30
+          if-no-files-found: error
+
+      - name: Upload installer
+        if: hashFiles('Output/*.exe') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: BasaProject-setup-${{ steps.ver.outputs.version }}-run${{ github.run_number }}
+          path: Output/*.exe
+          retention-days: 30
+
+      # --- 8. Диагностика при падении ---
+      - name: Upload PyInstaller diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pyinstaller-diagnostics-run${{ github.run_number }}
+          path: |
+            build/**/*.txt
+            build/**/*.log
+          if-no-files-found: ignore
+          retention-days: 7

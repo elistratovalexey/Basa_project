@@ -3,13 +3,24 @@ import os
 
 # === Windows-сборка без консоли: sys.stdout/stderr = None, а парсер PDF пишет print() ===
 if getattr(sys, "frozen", False) and (sys.stdout is None or sys.stderr is None):
-    _log_dir = os.path.join(os.path.dirname(sys.executable), "logs")
-    os.makedirs(_log_dir, exist_ok=True)
-    _stream = open(os.path.join(_log_dir, "stdout.log"), "a", encoding="utf-8", buffering=1)
-    if sys.stdout is None:
-        sys.stdout = _stream
-    if sys.stderr is None:
-        sys.stderr = _stream
+    try:
+        from paths import LOG_DIR as _LOG_DIR
+        _stream = open(os.path.join(_LOG_DIR, "stdout.log"), "a", encoding="utf-8", buffering=1)
+        if sys.stdout is None:
+            sys.stdout = _stream
+        if sys.stderr is None:
+            sys.stderr = _stream
+    except Exception:
+        class _Null:
+            def write(self, *a, **k):
+                pass
+
+            def flush(self):
+                pass
+        if sys.stdout is None:
+            sys.stdout = _Null()
+        if sys.stderr is None:
+            sys.stderr = _Null()
 
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, simpledialog, scrolledtext
@@ -30,9 +41,15 @@ from tabs import (FinancesTab, SpecificationTab, PurchasesTab,
                   PurchaseSpecTab, DeadlinesTab)
 from settings_dialog import SettingsDialog
 from dialogs.window_geometry import restore_geometry, track_geometry
-import terminal_log
 
-# --- Новые вкладки: мягкий импорт (отсутствие файла не роняет приложение) ---
+# --- Лог терминала: мягкий импорт (отсутствие файла не роняет приложение) ---
+try:
+    import terminal_log
+except Exception as _e:
+    terminal_log = None
+    print(f"[app] лог терминала недоступен: {_e}")
+
+# --- Новые вкладки: мягкий импорт ---
 try:
     from tabs.dashboard import DashboardTab
 except Exception as _e:
@@ -49,12 +66,11 @@ except Exception as _e:
     PlanFactTab = None
     print(f"[app] вкладка «План-Факт» недоступна: {_e}")
 
-terminal_log.install(os.path.join(cfg.APP_DIR, "logs"))
+if terminal_log is not None:
+    terminal_log.install(cfg.LOG_DIR)
 
 # =================================================================
-# ГЛОБАЛЬНАЯ ЗАЩИТА от "TclError: grab failed: window not viewable".
-# Диалоги, открытые двойным кликом, иногда вызывают grab_set() раньше,
-# чем окно успевает отрисоваться. Патчим Toplevel.grab_set один раз.
+# ГЛОБАЛЬНАЯ ЗАЩИТА от "TclError: grab failed: window not viewable"
 # =================================================================
 _original_toplevel_grab_set = tk.Toplevel.grab_set
 
@@ -117,6 +133,7 @@ class ProjectManagerApp:
             self.log_action(f"Версия обновлена: {prev_ver} → {VERSION}")
         self.config_manager.set("app_version", VERSION)
         self.log_action(f"База данных: {cfg.get_db_path()}")
+        self.log_action(f"Данные пользователя: {cfg.DATA_DIR}")
         self.make_backup(silent=True)
         self.update_datetime()
         if self.combo_projects["values"]:
@@ -124,8 +141,7 @@ class ProjectManagerApp:
             self.on_project_select()
 
         # === Сквозной поиск Ctrl+K ===
-        # ВАЖНО: Tk не принимает кириллические keysym в bind (TclError при старте)
-        #         # это роняло старт (TclError). Русская раскладка ловится по keycode.
+        # Tk не принимает кириллические keysym в bind — русская раскладка ловится по keycode
         for seq in ("<Control-k>", "<Control-K>"):
             try:
                 self.root.bind_all(seq, self.open_global_search)
@@ -146,7 +162,7 @@ class ProjectManagerApp:
         # === Облако Mail.ru (опционально) ===
         try:
             from cloud_sync import SyncManager
-            self.sync_manager = SyncManager(cfg.APP_DIR, cfg.get_db_path(),
+            self.sync_manager = SyncManager(cfg.DATA_DIR, cfg.get_db_path(),
                                             self.db_manager.conn, log=print)
             self.update_sync_label()
             self.restart_sync_timer()
@@ -158,10 +174,9 @@ class ProjectManagerApp:
     # ==================================================================
     def _open_database(self, db_path):
         path = setup_paths(db_path)
-        local_db = os.path.join(cfg.APP_DIR, DEFAULT_DB_NAME)
-        if not os.path.isdir(os.path.dirname(path)) and os.path.exists(local_db):
-            print(f"Папка {os.path.dirname(path)} недоступна, используется {local_db}")
-            path = setup_paths(local_db)
+        if not os.path.isdir(os.path.dirname(path)) and os.path.exists(cfg.DEFAULT_DB_PATH):
+            print(f"Папка {os.path.dirname(path)} недоступна, используется {cfg.DEFAULT_DB_PATH}")
+            path = setup_paths(cfg.DEFAULT_DB_PATH)
         try:
             return DatabaseManager(path)
         except Exception as e:
@@ -187,8 +202,9 @@ class ProjectManagerApp:
             self.logger.removeHandler(handler)
         formatter = logging.Formatter('[%(asctime)s] %(message)s', '%d.%m.%Y %H:%M:%S')
         file_handler = None
-        for log_file in (cfg.get_log_file(), os.path.join(cfg.APP_DIR, cfg.LOG_NAME)):
+        for log_file in (cfg.get_log_file(), os.path.join(cfg.LOG_DIR, cfg.LOG_NAME)):
             try:
+                os.makedirs(os.path.dirname(log_file), exist_ok=True)
                 file_handler = logging.FileHandler(log_file, encoding='utf-8')
                 break
             except OSError:
@@ -229,8 +245,7 @@ class ProjectManagerApp:
                     popup.config(state="disabled")
             except Exception:
                 pass
-        # ВАЖНО: сообщения самой синхронизации НЕ запускают новую синхронизацию
-        # (иначе получается петля: выгрузка -> лог -> выгрузка каждые 47 секунд)
+        # сообщения самой синхронизации НЕ запускают новую синхронизацию (иначе петля)
         if not str(message).startswith(("Облако:", "[sync]")):
             self.touch_sync()
 
@@ -253,7 +268,7 @@ class ProjectManagerApp:
             messagebox.showerror("Резервная копия", "Не удалось создать резервную копию (см. консоль)")
 
     # ==================================================================
-    # Закрытие приложения
+    # Закрытие
     # ==================================================================
     def on_close(self):
         try:
@@ -264,7 +279,6 @@ class ProjectManagerApp:
             self.save_current_project_data()
         except Exception as e:
             print(f"Ошибка сохранения при выходе: {e}")
-        # финальная выгрузка в облако (если настроено)
         try:
             sm = getattr(self, "sync_manager", None)
             if sm is not None and sm.cfg.get("auto", True) and sm.cfg.get("user"):
@@ -278,7 +292,8 @@ class ProjectManagerApp:
         except Exception:
             pass
         try:
-            terminal_log.session_end()
+            if terminal_log is not None:
+                terminal_log.session_end()
         except Exception:
             pass
         self.root.destroy()
@@ -359,6 +374,8 @@ class ProjectManagerApp:
         self.lbl_sync.pack(side=tk.RIGHT, padx=6)
         ttk.Button(frame_top, text="☁ Облако",
                    command=self.open_cloud_sync).pack(side=tk.RIGHT, padx=4)
+        ttk.Button(frame_top, text="📁 Папка данных",
+                   command=self.open_data_dir).pack(side=tk.RIGHT, padx=4)
 
         frame_project = ttk.LabelFrame(self.root, text="Проект", padding=10)
         frame_project.pack(fill="x", padx=10, pady=5)
@@ -393,7 +410,6 @@ class ProjectManagerApp:
         self.notebook = ttk.Notebook(self.root)
         self.notebook.pack(fill="both", expand=True, padx=10, pady=5)
 
-        # --- Сегодня ---
         if DashboardTab is not None:
             frame_dash = ttk.Frame(self.notebook, padding=10)
             self.notebook.add(frame_dash, text="  Сегодня  ")
@@ -419,13 +435,11 @@ class ProjectManagerApp:
         self.notebook.add(tab_deadlines, text="  Сроки  ")
         self.deadlines_tab = DeadlinesTab(self, tab_deadlines)
 
-        # --- План-Факт ---
         if PlanFactTab is not None:
             tab_pf = ttk.Frame(self.notebook, padding=10)
             self.notebook.add(tab_pf, text="  План-Факт  ")
             self.plan_fact_tab = PlanFactTab(self, tab_pf)
 
-        # --- Бюджет ---
         if BudgetTab is not None:
             frame_budget = ttk.Frame(self.notebook, padding=10)
             self.notebook.add(frame_budget, text="  Бюджет  ")
@@ -435,11 +449,15 @@ class ProjectManagerApp:
             for seq in ("<Control-v>", "<Control-V>"):
                 self.root.bind_class(cls, seq, self.paste_from_clipboard)
 
+    def open_data_dir(self):
+        """Быстрый доступ к папке данных (переживает переустановку)."""
+        open_path(cfg.DATA_DIR)
+
     # ==================================================================
     # Журнал
     # ==================================================================
     def open_terminal_log(self):
-        p = terminal_log.get_path()
+        p = terminal_log.get_path() if terminal_log is not None else None
         if p and os.path.exists(p):
             open_path(p)
         else:
@@ -455,6 +473,8 @@ class ProjectManagerApp:
         self.log_window = tk.Toplevel(self.root)
         self.log_window.title("Журнал действий")
         self.log_window.geometry("1000x420")
+        restore_geometry(self.log_window, "log_window", "1000x420")
+        track_geometry(self.log_window, "log_window")
         self.log_text_popup = scrolledtext.ScrolledText(
             self.log_window, state="disabled", wrap=tk.WORD, font=("Consolas", 9))
         self.log_text_popup.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
@@ -475,14 +495,14 @@ class ProjectManagerApp:
         self.log_text_popup = None
 
     # ==================================================================
-    # Сквозной поиск Ctrl+K
+    # Сквозной поиск
     # ==================================================================
     def _on_control_keypress(self, event):
         """Ctrl+K в любой раскладке: физическая клавиша K (X11=45, Win=75, macOS=40)."""
         ch = (getattr(event, "char", "") or "").lower()
         if ch in ("k", "л") or getattr(event, "keycode", None) in (45, 75, 40):
             return self.open_global_search()
-        return None   # Ctrl+C/V/X обрабатываются как раньше
+        return None
 
     def open_global_search(self, event=None):
         dlg = getattr(self, "_search_dialog", None)
@@ -546,7 +566,6 @@ class ProjectManagerApp:
         self.restart_sync_timer()
 
     def touch_sync(self, event=None):
-        """Дебаунс после правок. Не запускаем во время синхронизации и при mute."""
         if getattr(self, "_sync_muted", False):
             return
         sm = getattr(self, "sync_manager", None)
@@ -561,7 +580,7 @@ class ProjectManagerApp:
         self._sync_debounce = self.root.after(sec * 1000, self.sync_now_silent)
 
     def sync_now_silent(self):
-        """Фоновая синхронизация: сеть в потоке, живая БД — только в GUI-потоке."""
+        """Сеть — в фоновом потоке, живая БД — только в GUI-потоке."""
         sm = getattr(self, "sync_manager", None)
         if sm is None or sm.busy or not sm.cfg.get("user"):
             return
@@ -580,9 +599,7 @@ class ProjectManagerApp:
                 res = sm.worker(local_hash)
                 self.root.after(0, lambda: apply_and_publish(res))
             except Exception as e:
-                # ВАЖНО: имя 'e' удаляется на выходе из except — фиксируем текст СРАЗУ,
-                # иначе отложенная lambda упадёт с NameError: free variable 'e'
-                msg = f"{type(e).__name__}: {e}"
+                msg = f"{type(e).__name__}: {e}"      # фиксируем СРАЗУ (замыкание на e недопустимо)
                 self.root.after(0, lambda m=msg: fail(m))
 
         def apply_and_publish(res):
@@ -635,7 +652,6 @@ class ProjectManagerApp:
         threading.Thread(target=work, daemon=True).start()
 
     def reload_after_sync(self):
-        """Перечитать данные после применения чужих правок (без каскадных синхронизаций)."""
         self._sync_muted = True
         try:
             self.load_projects()
