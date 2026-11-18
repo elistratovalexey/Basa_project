@@ -12,6 +12,7 @@ import os
 import datetime
 
 
+
 class _TeeStream:
     """Пишет одновременно в оригинальный поток (терминал) и в файл."""
 
