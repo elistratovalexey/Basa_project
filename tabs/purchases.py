@@ -27,17 +27,19 @@ class PurchasesTab(BaseTab):
         ttk.Button(frame_controls, text="Добавить позицию", command=self.add_purchase).pack(side=tk.LEFT, padx=5)
         ttk.Button(frame_controls, text="Редактировать", command=self.edit_purchase).pack(side=tk.LEFT, padx=5)
         ttk.Button(frame_controls, text="Удалить", command=self.delete_purchase).pack(side=tk.LEFT, padx=5)
-        # НОВОЕ: перенос выделенных позиций в другой проект
         ttk.Button(frame_controls, text="Сменить проект", command=self.change_purchase_project).pack(side=tk.LEFT, padx=5)
         ttk.Button(frame_controls, text="Создать заказ", command=self.create_order).pack(side=tk.LEFT, padx=10)
         ttk.Button(frame_controls, text="Приёмка", command=self.open_receiving).pack(side=tk.LEFT, padx=5)
-        ttk.Button(frame_controls, text="История цен", command=self.open_price_history).pack(side=tk.LEFT, padx=5)      
+        ttk.Button(frame_controls, text="История цен", command=self.open_price_history).pack(side=tk.LEFT, padx=5)
         ttk.Button(frame_controls, text="В справочник номенклатуры",
                    command=self.add_to_nomenclature).pack(side=tk.LEFT, padx=10)
-        ttk.Button(frame_controls, text="Поиск по номенклатуре", command=self.open_nomenclature_search).pack(side=tk.LEFT, padx=5)
-        ttk.Button(frame_controls, text="Импорт из файла", command=self.show_import_dialog).pack(side=tk.LEFT, padx=10)
-        ttk.Button(frame_controls, text="Вывод в EXCEL", command=self.export_purchases_to_excel).pack(side=tk.RIGHT, padx=5)
-        btn_orders.pack(side=tk.RIGHT, padx=5)
+        ttk.Button(frame_controls, text="Поиск по номенклатуре",
+                   command=self.open_nomenclature_search).pack(side=tk.LEFT, padx=5)
+        ttk.Button(frame_controls, text="Импорт из файла",
+                   command=self.show_import_dialog).pack(side=tk.LEFT, padx=10)
+        ttk.Button(frame_controls, text="Вывод в EXCEL",
+                   command=self.export_purchases_to_excel).pack(side=tk.RIGHT, padx=5)
+        # Кнопка «ЗАКАЗЫ» перенесена в верхнюю панель приложения (app.show_orders)
 
         filter_frame = ttk.Frame(self.parent)
         filter_frame.pack(fill="x", pady=5)
@@ -79,12 +81,13 @@ class PurchasesTab(BaseTab):
 
         frame_table = ttk.LabelFrame(self.parent, text="Закупки", padding=10)
         frame_table.pack(fill="both", expand=True)
-        # НОВОЕ: колонка project между price_request и note —
-        # номера колонок флагов (#9,#11,#12,#13) не сбиваются
+        # Колонка project между price_request и note —
+        # номера колонок флагов (#9, #11, #12, #13) не сбиваются
         columns = ("number", "manufacturer", "subproject", "kd", "article", "name", "name_eng",
                    "quantity", "ordered", "order_date", "in_order", "received",
                    "price_request", "project", "note")
-        self.app.purchase_tree = ttk.Treeview(frame_table, columns=columns, show="headings", height=10)
+        self.app.purchase_tree = ttk.Treeview(frame_table, columns=columns, show="headings",
+                                              height=10, selectmode="extended")
         self.app.purchase_tree.heading("number", text="№")
         self.app.purchase_tree.heading("manufacturer", text="Производитель")
         self.app.purchase_tree.heading("subproject", text="Подпроект")
@@ -115,29 +118,55 @@ class PurchasesTab(BaseTab):
         self.app.purchase_tree.column("price_request", width=80, anchor="center")
         self.app.purchase_tree.column("project", width=120, anchor="w")
         self.app.purchase_tree.column("note", width=150, anchor="w")
-        # НОВОЕ: индекс колонки "Проект" для клика-переноса
+        # индекс колонки «Проект» для клика-переноса
         self._project_col = f"#{columns.index('project') + 1}"
         scrollbar = ttk.Scrollbar(frame_table, orient=tk.VERTICAL, command=self.app.purchase_tree.yview)
         self.app.purchase_tree.configure(yscroll=scrollbar.set)
         self.app.purchase_tree.pack(side=tk.LEFT, fill="both", expand=True)
         scrollbar.pack(side=tk.RIGHT, fill="y")
+        self.app.purchase_tree.tag_configure('done', background='#d9ead3')
+        self.app.purchase_tree.tag_configure('ordered', background='#fff2cc')
         self.app.purchase_tree.bind("<Double-1>", lambda e: self.edit_purchase())
         self.app.purchase_tree.bind("<Button-1>", self.on_purchase_click)
-    
+
+    # ==================================================================
+    # Приёмка / история цен / алиасы (импорт защищён)
+    # ==================================================================
     def open_receiving(self):
-        from dialogs.receiving_dialog import ReceivingDialog
+        try:
+            from dialogs.receiving_dialog import ReceivingDialog
+        except ImportError as e:
+            messagebox.showerror("Ошибка", f"Модуль приёмки недоступен:\n{e}")
+            return
         ReceivingDialog(self.root, self.db_manager, self.app.current_project)
         self.load_purchases()
 
     def open_price_history(self):
-        from dialogs.price_history_dialog import PriceHistoryDialog
-        sel = self.app.purchase_tree.selection()
-        art = ""
-        if sel:
-            vals = self.app.purchase_tree.item(sel[0])["values"]
-            art = str(vals[4]) if len(vals) > 4 else ""
-        PriceHistoryDialog(self.root, self.db_manager, art)       
+        try:
+            from dialogs.price_history_dialog import PriceHistoryDialog
+        except ImportError as e:
+            messagebox.showerror("Ошибка", f"Модуль истории цен недоступен:\n{e}")
+            return
+        PriceHistoryDialog(self.root, self.db_manager, self._selected_article())
 
+    def open_article_aliases(self):
+        try:
+            from dialogs.article_aliases_dialog import ArticleAliasesDialog
+        except ImportError as e:
+            messagebox.showerror("Ошибка", f"Модуль алиасов недоступен:\n{e}")
+            return
+        ArticleAliasesDialog(self.root, self.db_manager, self._selected_article())
+
+    def _selected_article(self):
+        sel = self.app.purchase_tree.selection()
+        if not sel:
+            return ""
+        vals = self.app.purchase_tree.item(sel[0])["values"]
+        return str(vals[4]) if len(vals) > 4 else ""
+
+    # ==================================================================
+    # Клики по таблице: флаги и перенос проекта
+    # ==================================================================
     def on_purchase_click(self, event):
         tree = self.app.purchase_tree
         try:
@@ -148,9 +177,10 @@ class PurchasesTab(BaseTab):
             return
         if region != "cell":
             return
-        # НОВОЕ: клик по ячейке "Проект" = перенос этой позиции в другой проект
+        # клик по ячейке «Проект» = перенос позиции в другой проект
         if col == self._project_col:
-            self.change_purchase_project(row_ids=[row_id])
+            if row_id:
+                self.change_purchase_project(row_ids=[row_id])
             return "break"
         flag_map = {'#9': 'ordered', '#11': 'in_order', '#12': 'received', '#13': 'price_request'}
         field = flag_map.get(col)
@@ -174,12 +204,23 @@ class PurchasesTab(BaseTab):
         cur = 1 if full[field] else 0
         new = 0 if cur else 1
         self.db_manager.set_purchase_flag(project_id, number, field, new)
+
+        # НОВОЕ: у «Получено» проставляем/снимаем дату получения
+        if field == "received":
+            data = dict(full)
+            data["number"] = number
+            data["receipt_date"] = datetime.now().strftime("%d.%m.%Y") if new else ""
+            try:
+                self.db_manager.update_purchase(project_id, number, data)
+            except Exception as e:
+                print(f"[purchases] не удалось записать дату получения: {e}")
+
         self.app.log_action(f"Переключено {field}={new} у закупки №{number}")
         self.root.after_idle(self.load_purchases)
         return "break"
 
     def change_purchase_project(self, row_ids=None):
-        """НОВОЕ: перенос выбранных (или одной) закупок в другой проект."""
+        """Перенос выбранных (или одной) закупок в другой проект."""
         if not self.app.current_project:
             messagebox.showwarning("Внимание", "Выберите проект!")
             return
@@ -188,6 +229,7 @@ class PurchasesTab(BaseTab):
             return
         if row_ids is None:
             row_ids = self.app.purchase_tree.selection()
+        row_ids = [r for r in (row_ids or []) if r]
         if not row_ids:
             messagebox.showwarning("Внимание", "Выберите позицию(и) для переноса!")
             return
@@ -213,21 +255,28 @@ class PurchasesTab(BaseTab):
         self.load_purchases()
         messagebox.showinfo("Успех", f"Перенесено позиций: {moved} в проект '{dialog.result}'")
 
+    # ==================================================================
+    # CRUD
+    # ==================================================================
     def add_purchase(self):
         if not self.app.current_project:
             messagebox.showwarning("Внимание", "Выберите проект!")
             return
-        dialog = PurchaseDialog(self.root, "Добавить закупку", self.app.purchase_counter,
+        project_id = self.db_manager.get_project_id(self.app.current_project)
+        if not project_id:
+            messagebox.showerror("Ошибка", "Не удалось получить ID проекта!")
+            return
+        # номер берём из БД — не зависит от фильтров и импортов
+        number = self.db_manager.get_next_number("purchases", project_id)
+        dialog = PurchaseDialog(self.root, "Добавить закупку", number,
                                 db_manager=self.db_manager, project_name=self.app.current_project)
         self.root.wait_window(dialog)
         if dialog.result:
             purchase = dialog.result
-            project_id = self.db_manager.get_project_id(self.app.current_project)
-            if project_id:
-                self.db_manager.add_purchase(project_id, purchase)
-                self.load_purchases()
-                self.app.purchase_counter += 1
-                self.app.log_action(f"Закупка №{purchase['number']} добавлена")
+            purchase["number"] = number
+            self.db_manager.add_purchase(project_id, purchase)
+            self.load_purchases()
+            self.app.log_action(f"Закупка №{purchase['number']} добавлена")
 
     def edit_purchase(self):
         selected = self.app.purchase_tree.selection()
@@ -268,8 +317,9 @@ class PurchasesTab(BaseTab):
                                 db_manager=self.db_manager, project_name=self.app.current_project)
         self.root.wait_window(dialog)
         if dialog.result and isinstance(dialog.result, dict) and dialog.result:
-            # диалог не редактирует флаг "Запрос цены" — сохраняем текущее значение
+            # если диалог не вернул флаг «Запрос цены» — сохраняем текущее значение
             dialog.result.setdefault('price_request', full.get('price_request', 0))
+            dialog.result.setdefault('receipt_date', full.get('receipt_date', ''))
             try:
                 self.db_manager.update_purchase(project_id, number, dialog.result)
                 self.load_purchases()
@@ -289,9 +339,19 @@ class PurchasesTab(BaseTab):
             project_id = self.db_manager.get_project_id(self.app.current_project)
             if project_id:
                 self.db_manager.delete_purchase(project_id, number)
+                # НОВОЕ: фиксируем удаление, чтобы облако не «воскресило» строку
+                try:
+                    from cloud_sync import mark_deleted
+                    mark_deleted(self.db_manager.conn, "purchases",
+                                 {"project_id": project_id, "number": number})
+                except Exception:
+                    pass
                 self.load_purchases()
                 self.app.log_action(f"Закупка №{number} удалена")
 
+    # ==================================================================
+    # Загрузка таблицы и фильтры
+    # ==================================================================
     def load_purchases(self):
         for item in self.app.purchase_tree.get_children():
             self.app.purchase_tree.delete(item)
@@ -324,15 +384,21 @@ class PurchasesTab(BaseTab):
             in_order_mark = "✓" if p["in_order"] else ""
             received_mark = "✓" if p["received"] else ""
             price_request_mark = "✓" if p["price_request"] else ""
-            # НОВОЕ: имя проекта из JOIN в get_purchases
-            self.app.purchase_tree.insert("", tk.END, values=(
+            tags = ()
+            if p["received"]:
+                tags = ('done',)
+            elif p["ordered"]:
+                tags = ('ordered',)
+            # имя проекта берём из JOIN get_purchases (фолбэк — текущий проект)
+            proj = (p["project_name"] if "project_name" in p.keys() else "") or self.app.current_project or ""
+            self.app.purchase_tree.insert("", tk.END, tags=tags, values=(
                 p["number"], p["manufacturer"] or "", p["subproject"] or "",
                 p["kd"] or "", p["article"] or "", p["name"] or "",
                 p["name_eng"] or "", p["quantity"] or "",
                 ordered_mark, p["order_date"] or "", in_order_mark, received_mark,
-                price_request_mark, self.app.current_project or "", p["note"] or ""
+                price_request_mark, proj, p["note"] or ""
             ))
-        # Номер следующей закупки — по ВСЕМ позициям проекта (не по отфильтрованным)
+        # номер следующей закупки — по ВСЕМ позициям проекта (не по отфильтрованным)
         self.app.purchase_counter = self.db_manager.get_next_number("purchases", project_id)
         self.update_filter_combos(purchases)
 
@@ -356,6 +422,9 @@ class PurchasesTab(BaseTab):
         self.app.filter_received_var.set(False)
         self.load_purchases()
 
+    # ==================================================================
+    # Создание заказа
+    # ==================================================================
     def create_order(self):
         if not self.app.current_project:
             messagebox.showwarning("Внимание", "Выберите проект!")
@@ -370,10 +439,10 @@ class PurchasesTab(BaseTab):
             return
         today = datetime.now().strftime("%d.%m.%Y")
         batch_id = self.db_manager.get_next_order_batch_id()
-        # если хотя бы одна позиция с флагом "Запрос цены" —
-        # весь заказ помечается как запрос цены и получает номер Z-серии
+        # если хотя бы одна позиция с флагом «Запрос цены» — весь заказ уходит в Z-серию
         price_request_flag = 1 if any(p['price_request'] for p in in_order_items) else 0
         z_num = self.db_manager.get_next_price_request_num() if price_request_flag else 0
+
         from collections import defaultdict
         groups = defaultdict(lambda: {
             "quantity": 0, "manufacturer": "", "subproject": "", "kd": "",
@@ -381,7 +450,8 @@ class PurchasesTab(BaseTab):
         })
         for p in in_order_items:
             article = (p['article'] or "").strip()
-            key = article if article else ("", (p['name'] or p['name_eng'] or "").strip().upper(), p['manufacturer'] or "")
+            key = article if article else ("", (p['name'] or p['name_eng'] or "").strip().upper(),
+                                           p['manufacturer'] or "")
             g = groups[key]
             g["quantity"] += (p['quantity'] or 0)
             if not g["manufacturer"]:
@@ -396,6 +466,7 @@ class PurchasesTab(BaseTab):
                 g["name_eng"] = p['name_eng'] or ""
             if not g["note"]:
                 g["note"] = p['note'] or ""
+
         created_count = 0
         for key, g in groups.items():
             article = key if isinstance(key, str) else ""
@@ -403,7 +474,6 @@ class PurchasesTab(BaseTab):
                 "order_date": today,
                 "project_name": self.app.current_project,
                 "order_batch_id": batch_id,
-                "purchase_id": None,
                 "manufacturer": g["manufacturer"],
                 "subproject": g["subproject"],
                 "kd": g["kd"],
@@ -416,6 +486,7 @@ class PurchasesTab(BaseTab):
                 "price_request_num": z_num,
             })
             created_count += 1
+
         for p in in_order_items:
             self.db_manager.update_purchase(project_id, p['number'], {
                 "number": p['number'],
@@ -435,18 +506,30 @@ class PurchasesTab(BaseTab):
                 "price_request": p['price_request'],
             })
             self.app.log_action(f"Заказ #{batch_id}: {p['article']} - {p['name']}")
-        order_label = f"Z{z_num}" if price_request_flag else f"№{batch_id}"
-        messagebox.showinfo("Успех",
-            f"Создан заказ {order_label}\n{created_count} уникальных артикулов из {len(in_order_items)} позиций")
-        self.load_purchases()
 
-    def show_orders(self):
-        dialog = OrderDialog(self.root, self.db_manager,
+        order_label = f"Z{z_num}" if price_request_flag else f"№{batch_id}"
+        self.load_purchases()
+        if messagebox.askyesno("Успех",
+                               f"Создан заказ {order_label}\n"
+                               f"{created_count} уникальных артикулов из {len(in_order_items)} позиций.\n\n"
+                               f"Открыть заказ сейчас?"):
+            self.show_orders(batch_id=batch_id)
+
+    def show_orders(self, batch_id=None):
+        """Кнопка переехала в верхнюю панель; метод оставлен для совместимости."""
+        if batch_id is None and hasattr(self.app, "show_orders"):
+            self.app.show_orders()
+            return
+        dialog = OrderDialog(self.root, self.db_manager, batch_id=batch_id,
                              russian_holidays=self.app.russian_holidays,
                              project_name=self.app.current_project)
-        dialog.parent = self.app          # ← НОВОЕ: журнал приложения
+        dialog.parent = self.app          # журнал приложения (иначе AttributeError)
         self.root.wait_window(dialog)
-        
+        self.load_purchases()
+
+    # ==================================================================
+    # Номенклатура и справочники
+    # ==================================================================
     def open_nomenclature_search(self):
         dialog = NomenclatureSearchDialog(self.root, self.db_manager)
         self.root.wait_window(dialog)
@@ -483,10 +566,12 @@ class PurchasesTab(BaseTab):
     def open_nomenclature(self):
         dialog = NomenclatureDialog(self.root, self.db_manager)
         self.root.wait_window(dialog)
+        self.load_purchases()
 
     def open_manufacturers(self):
         dialog = ManufacturerDialog(self.root, self.db_manager)
         self.root.wait_window(dialog)
+        self.load_purchases()
 
     def open_suppliers(self):
         dialog = SupplierDialog(self.root, self.db_manager)
@@ -495,11 +580,16 @@ class PurchasesTab(BaseTab):
     def open_subprojects(self):
         dialog = SubprojectDialog(self.root, self.db_manager, project_name=self.app.current_project)
         self.root.wait_window(dialog)
+        self.load_purchases()
 
     def open_kd(self):
         dialog = KDDialog(self.root, self.db_manager, project_name=self.app.current_project)
         self.root.wait_window(dialog)
+        self.load_purchases()
 
+    # ==================================================================
+    # Импорт
+    # ==================================================================
     def show_import_dialog(self):
         if not self.app.current_project:
             messagebox.showwarning("Внимание", "Сначала выберите проект!")
@@ -513,7 +603,7 @@ class PurchasesTab(BaseTab):
                 return
             max_num = self.db_manager.get_next_number("purchases", project_id) - 1
             added_count = 0
-            for idx, item in enumerate(dialog.result, 1):
+            for item in dialog.result:
                 max_num += 1
                 purchase = {
                     'number': max_num,
@@ -533,21 +623,24 @@ class PurchasesTab(BaseTab):
                     'price_request': 0,
                 }
                 self.db_manager.add_purchase(project_id, purchase)
-                self.app.log_action(f"Импортирована закупка №{max_num}: {item.get('article', '')} - {item.get('name_rus', '')}")
+                self.app.log_action(
+                    f"Импортирована закупка №{max_num}: {item.get('article', '')} - {item.get('name_rus', '')}")
                 added_count += 1
             self.app.purchase_counter = max_num + 1
             self.load_purchases()
             messagebox.showinfo("Успех", f"Импортировано {added_count} позиций!")
 
+    # ==================================================================
+    # Экспорт в Excel
+    # ==================================================================
     def export_purchases_to_excel(self):
-        """Экспорт таблицы закупок в Excel"""
         try:
             import openpyxl
             from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
             from openpyxl.utils import get_column_letter
         except ImportError:
             messagebox.showerror("Нет библиотеки",
-                "Не установлен модуль openpyxl!\n\nУстановите командой:\npip install openpyxl")
+                                 "Не установлен модуль openpyxl!\n\nУстановите командой:\npip install openpyxl")
             return
         if not self.app.current_project:
             messagebox.showwarning("Внимание", "Выберите проект!")
@@ -561,7 +654,8 @@ class PurchasesTab(BaseTab):
             messagebox.showwarning("Внимание", "В проекте нет закупок для экспорта!")
             return
         project_row = self.db_manager.get_project(self.app.current_project)
-        initial_dir = project_row["path"] if project_row and project_row["path"] and os.path.isdir(project_row["path"]) else os.path.expanduser("~")
+        initial_dir = (project_row["path"] if project_row and project_row["path"]
+                       and os.path.isdir(project_row["path"]) else os.path.expanduser("~"))
         directory = filedialog.askdirectory(title="Выберите папку для сохранения", initialdir=initial_dir)
         if not directory:
             return
@@ -606,10 +700,6 @@ class PurchasesTab(BaseTab):
             row_num = 5
             for p in purchases:
                 p_dict = dict(p) if hasattr(p, 'keys') else p
-                ordered_mark = "✓" if p_dict.get("ordered") else ""
-                in_order_mark = "✓" if p_dict.get("in_order") else ""
-                received_mark = "✓" if p_dict.get("received") else ""
-                price_request_mark = "✓" if p_dict.get("price_request") else ""
                 values = [
                     p_dict.get("number", ""),
                     p_dict.get("manufacturer", "") or "",
@@ -619,11 +709,11 @@ class PurchasesTab(BaseTab):
                     p_dict.get("name", "") or "",
                     p_dict.get("name_eng", "") or "",
                     p_dict.get("quantity", 0) or 0,
-                    ordered_mark,
+                    "✓" if p_dict.get("ordered") else "",
                     p_dict.get("order_date", "") or "",
-                    in_order_mark,
-                    received_mark,
-                    price_request_mark,
+                    "✓" if p_dict.get("in_order") else "",
+                    "✓" if p_dict.get("received") else "",
+                    "✓" if p_dict.get("price_request") else "",
                     p_dict.get("note", "") or "",
                 ]
                 for col_idx, val in enumerate(values, start=1):
@@ -642,58 +732,61 @@ class PurchasesTab(BaseTab):
                     v = ws.cell(row=r, column=col_idx).value
                     if v is not None:
                         max_len = max(max_len, len(str(v)))
-                col_letter = get_column_letter(col_idx)
-                ws.column_dimensions[col_letter].width = min(max(max_len + 3, 10), 50)
+                ws.column_dimensions[get_column_letter(col_idx)].width = min(max(max_len + 3, 10), 50)
             ws.freeze_panes = "A5"
             wb.save(full_path)
             self.app.log_action(f"Экспорт закупок в Excel: {full_path}")
-            result = messagebox.askyesno("Успех",
-                f"Данные экспортированы в Excel!\n\nФайл: {filename}\nСтрок: {row_num - 5}\nПапка: {directory}\n\nОткрыть файл?")
-            if result:
+            if messagebox.askyesno("Успех",
+                                   f"Данные экспортированы в Excel!\n\nФайл: {filename}\n"
+                                   f"Строк: {row_num - 5}\nПапка: {directory}\n\nОткрыть файл?"):
                 try:
-                    opened = open_path(full_path)
-                    if not opened:
-                        messagebox.showinfo("Информация", f"Не удалось автоматически открыть файл.\nОткройте вручную:\n{full_path}")
+                    if not open_path(full_path):
+                        messagebox.showinfo("Информация",
+                                            f"Не удалось автоматически открыть файл.\n"
+                                            f"Откройте вручную:\n{full_path}")
                 except Exception as e:
                     print(f"Не удалось открыть файл автоматически: {e}")
                     messagebox.showinfo("Информация", f"Файл сохранён здесь:\n{full_path}")
         except PermissionError:
-            error_msg = (f"Нет прав на запись в папку или файл открыт в другой программе:\n{full_path}\n\n"
-                         f"Закройте файл в Excel/LibreOffice и попробуйте снова.")
-            messagebox.showerror("Ошибка доступа", error_msg)
+            messagebox.showerror("Ошибка доступа",
+                                 f"Нет прав на запись в папку или файл открыт в другой программе:\n"
+                                 f"{full_path}\n\nЗакройте файл в Excel/LibreOffice и попробуйте снова.")
         except Exception as e:
             import traceback
-            tb = traceback.format_exc()
-            print(f"✗ Исключение при экспорте:\n{tb}")
-            messagebox.showerror("Ошибка экспорта", f"Не удалось создать файл Excel:\n{e}\n\nПодробности в терминале.")
-    def open_article_aliases(self):
-        from dialogs.article_aliases_dialog import ArticleAliasesDialog
-        sel = self.app.purchase_tree.selection()
-        art = ""
-        if sel:
-            vals = self.app.purchase_tree.item(sel[0])["values"]
-            art = str(vals[4]) if len(vals) > 4 else ""
-        ArticleAliasesDialog(self.root, self.db_manager, art)
+            print(f"✗ Исключение при экспорте:\n{traceback.format_exc()}")
+            messagebox.showerror("Ошибка экспорта",
+                                 f"Не удалось создать файл Excel:\n{e}\n\nПодробности в терминале.")
 
 
 class ProjectChoiceDialog(tk.Toplevel):
-    """НОВОЕ: мини-диалог выбора целевого проекта для переноса закупок."""
+    """Мини-диалог выбора целевого проекта для переноса закупок."""
+
     def __init__(self, parent, project_names, count=1):
         super().__init__(parent)
         self.title("Сменить проект")
-        self.geometry("460x140")
+        self.geometry("460x150")
         self.resizable(False, False)
         self.result = None
         ttk.Label(self, text=f"Перенести позиций: {count} — в проект:").pack(padx=10, pady=(12, 6))
         self.combo = ttk.Combobox(self, values=project_names, state="readonly", width=40)
         self.combo.pack(padx=10)
+        if project_names:
+            self.combo.current(0)
         btnf = ttk.Frame(self)
         btnf.pack(pady=12)
         ttk.Button(btnf, text="ОК", command=self._ok).pack(side=tk.LEFT, padx=5)
         ttk.Button(btnf, text="Отмена", command=self.destroy).pack(side=tk.LEFT, padx=5)
+        self.bind("<Return>", lambda e: self._ok())
+        self.bind("<Escape>", lambda e: self.destroy())
         self.update_idletasks()
+        self._safe_grab()
+
+    def _safe_grab(self, attempts=10):
         try:
-            self.grab_set()
+            if self.winfo_exists() and self.winfo_viewable():
+                self.grab_set()
+            elif attempts > 0:
+                self.after(60, lambda a=attempts - 1: self._safe_grab(a))
         except tk.TclError:
             pass
 
