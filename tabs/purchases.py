@@ -37,7 +37,6 @@ class PurchasesTab(BaseTab):
         ttk.Button(frame_controls, text="Поиск по номенклатуре", command=self.open_nomenclature_search).pack(side=tk.LEFT, padx=5)
         ttk.Button(frame_controls, text="Импорт из файла", command=self.show_import_dialog).pack(side=tk.LEFT, padx=10)
         ttk.Button(frame_controls, text="Вывод в EXCEL", command=self.export_purchases_to_excel).pack(side=tk.RIGHT, padx=5)
-        btn_orders = ttk.Button(frame_controls, text="ЗАКАЗЫ", command=self.show_orders, style='Orders.TButton')
         btn_orders.pack(side=tk.RIGHT, padx=5)
 
         filter_frame = ttk.Frame(self.parent)

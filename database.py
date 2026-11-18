@@ -39,6 +39,7 @@ class DatabaseManager:
         self._ensure_order_delivery_number_column()
         self._ensure_order_write_off_column()
         self._ensure_price_request_columns()
+        self._ensure_item_statuses()        
         self._ensure_article_aliases()
         self._ensure_plan_fact_tables()        
         self._ensure_v19()       
@@ -683,7 +684,7 @@ class DatabaseManager:
         c = self.conn.cursor()
         c.execute('''SELECT id, article, name, name_eng, quantity, note,
                             manufacturer, subproject, kd,
-                            delivery_term, delivery_unit, price, currency
+                            delivery_term, delivery_unit, price, currency, item_status
                      FROM orders
                      WHERE order_batch_id=?
                      ORDER BY id''', (batch_id,))
@@ -703,9 +704,10 @@ class DatabaseManager:
                 'manufacturer': row['manufacturer'] or '',
                 'subproject': row['subproject'] or '',
                 'kd': row['kd'] or '',
+                'item_status': row['item_status'] or '',
             })
         return result
-
+    
     def add_order(self, data):
         c = self.conn.cursor()
         c.execute('''INSERT INTO orders
@@ -779,7 +781,7 @@ class DatabaseManager:
         """Обновление позиции заказа в таблице orders по id строки."""
         c = self.conn.cursor()
         c.execute("""SELECT article, name, name_eng, quantity, note, manufacturer, subproject, kd,
-                            delivery_term, delivery_unit, price, currency
+                            delivery_term, delivery_unit, price, currency, item_status
                      FROM orders WHERE id=?""", (item_id,))
         current = c.fetchone()
         if not current:
@@ -787,7 +789,7 @@ class DatabaseManager:
         c.execute('''UPDATE orders SET
                         article=?, name=?, name_eng=?, quantity=?,
                         note=?, manufacturer=?, subproject=?, kd=?,
-                        delivery_term=?, delivery_unit=?, price=?, currency=?
+                        delivery_term=?, delivery_unit=?, price=?, currency=?, item_status=?
                      WHERE id=?''',
                   (data.get('article', current['article'] or ''),
                    data.get('name', current['name'] or ''),
@@ -801,6 +803,7 @@ class DatabaseManager:
                    data.get('delivery_unit', current['delivery_unit'] or ''),
                    data.get('price', current['price'] or ''),
                    data.get('currency', current['currency'] or ''),
+                   data.get('item_status', current['item_status'] or ''),
                    item_id))
         self.conn.commit()
 
@@ -1890,6 +1893,62 @@ class DatabaseManager:
                 self.conn.execute("DELETE FROM nomenclature WHERE id=?", (did,))
                 merged += 1
         return merged    
+
+    # === Статусы артикулов (позиций заказа) ===
+    def _ensure_item_statuses(self):
+        c = self.conn.cursor()
+        c.execute("PRAGMA table_info(orders)")
+        cols = [r[1] for r in c.fetchall()]
+        if 'item_status' not in cols:
+            c.execute("ALTER TABLE orders ADD COLUMN item_status TEXT DEFAULT ''")
+            print("Миграция: добавлена колонка orders.item_status")
+        c.execute('''CREATE TABLE IF NOT EXISTS item_statuses (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT UNIQUE NOT NULL)''')
+        c.execute("SELECT COUNT(*) FROM item_statuses")
+        if c.fetchone()[0] == 0:
+            for n in ("Не заказан", "Заказан", "В производстве", "Отгружен",
+                      "Получен", "Брак/замена", "Отменён"):
+                c.execute("INSERT OR IGNORE INTO item_statuses (name) VALUES (?)", (n,))
+        self.conn.commit()
+
+    def get_item_statuses(self):
+        return [r[0] for r in self.conn.execute("SELECT name FROM item_statuses ORDER BY name")]
+
+    def add_item_status(self, name):
+        name = (name or "").strip()
+        if not name:
+            return False
+        try:
+            self.conn.execute("INSERT INTO item_statuses (name) VALUES (?)", (name,))
+            self.conn.commit()
+            return True
+        except sqlite3.IntegrityError:
+            return False
+
+    def rename_item_status(self, old, new):
+        new = (new or "").strip()
+        if not new or old == new:
+            return False
+        try:
+            with self.conn:
+                self.conn.execute("UPDATE item_statuses SET name=? WHERE name=?", (new, old))
+                self.conn.execute("UPDATE orders SET item_status=? WHERE item_status=?", (new, old))
+            return True
+        except sqlite3.IntegrityError:
+            return False
+
+    def delete_item_status(self, name):
+        self.conn.execute("DELETE FROM item_statuses WHERE name=?", (name,))
+        self.conn.commit()
+
+    def set_item_status(self, item_id, status):
+        self.conn.execute("UPDATE orders SET item_status=? WHERE id=?", (status, item_id))
+        self.conn.commit()
+
+    def set_batch_item_status(self, batch_id, status):
+        self.conn.execute("UPDATE orders SET item_status=? WHERE order_batch_id=?", (status, batch_id))
+        self.conn.commit()    
             
     def close(self):
         if self.conn:
