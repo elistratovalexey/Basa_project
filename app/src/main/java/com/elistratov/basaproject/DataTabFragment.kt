@@ -48,7 +48,14 @@ class DataTabFragment : Fragment() {
         search = EditText(ctx).apply { hint = "Поиск по всем полям..."; setSingleLine() }
 
         listView = ListView(ctx).apply { choiceMode = ListView.CHOICE_MODE_SINGLE }
-        listAdapter = ArrayAdapter(ctx, android.R.layout.simple_list_item_activated_1, mutableListOf<String>())
+        listAdapter = object : ArrayAdapter<String>(ctx, android.R.layout.simple_list_item_activated_1, mutableListOf<String>()) {
+            override fun getView(position: Int, convertView: View?, parent: ViewGroup): View {
+                val v = super.getView(position, convertView, parent)
+                val color = records.getOrNull(position)?.color ?: 0L
+                v.setBackgroundColor(if (color != 0L) color.toInt() else 0x00000000)
+                return v
+            }
+        }
         listView.adapter = listAdapter
 
         details = TextView(ctx).apply { textSize = 14f; setTextIsSelectable(true); text = "Выберите запись в списке выше" }

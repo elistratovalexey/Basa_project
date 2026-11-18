@@ -37,6 +37,7 @@ class MainActivity : AppCompatActivity() {
             "Сроки" to "deadlines",
             "План-Факт" to "plan_fact",
             "Бюджет" to "budget"
+            "История цен" to "price_history"
         )
         binding.tabLayout.tabMode = TabLayout.MODE_SCROLLABLE
         binding.viewPager.adapter = object : androidx.viewpager2.adapter.FragmentStateAdapter(this) {

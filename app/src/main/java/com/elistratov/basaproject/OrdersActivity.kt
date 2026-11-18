@@ -135,9 +135,11 @@ class OrdersActivity : AppCompatActivity() {
         val items = db.getOrderItems(b.batchId)
         for (item in items) {
             val tv = TextView(this).apply {
-                text = "${item.id} · ${item.article} · ${item.name} · ${item.quantity} шт · ${item.price} ${item.currency}"
+                text = "${item.id} · ${item.article} · ${item.name} · ${item.quantity} шт · ${item.price} ${item.currency}" +
+                    (if (item.itemStatus.isNotEmpty()) " · ${item.itemStatus}" else "")
                 textSize = 14f
                 setPadding(dp(6), dp(8), dp(6), dp(8))
+                if (item.received) setBackgroundColor(0xFFD9EAD3.toInt())
                 setOnClickListener { v ->
                     selectedItemView?.setBackgroundColor(0x00000000)
                     v.setBackgroundColor(0x33FF9800)
@@ -146,6 +148,7 @@ class OrdersActivity : AppCompatActivity() {
                         append("ПОЗИЦИЯ (ID ${item.id})\n")
                         append("Артикул: ${item.article}\nНаименование: ${item.name}\n")
                         if (item.nameEng.isNotEmpty()) append("Наименование (анг): ${item.nameEng}\n")
+                        append("Статус артикула: ${item.itemStatus.ifEmpty { "—" }}\n")
                         append("Кол-во: ${item.quantity}\nСрок поставки: ${item.deliveryTerm} ${item.deliveryUnit}\n")
                         append("Цена: ${item.price} ${item.currency}\n")
                         val total = item.quantity * db.parseNum(item.price)
