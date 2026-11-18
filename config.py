@@ -16,32 +16,26 @@ from paths import (INSTALL_DIR, BUNDLE_DIR, DATA_DIR, LOCAL_DIR, APP_DIR,
                    CONFIG_DIR, LOG_DIR, BACKUP_DIR, SYNC_DIR,
                    LOCAL_CONFIG_FILE, DEFAULT_DB_PATH, PORTABLE,
                    migrate_legacy_data)
+from version import (VERSION, BUILD_DATE, BUILD_NUMBER, GIT_SHA,
+                     CHANNEL, FULL_VERSION, VERSION_INFO)
 
 # Перенос данных из старой папки установки при первом запуске новой схемы
 migrate_legacy_data()
 
-<<<<<<< HEAD
-# Попытка импорта pdfplumber
+# === Необязательные библиотеки (мягкий импорт) ===
 try:
     import pdfplumber
     HAS_PDFPLUMBER = True
 except ImportError:
     HAS_PDFPLUMBER = False
 
-# Попытка импорта python-docx
 try:
     from docx import Document
     HAS_DOCX = True
 except ImportError:
     HAS_DOCX = False
 
-# Константы
-=======
 # === Константы приложения ===
-VERSION = "1.8.0"
-BUILD_DATE = "30.09.2026"
->>>>>>> eb530b97f2cefc0e88447bc32c25d0016fd68c35
-
 DEFAULT_DB_NAME = "projects.db"
 CONFIG_NAME = "config.json"
 LOG_NAME = "project_log.txt"
@@ -75,8 +69,8 @@ def setup_paths(db_path):
         p = os.path.join(DATA_DIR, raw)
     DB_PATH = p
     DB_DIR = os.path.dirname(p) or DATA_DIR
-    CONFIG_FILE = os.path.join(DB_DIR, CONFIG_NAME)   # копия настроек рядом с БД
-    LOG_FILE = os.path.join(LOG_DIR, LOG_NAME)        # журнал — в папке данных
+    CONFIG_FILE = os.path.join(DB_DIR, CONFIG_NAME)
+    LOG_FILE = os.path.join(LOG_DIR, LOG_NAME)
     return DB_PATH
 
 
@@ -114,7 +108,6 @@ class ConfigManager:
             if isinstance(data, dict):
                 self.config.update(data)
         except Exception as e:
-            # битый конфиг не должен ронять приложение — откладываем копию и стартуем с дефолтов
             try:
                 bad = self.path + ".bad_" + datetime.now().strftime("%Y%m%d_%H%M%S")
                 shutil.copy2(self.path, bad)
