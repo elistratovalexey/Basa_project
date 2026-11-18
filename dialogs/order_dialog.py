@@ -37,7 +37,7 @@ class OrderDialog(tk.Toplevel):
     def __init__(self, parent, db_manager, batch_id=None,
                  russian_holidays=None, project_name=None):
         super().__init__(parent)
-        # ВАЖНО: self.parent используется для записи в журнал приложения
+        # self.parent нужен для записи в журнал приложения
         self.parent = parent
         if not hasattr(self.parent, "log_action"):
             _app = getattr(parent, "app", None)
@@ -67,6 +67,12 @@ class OrderDialog(tk.Toplevel):
         if batch_id:
             self.current_batch_id = batch_id
             self.load_items(batch_id)
+            for iid in self.tree_batches.get_children():
+                if self._batch_of(self.tree_batches.item(iid)['values'][0]) == batch_id:
+                    self.tree_batches.selection_set(iid)
+                    self.tree_batches.see(iid)
+                    self._load_batch_to_form(self.tree_batches.item(iid)['values'])
+                    break
 
     # ==================================================================
     # Интерфейс
@@ -184,7 +190,7 @@ class OrderDialog(tk.Toplevel):
         self.lbl_batch_status = ttk.Label(hf, text="", foreground="#0066cc", font=("Arial", 9, "bold"))
         self.lbl_batch_status.grid(row=2, column=4, sticky="w", pady=4)
 
-        # --- Кнопки ---
+        # --- Кнопки действий (База статусов артикула — правее «Удалить заказ») ---
         af = ttk.Frame(self)
         af.pack(fill="x", padx=8, pady=4)
         ttk.Button(af, text="Импорт из файла (Excel/PDF)", command=self.import_from_file).pack(side=tk.LEFT, padx=5)
@@ -193,9 +199,11 @@ class OrderDialog(tk.Toplevel):
         ttk.Button(af, text="Статус / ETA", command=self.edit_status).pack(side=tk.LEFT, padx=5)
         ttk.Button(af, text="Сохранить заказ", command=self.save_batch).pack(side=tk.LEFT, padx=5)
         ttk.Button(af, text="Удалить заказ", command=self.delete_batch).pack(side=tk.LEFT, padx=5)
+        ttk.Button(af, text="База статусов артикула",
+                   command=self.open_item_statuses).pack(side=tk.LEFT, padx=5)
         ttk.Button(af, text="Заказ в файл АНГ", command=self.export_order_to_excel).pack(side=tk.RIGHT, padx=5)
 
-        # --- Позиции заказа (10 колонок, #10 = Статус артикула) ---
+        # --- Позиции заказа: 10 колонок (#10 = Статус артикула) ---
         pf = ttk.LabelFrame(self, text="Позиции заказа", padding=6)
         pf.pack(fill="both", expand=True, padx=8, pady=4)
         cols_i = ("id", "article", "name", "quantity", "delivery_term",
@@ -252,13 +260,15 @@ class OrderDialog(tk.Toplevel):
         ttk.Label(itf, text="Статус артикула:").grid(row=3, column=0, sticky="w", padx=(0, 5), pady=(8, 0))
         self.combo_item_status = ttk.Combobox(itf, width=24, state="readonly")
         self.combo_item_status.grid(row=3, column=1, sticky="w", pady=(8, 0))
+        self.combo_item_status.bind("<<ComboboxSelected>>", self.on_item_status_selected)
         ttk.Button(itf, text="+", width=2,
                    command=self.add_item_status_inline).grid(row=3, column=2, sticky="w", padx=4, pady=(8, 0))
-        ttk.Button(itf, text="База статусов артикулов",
-                   command=self.open_item_statuses).grid(row=3, column=3, sticky="w", padx=6, pady=(8, 0))
         ttk.Button(itf, text="Применить к выбранным",
-                   command=self.apply_status_to_selected).grid(row=3, column=4, columnspan=2,
+                   command=self.apply_status_to_selected).grid(row=3, column=3, columnspan=2,
                                                                sticky="w", padx=6, pady=(8, 0))
+        self.lbl_status_hint = ttk.Label(itf, text="", foreground="gray")
+        self.lbl_status_hint.grid(row=3, column=5, columnspan=3, sticky="w", pady=(8, 0))
+
         for col in (1, 3, 5):
             itf.grid_columnconfigure(col, weight=1)
 
@@ -332,9 +342,8 @@ class OrderDialog(tk.Toplevel):
         try:
             w = self.focus_get()
             if w is not None and hasattr(w, "selection_get"):
-                text = w.selection_get()
                 self.clipboard_clear()
-                self.clipboard_append(text)
+                self.clipboard_append(w.selection_get())
         except Exception:
             pass
         return "break"
@@ -418,13 +427,47 @@ class OrderDialog(tk.Toplevel):
         self.combo_batch_kd['values'] = [r[0] for r in c.fetchall()]
 
     # ==================================================================
-    # Статусы артикулов
+    # СТАТУСЫ АРТИКУЛОВ
     # ==================================================================
     def _refresh_item_statuses(self):
+        """Заполняет выпадающий список (значения из БД, при пустой БД — набор по умолчанию)."""
+        vals = []
         try:
-            self.combo_item_status['values'] = self.db_manager.get_item_statuses()
+            if hasattr(self.db_manager, "get_item_statuses"):
+                vals = list(self.db_manager.get_item_statuses())
+        except Exception as e:
+            print(f"[order_dialog] статусы артикулов: {e}")
+        if not vals:
+            vals = ["Не заказан", "Заказан", "В производстве", "Отгружен",
+                    "Получен", "Брак/замена", "Отменён"]
+        try:
+            self.combo_item_status['values'] = vals
         except Exception:
             pass
+
+    def on_item_status_selected(self, event=None):
+        """Выбор в списке СРАЗУ записывается в текущую позицию."""
+        status = self.combo_item_status.get().strip()
+        if not status:
+            return
+        if self.current_item_id is None:
+            self.lbl_status_hint.config(text="выберите позицию или нажмите «Применить к выбранным»")
+            return
+        try:
+            self.db_manager.set_item_status(self.current_item_id, status)
+            keep = self.current_item_id
+            self.load_items(self.current_batch_id)
+            for iid in self.tree_items.get_children():
+                if self.tree_items.item(iid)['values'][0] == keep:
+                    self.tree_items.selection_set(iid)
+                    self.tree_items.see(iid)
+                    self.current_item_id = keep
+                    self.combo_item_status.set(status)
+                    break
+            self.lbl_status_hint.config(text=f"позиция #{keep}: {status}")
+            self._log(f"Позиция #{keep}: статус артикула «{status}»")
+        except Exception as e:
+            messagebox.showerror("Ошибка", f"Не удалось сохранить статус:\n{e}", parent=self)
 
     def add_item_status_inline(self):
         name = simpledialog.askstring("Статус артикула", "Новый статус:", parent=self)
@@ -432,16 +475,29 @@ class OrderDialog(tk.Toplevel):
             if self.db_manager.add_item_status(name):
                 self._refresh_item_statuses()
                 self.combo_item_status.set(name.strip())
+                self.on_item_status_selected()
             else:
                 messagebox.showwarning("Внимание", "Такой статус уже есть.", parent=self)
 
     def open_item_statuses(self):
+        """Кнопка правее «Удалить заказ»: справочник статусов артикула."""
         try:
             from dialogs.item_status_dialog import ItemStatusesDialog
         except ImportError:
             messagebox.showerror("Ошибка", "dialogs/item_status_dialog.py не найден", parent=self)
             return
         ItemStatusesDialog(self, self.db_manager, on_changed=self._refresh_item_statuses)
+        self._refresh_item_statuses()
+        if self.current_batch_id is not None:
+            keep = self.current_item_id
+            self.load_items(self.current_batch_id)
+            if keep is not None:
+                for iid in self.tree_items.get_children():
+                    if self.tree_items.item(iid)['values'][0] == keep:
+                        self.tree_items.selection_set(iid)
+                        self.tree_items.see(iid)
+                        self.current_item_id = keep
+                        break
 
     def apply_status_to_selected(self):
         sel = self.tree_items.selection()
@@ -450,12 +506,12 @@ class OrderDialog(tk.Toplevel):
             return
         status = self.combo_item_status.get().strip()
         if not status:
-            messagebox.showwarning("Внимание", "Выберите статус артикула!", parent=self)
+            messagebox.showwarning("Внимание", "Выберите статус артикула в списке!", parent=self)
             return
         for iid in sel:
             self.db_manager.set_item_status(self.tree_items.item(iid)['values'][0], status)
-        if self.current_batch_id is not None:
-            self.load_items(self.current_batch_id)
+        self.load_items(self.current_batch_id)
+        self.lbl_status_hint.config(text=f"«{status}» присвоен {len(sel)} позициям")
         self._log(f"Статус артикула «{status}» присвоен {len(sel)} позициям")
 
     # ==================================================================
@@ -506,7 +562,7 @@ class OrderDialog(tk.Toplevel):
             pass
 
     # ==================================================================
-    # Статус заказа (обновление таблицы СРАЗУ после закрытия диалога)
+    # Статус заказа — таблица обновляется СРАЗУ после закрытия диалога
     # ==================================================================
     def edit_status(self):
         if self.current_batch_id is None:
@@ -520,7 +576,7 @@ class OrderDialog(tk.Toplevel):
         batch_id = self.current_batch_id          # запоминаем ДО обновления таблицы
         dlg = OrderStatusDialog(self, self.db_manager, batch_id)
         self.wait_window(dlg)                     # ждём сохранения/закрытия
-        self._refresh_batches_keep_selection()    # перечитать + вернуть выделение и форму
+        self._refresh_batches_keep_selection()
 
     # ==================================================================
     # Форма заказа
@@ -763,6 +819,7 @@ class OrderDialog(tk.Toplevel):
         self.combo_item_currency.set('')
         try:
             self.combo_item_status.set('')
+            self.lbl_status_hint.config(text="")
         except Exception:
             pass
 
@@ -798,6 +855,9 @@ class OrderDialog(tk.Toplevel):
                 batch_id = int(batch_id)
             except (TypeError, ValueError):
                 pass
+            if batch_id == self.current_batch_id and self.tree_items.get_children():
+                self._load_batch_to_form(values)
+                return
             self.current_batch_id = batch_id
             self._load_batch_to_form(values)
             proj = values[5] if len(values) > 5 else ""
@@ -826,9 +886,9 @@ class OrderDialog(tk.Toplevel):
     # ==================================================================
     def on_select_item(self, event=None):
         sel = self.tree_items.selection()
-        if not sel or len(sel) > 1:
+        if not sel:
             return
-        v = self.tree_items.item(sel[0])['values']
+        v = self.tree_items.item(sel[-1])['values']
         self.current_item_id = v[0]
         self.entry_item_article.delete(0, tk.END); self.entry_item_article.insert(0, v[1])
         self.entry_item_name.delete(0, tk.END); self.entry_item_name.insert(0, v[2])
@@ -840,6 +900,10 @@ class OrderDialog(tk.Toplevel):
         self.entry_item_note.delete(0, tk.END); self.entry_item_note.insert(0, v[8])
         try:
             self.combo_item_status.set(v[9] if len(v) > 9 else "")
+            if len(sel) > 1:
+                self.lbl_status_hint.config(text=f"выбрано позиций: {len(sel)}")
+            else:
+                self.lbl_status_hint.config(text="")
         except Exception:
             pass
 
@@ -932,7 +996,14 @@ class OrderDialog(tk.Toplevel):
             'note': self.entry_item_note.get(),
             'item_status': self.combo_item_status.get(),
         })
+        keep = self.current_item_id
         self.load_items(self.current_batch_id)
+        for iid in self.tree_items.get_children():
+            if self.tree_items.item(iid)['values'][0] == keep:
+                self.tree_items.selection_set(iid)
+                self.tree_items.see(iid)
+                self.current_item_id = keep
+                break
 
     def delete_item(self):
         if self.current_item_id is None:

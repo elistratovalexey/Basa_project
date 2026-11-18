@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Справочник «База статусов артикулов»: список, добавление, переименование, удаление."""
+"""База статусов артикула: добавление, переименование, удаление."""
 import tkinter as tk
 from tkinter import ttk, messagebox
 
@@ -9,15 +9,15 @@ class ItemStatusesDialog(tk.Toplevel):
         super().__init__(parent)
         self.db = db_manager
         self.on_changed = on_changed
-        self.title("База статусов артикулов")
-        self.geometry("460x460")
+        self.title("База статусов артикула")
+        self.geometry("470x470")
         self.resizable(False, False)
 
         top = ttk.Frame(self, padding=8)
         top.pack(fill="both", expand=True)
         self.tree = ttk.Treeview(top, columns=("name",), show="headings", height=15)
         self.tree.heading("name", text="Статус артикула")
-        self.tree.column("name", width=400, anchor="w")
+        self.tree.column("name", width=410, anchor="w")
         self.tree.pack(side=tk.LEFT, fill="both", expand=True)
         sb = ttk.Scrollbar(top, orient=tk.VERTICAL, command=self.tree.yview)
         self.tree.configure(yscroll=sb.set)
@@ -33,22 +33,37 @@ class ItemStatusesDialog(tk.Toplevel):
         ttk.Button(form, text="Закрыть", command=self.destroy).pack(side=tk.LEFT, padx=8)
 
         ttk.Label(self, padding=(10, 0, 10, 8), foreground="gray",
-                  text="Переименование обновляет статус у всех позиций заказов.").pack(fill="x")
+                  text="Переименование обновляет статус у всех позиций заказов.\n"
+                       "Двойной клик по строке — подставляет название в поле.").pack(fill="x")
 
         self.tree.bind("<<TreeviewSelect>>", self._pick)
         self.tree.bind("<Double-1>", self._pick)
         self.entry.bind("<Return>", lambda e: self.add())
+        self.bind("<Escape>", lambda e: self.destroy())
         self.reload()
         self.update_idletasks()
+        self._safe_grab()
+
+    def _safe_grab(self, attempts=10):
         try:
-            self.grab_set()
+            if self.winfo_exists() and self.winfo_viewable():
+                self.grab_set()
+            elif attempts > 0:
+                self.after(60, lambda a=attempts - 1: self._safe_grab(a))
         except tk.TclError:
             pass
 
     def reload(self):
         for i in self.tree.get_children():
             self.tree.delete(i)
-        for n in self.db.get_item_statuses():
+        try:
+            names = self.db.get_item_statuses()
+        except Exception as e:
+            messagebox.showerror("Ошибка БД",
+                                 f"Нет методов статусов артикулов:\n{e}\n\n"
+                                 "Добавьте блок _ensure_item_statuses в database.py", parent=self)
+            names = []
+        for n in names:
             self.tree.insert("", tk.END, values=(n,))
 
     def _pick(self, event=None):
