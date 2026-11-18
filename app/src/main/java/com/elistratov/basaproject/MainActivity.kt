@@ -36,7 +36,7 @@ class MainActivity : AppCompatActivity() {
             "Спец. закупок" to "purchase_spec",
             "Сроки" to "deadlines",
             "План-Факт" to "plan_fact",
-            "Бюджет" to "budget"
+            "Бюджет" to "budget",
             "История цен" to "price_history"
         )
         binding.tabLayout.tabMode = TabLayout.MODE_SCROLLABLE
