@@ -22,6 +22,10 @@ jobs:
           python -m pip install --upgrade pip setuptools wheel
           pip install -r requirements.txt pyinstaller
 
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0        # нужно для git rev-list --count HEAD
       - name: Check build files exist
         shell: bash
         run: |
@@ -32,12 +36,22 @@ jobs:
 
       - name: Preflight
         run: python preflight_check.py
+        
+      - name: Compute version
+        id: ver
+        shell: bash
+        run: |
+          python version.py --write
+          cat version.json
+          V=$(python -c "import version; print(version.VERSION)")
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+          echo "Собираем версию $V"
 
       - name: Build
         run: pyinstaller --noconfirm --clean basa.spec
 
       - uses: actions/upload-artifact@v4
         with:
-          name: BasaProject-windows
+          name: BasaProject-windows-${{ steps.ver.outputs.version }}-run${{ github.run_number }}
           path: dist/BasaProject
           retention-days: 30

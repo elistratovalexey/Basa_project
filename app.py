@@ -18,7 +18,7 @@ import traceback
 import logging
 import threading
 from datetime import datetime
-
+from version import VERSION, BUILD_DATE, FULL_VERSION, CHANNEL
 import config as cfg
 from config import (
     VERSION, BUILD_DATE, DEFAULT_DB_NAME, CURRENCIES, BACKUP_KEEP,
@@ -81,7 +81,7 @@ tk.Toplevel.grab_set = _safe_toplevel_grab_set
 class ProjectManagerApp:
     def __init__(self, root):
         self.root = root
-        self.root.title(f"Управление проектами v{VERSION}")
+        self.root.title(f"Управление проектами v{FULL_VERSION}")
         self.root.geometry("1300x950")
         self.root.minsize(1200, 800)
         restore_geometry(self.root, "main_window", "1300x950")
@@ -111,7 +111,11 @@ class ProjectManagerApp:
 
         self.create_widgets()
         self.load_projects()
-        self.log_action(f"Программа запущена v{VERSION}")
+        self.log_action(f"Программа запущена v{FULL_VERSION}")
+        prev_ver = self.config_manager.get("app_version", "")
+        if prev_ver and prev_ver != VERSION:
+            self.log_action(f"Версия обновлена: {prev_ver} → {VERSION}")
+        self.config_manager.set("app_version", VERSION)
         self.log_action(f"База данных: {cfg.get_db_path()}")
         self.make_backup(silent=True)
         self.update_datetime()
@@ -339,7 +343,7 @@ class ProjectManagerApp:
 
         frame_top = ttk.Frame(self.root)
         frame_top.pack(fill="x", padx=10, pady=5)
-        ttk.Label(frame_top, text=f"Версия: {VERSION} (от {BUILD_DATE})",
+        ttk.Label(frame_top, text=f"Версия: {FULL_VERSION} [{CHANNEL}]",
                   font=("Arial", 9, "italic")).pack(side=tk.LEFT)
         self.lbl_datetime = ttk.Label(frame_top, text="", font=("Arial", 9, "bold"))
         self.lbl_datetime.pack(side=tk.RIGHT)

@@ -39,8 +39,7 @@ except ImportError:
     HAS_DOCX = False
 
 # Константы
-VERSION = "1.8.0"
-BUILD_DATE = "30.09.2026"
+
 DEFAULT_DB_NAME = "projects.db"
 CONFIG_NAME = "config.json"
 LOG_NAME = "project_log.txt"

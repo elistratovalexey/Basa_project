@@ -1,5 +1,11 @@
 # -*- mode: python ; coding: utf-8 -*-
 import os
+import sys
+sys.path.insert(0, os.path.abspath(SPECPATH))
+from version import write_version_json
+
+_info = write_version_json(os.path.join(SPECPATH, "version.json"), channel="build")
+print(f"[spec] Версия сборки: {_info['full']}")
 from PyInstaller.utils.hooks import collect_all, collect_submodules
 
 datas, binaries, hiddenimports = [], [], []
@@ -7,7 +13,8 @@ for pkg in ("holidays", "babel", "tkcalendar", "pdfminer", "pdfplumber",
             "pypdfium2", "deep_translator", "qrcode"):
     try:
         d, b, h = collect_all(pkg)
-        datas += d; binaries += b; hiddenimports += h
+
+        datas += [("version.json", "."), ("VERSION", ".")]
     except Exception as e:
         print(f"[spec] пропускаю {pkg}: {e}")
 

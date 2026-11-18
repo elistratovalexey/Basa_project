@@ -8,6 +8,10 @@ import sys
 import io
 import tokenize
 
+for f in ("version.py", "VERSION"):
+    if not (ROOT / f).exists():
+        errors.append(f"{f}: MISSING (версия не будет вычисляться)")
+
 
 def code_only(src):
     """Текст без комментариев — проверки не срабатывают на пояснения в коде."""
@@ -68,8 +72,10 @@ for p in files:
         errors.append(f"{rel}: backslash after ')' before import -> SyntaxError")
     if RE_CYR_KEYSYM.search(src):
         errors.append(f"{rel}: Cyrillic keysym in bind -> TclError at startup")
-    if BAD_KEY in src or BAD_SIZE in src:
-        errors.append(f"{rel}: window_geometry placeholders left in code")
+    m = RE_GEOM_PLACEHOLDER.search(src)
+    if m:
+        errors.append(f"{rel}: placeholder passed to {m.group(1)}() — "
+                      f"replace with a real window key and size")        errors.append(f"{rel}: window_geometry placeholders left in code")
 
 app_path = ROOT / "app.py"
 if app_path.exists():
