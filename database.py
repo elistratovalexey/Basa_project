@@ -39,10 +39,10 @@ class DatabaseManager:
         self._ensure_order_delivery_number_column()
         self._ensure_order_write_off_column()
         self._ensure_price_request_columns()
-        self._ensure_item_statuses()        
+        self._ensure_item_statuses()
         self._ensure_article_aliases()
-        self._ensure_plan_fact_tables()        
-        self._ensure_v19()       
+        self._ensure_plan_fact_tables()
+        self._ensure_v19()
         self._ensure_delivery_addresses_table()
         self._ensure_purchase_payments_ext_columns()
         self._ensure_purchase_spec_items_table()
@@ -58,6 +58,7 @@ class DatabaseManager:
             "CREATE INDEX IF NOT EXISTS idx_specifications_project ON specifications(project_id, number)",
             "CREATE INDEX IF NOT EXISTS idx_purchases_project ON purchases(project_id, number)",
             "CREATE INDEX IF NOT EXISTS idx_orders_batch ON orders(order_batch_id)",
+            "CREATE INDEX IF NOT EXISTS idx_orders_project ON orders(project_name)",
             "CREATE INDEX IF NOT EXISTS idx_nomenclature_article ON nomenclature(article)",
             "CREATE INDEX IF NOT EXISTS idx_pspec_project ON purchase_specifications(project_id)",
             "CREATE INDEX IF NOT EXISTS idx_pspec_items_spec ON purchase_spec_items(spec_id)",
@@ -104,6 +105,9 @@ class DatabaseManager:
             "order_items", "nomenclature", "manufacturers", "subprojects",
             "kd_directory", "suppliers", "purchase_specifications",
             "purchase_spec_items", "purchase_payments", "delivery_addresses",
+            # новые таблицы v1.9+
+            "plan_fact", "work_types", "work_statuses", "item_statuses",
+            "nomenclature_aliases", "price_history", "currency_rates",
         }
         if table not in allowed:
             raise ValueError(f"Недопустимая таблица: {table}")
@@ -496,6 +500,8 @@ class DatabaseManager:
             c.execute("DELETE FROM payments WHERE project_id=?", (project_id,))
             c.execute("DELETE FROM specifications WHERE project_id=?", (project_id,))
             c.execute("DELETE FROM purchases WHERE project_id=?", (project_id,))
+            # ИСПРАВЛЕНО: работы План-Факта тоже принадлежат проекту
+            c.execute("DELETE FROM plan_fact WHERE project_id=?", (project_id,))
             c.execute("DELETE FROM projects WHERE id=?", (project_id,))
 
     # === Платежи ===
@@ -572,7 +578,6 @@ class DatabaseManager:
         """Следующий свободный номер по ВСЕМ записям проекта (не по фильтру)."""
         if table not in ("payments", "specifications", "purchases", "plan_fact"):
             raise ValueError(table)
-    
         c = self.conn.cursor()
         c.execute(f"SELECT MAX(CAST(number AS INTEGER)) AS m FROM {table} WHERE project_id=?",
                   (project_id,))
@@ -674,7 +679,12 @@ class DatabaseManager:
                             MAX(receipt_date) as receipt_date,
                             MAX(write_off_date) as write_off_date,
                             MAX(price_request) as price_request,
-                            MAX(price_request_num) as price_request_num
+                            MAX(price_request_num) as price_request_num,
+                            MAX(status) as status,
+                            MAX(confirm_date) as confirm_date,
+                            MAX(ship_date) as ship_date,
+                            MAX(tracking) as tracking,
+                            MAX(eta_date) as eta_date
                      FROM orders
                      GROUP BY order_batch_id
                      ORDER BY order_batch_id DESC''')
@@ -707,7 +717,7 @@ class DatabaseManager:
                 'item_status': row['item_status'] or '',
             })
         return result
-    
+
     def add_order(self, data):
         c = self.conn.cursor()
         c.execute('''INSERT INTO orders
@@ -825,7 +835,7 @@ class DatabaseManager:
             c.execute("SELECT * FROM nomenclature WHERE name_rus LIKE ? OR name_eng LIKE ? LIMIT 10",
                       (q, q))
         return c.fetchall()
-    
+
     def add_nomenclature(self, data):
         c = self.conn.cursor()
         c.execute('''INSERT INTO nomenclature (manufacturer, article, name_rus, name_eng)
@@ -844,14 +854,8 @@ class DatabaseManager:
         c.execute("DELETE FROM nomenclature WHERE id=?", (item_id,))
         self.conn.commit()
 
-    def find_nomenclature_by_article(self, article):
-        """Точный поиск по артикулу (без учёта регистра и пробелов по краям)."""
-        if not article:
-            return None
-        c = self.conn.cursor()
-        c.execute("SELECT * FROM nomenclature WHERE UPPER(TRIM(article)) = UPPER(TRIM(?)) LIMIT 1",
-                  (article,))
-        return c.fetchone()
+    # ВНИМАНИЕ: find_nomenclature_by_article определён ОДИН раз —
+    # в блоке «Алиасы артикулов» ниже (с учётом алиасов и нормализации).
 
     # === Производители ===
     def get_manufacturers(self):
@@ -972,7 +976,7 @@ class DatabaseManager:
         c = self.conn.cursor()
         c.execute("SELECT * FROM purchase_specifications WHERE project_id=? ORDER BY id", (project_id,))
         return c.fetchall()
-    
+
     def get_purchase_spec_by_id(self, spec_id):
         c = self.conn.cursor()
         c.execute("SELECT * FROM purchase_specifications WHERE id=?", (spec_id,))
@@ -1148,6 +1152,7 @@ class DatabaseManager:
         c = self.conn.cursor()
         c.execute("DELETE FROM delivery_addresses WHERE id=?", (addr_id,))
         self.conn.commit()
+
     # ================= v1.9: статусы / приёмка / цены / курсы =================
     ORDER_STATUSES = ["Запрос цены", "КП получено", "Размещён", "Подтверждён",
                       "Оплачен", "Отгружен", "Получен", "Списан"]
@@ -1218,7 +1223,7 @@ class DatabaseManager:
         "USD": "USD", "$": "USD", "$ (ДОЛЛАРЫ)": "USD", "ДОЛЛАРЫ": "USD",
         "EUR": "EUR", "€": "EUR", "€ (ЕВРО)": "EUR", "ЕВРО": "EUR",
         "CNY": "CNY", "¥": "CNY", "¥ (ЮАНИ)": "CNY", "ЮАНИ": "CNY",
-        "TRY": "TRY", "₺": "TRY", "₺ (ЛИРЫ)": "TRY", "ЛИРЫ": "TRY",
+        "TRY": "TRY", "₺": "TRY", "₺ (ЛИРЫ)": "TRY", "₺ (ЛИРА)": "TRY", "ЛИРЫ": "TRY",
         "GBP": "GBP", "CHF": "CHF",
     }
 
@@ -1250,7 +1255,7 @@ class DatabaseManager:
         c.execute("SELECT rate FROM currency_rates WHERE code=? ORDER BY date DESC LIMIT 1", (code,))
         r = c.fetchone()
         return float(r["rate"]) if r else 1.0
-    
+
     def get_rates_table(self, limit=40):
         return self.conn.execute(
             "SELECT date, code, rate FROM currency_rates ORDER BY date DESC, code LIMIT ?",
@@ -1292,15 +1297,18 @@ class DatabaseManager:
         q = '''SELECT id, order_batch_id, article, name, manufacturer, IFNULL(quantity,0) quantity,
                       IFNULL(qty_received,0) qty_received, IFNULL(received,0) received,
                       receipt_date, supplier, invoice_number, project_name, price, currency,
-                      delivery_number, receive_note
+                      delivery_number, receive_note, item_status
                FROM orders WHERE 1=1'''
         p = []
         if project_name:
-            q += " AND project_name=?"; p.append(project_name)
+            q += " AND project_name=?"
+            p.append(project_name)
         if supplier:
-            q += " AND supplier=?"; p.append(supplier)
+            q += " AND supplier=?"
+            p.append(supplier)
         if invoice:
-            q += " AND invoice_number LIKE ?"; p.append(f"%{invoice}%")
+            q += " AND invoice_number LIKE ?"
+            p.append(f"%{invoice}%")
         if only_pending:
             q += " AND (IFNULL(received,0)=0 OR IFNULL(qty_received,0) < IFNULL(quantity,0))"
         q += " ORDER BY order_batch_id DESC, id"
@@ -1320,8 +1328,13 @@ class DatabaseManager:
         return True
 
     def receive_batch(self, batch_id, date_str):
-        self.conn.execute('''UPDATE orders SET qty_received=IFNULL(quantity,0), received=1,
-                             receipt_date=? WHERE order_batch_id=?''', (date_str, batch_id))
+        """Отмечает весь заказ полученным.
+        ИСПРАВЛЕНО: уже указанная дата получения НЕ затирается сегодняшней."""
+        self.conn.execute('''UPDATE orders
+                             SET qty_received=IFNULL(quantity,0), received=1,
+                                 receipt_date=CASE WHEN IFNULL(receipt_date,'')=''
+                                                   THEN ? ELSE receipt_date END
+                             WHERE order_batch_id=?''', (date_str, batch_id))
         self.conn.commit()
         self._sync_batch_received(batch_id)
 
@@ -1394,7 +1407,10 @@ class DatabaseManager:
                 "min": best["price"], "max": max(r["price"] for r in rows)}
 
     # --- Дашборд ---
-    def get_dashboard(self, project_name=None, days_soon=7, days_pay=7):
+    def get_dashboard(self, project_name=None, days_soon=7, days_pay=7,
+                      max_age_days=180, no_confirm_max_days=45):
+        """ИСПРАВЛЕНО: архивные статусы и заказы старше max_age_days не напоминаются —
+        иначе в просрочку попадала вся история (101 напоминание / 39 просрочек)."""
         today = datetime.now().date()
         out = {"overdue": [], "soon": [], "price_requests": [],
                "no_confirm": [], "unpaid_inv": [], "pay_week": []}
@@ -1405,9 +1421,15 @@ class DatabaseManager:
                 MAX(price_request_num) prn FROM orders GROUP BY order_batch_id''').fetchall():
             if project_name and (b["proj"] or "") != project_name:
                 continue
+            st = (b["st"] or "").strip()
+            if st in ("Получен", "Списан"):
+                continue
+            d0 = self._d(b["od"])
+            if max_age_days and d0 and (today - d0.date()).days > max_age_days:
+                continue
             label = f"Z{b['prn']}" if (b["pr"] and b["prn"]) else str(b["order_batch_id"])
             base = {"№": label, "Проект": b["proj"] or "", "Поставщик": b["sup"] or "",
-                    "Инвойс": b["inv"] or "", "Статус": b["st"] or "", "batch_id": b["order_batch_id"]}
+                    "Инвойс": b["inv"] or "", "Статус": st, "batch_id": b["order_batch_id"]}
             eta = self._d(b["eta"]) or self._d(b["maxd"])
             if not b["rec"] and eta:
                 dd = (eta.date() - today).days
@@ -1417,10 +1439,9 @@ class DatabaseManager:
                     out["soon"].append({**base, "Дата": b["eta"] or b["maxd"], "Дней": dd})
             if b["pr"] and not (b["pd"] or "").strip():
                 out["price_requests"].append({**base, "Дата заказа": b["od"] or ""})
-            d0 = self._d(b["od"])
-            if d0 and not b["rec"] and (b["st"] or "") in ("", "Размещён", "Запрос цены", "КП получено"):
+            if d0 and not b["rec"] and st in ("", "Размещён", "Запрос цены", "КП получено"):
                 age = (today - d0.date()).days
-                if age > 5:
+                if 5 < age <= no_confirm_max_days:
                     out["no_confirm"].append({**base, "Дата заказа": b["od"], "Дней": age})
         for s in self.conn.execute('''SELECT s.id, s.supplier, s.name, s.total, s.currency,
                 s.payment_date, s.fully_paid, pr.name proj
@@ -1429,12 +1450,14 @@ class DatabaseManager:
                 continue
             if s["fully_paid"]:
                 continue
+            pay = self._d(s["payment_date"])
+            if max_age_days and pay and (today - pay.date()).days > max_age_days:
+                continue
             row = {"Проект": s["proj"] or "", "Поставщик": s["supplier"] or "",
                    "Спецификация": s["name"] or "", "Сумма": s["total"] or 0,
                    "Валюта": s["currency"] or "", "Дата оплаты": s["payment_date"] or "",
                    "spec_id": s["id"]}
             out["unpaid_inv"].append(row)
-            pay = self._d(s["payment_date"])
             if pay and 0 <= (pay.date() - today).days <= days_pay:
                 out["pay_week"].append(row)
         for k in out:
@@ -1481,6 +1504,7 @@ class DatabaseManager:
         res["margin"] = res["income"] - res["paid_sup"]
         res["plan_margin"] = res["plan_sell"] - res["plan_buy"]
         return res
+
     # === План-Факт: справочники и карточки работ ===
     def _ensure_plan_fact_tables(self):
         c = self.conn.cursor()
@@ -1602,7 +1626,8 @@ class DatabaseManager:
         c = self.conn.cursor()
         c.execute("DELETE FROM plan_fact WHERE project_id=? AND number=?", (project_id, number))
         self.conn.commit()
-        # === Сквозной поиск (Ctrl+K) ===
+
+    # === Сквозной поиск (Ctrl+K) ===
     def search_everything(self, query, limit_per_kind=60):
         """Ищет подстроку сразу во всех сущностях.
         Возвращает список словарей: kind, project, ref, title, subtitle, extra, payload."""
@@ -1643,27 +1668,29 @@ class DatabaseManager:
                                      MAX(manufacturer) man, MAX(supplier) sup,
                                      MAX(invoice_number) inv, MAX(delivery_number) dn,
                                      MAX(payment_date) pd, MAX(price_request) pr,
-                                     MAX(price_request_num) prn
+                                     MAX(price_request_num) prn, MAX(status) st
                               FROM orders GROUP BY order_batch_id""").fetchall():
-            if hit(b["inv"], b["sup"], b["dn"], b["proj"], b["man"], b["od"]):
+            if hit(b["inv"], b["sup"], b["dn"], b["proj"], b["man"], b["od"], b["st"]):
                 label = f'Z{b["prn"]}' if (b["pr"] and b["prn"]) else str(b["order_batch_id"])
                 res.append({"kind": "Заказ", "project": b["proj"] or "", "ref": label,
                             "title": f'Инвойс {b["inv"] or "—"} · {b["sup"] or "—"}',
                             "subtitle": b["man"] or "",
-                            "extra": f'поставка: {b["dn"] or "—"}; оплата: {b["pd"] or "—"}',
+                            "extra": f'статус: {b["st"] or "—"}; поставка: {b["dn"] or "—"}; '
+                                     f'оплата: {b["pd"] or "—"}',
                             "payload": {"type": "order", "batch_id": b["order_batch_id"],
                                         "project": b["proj"] or ""}})
 
-        # --- Позиции заказов ---
+        # --- Позиции заказов (ДОБАВЛЕН поиск по статусу артикула) ---
         for it in c.execute("""SELECT id, order_batch_id, article, name, name_eng, manufacturer,
-                                      project_name, quantity, price, currency
+                                      project_name, quantity, price, currency, item_status
                                FROM orders""").fetchall():
-            if hit(it["article"], it["name"], it["name_eng"], it["manufacturer"]):
+            if hit(it["article"], it["name"], it["name_eng"], it["manufacturer"], it["item_status"]):
                 res.append({"kind": "Позиция заказа", "project": it["project_name"] or "",
                             "ref": it["order_batch_id"],
                             "title": f'{it["article"] or ""} — {it["name"] or ""}'.strip(" —"),
                             "subtitle": it["manufacturer"] or "",
-                            "extra": f'кол-во {it["quantity"] or 0}; цена {it["price"] or "—"} {it["currency"] or ""}',
+                            "extra": f'кол-во {it["quantity"] or 0}; цена {it["price"] or "—"} '
+                                     f'{it["currency"] or ""}; статус: {it["item_status"] or "—"}',
                             "payload": {"type": "order", "batch_id": it["order_batch_id"],
                                         "project": it["project_name"] or ""}})
 
@@ -1739,10 +1766,21 @@ class DatabaseManager:
                             "subtitle": f'{sp["quantity"] or ""} × {sp["price"] or ""} {sp["currency"] or ""}',
                             "extra": "", "payload": {"type": "project", "project": sp["proj"] or ""}})
 
+        # --- План-Факт (ДОБАВЛЕНО: работы проекта тоже ищутся) ---
+        for pf in c.execute("""SELECT f.id, f.number, f.name, f.work_type, f.status, f.note, pr.name AS proj
+                               FROM plan_fact f LEFT JOIN projects pr ON pr.id = f.project_id""").fetchall():
+            if hit(pf["name"], pf["work_type"], pf["status"], pf["note"]):
+                res.append({"kind": "План-Факт", "project": pf["proj"] or "", "ref": pf["number"],
+                            "title": pf["name"] or "",
+                            "subtitle": pf["work_type"] or "",
+                            "extra": f'статус: {pf["status"] or "—"}',
+                            "payload": {"type": "project", "project": pf["proj"] or ""}})
+
         # ограничение по каждому типу
         out, counts = [], {}
         order = ["Проект", "Закупка", "Заказ", "Позиция заказа", "Счёт",
-                 "Позиция счёта", "Платёж", "Номенклатура", "Поставщик", "Спецификация"]
+                 "Позиция счёта", "Платёж", "Номенклатура", "Поставщик",
+                 "Спецификация", "План-Факт"]
         res.sort(key=lambda r: order.index(r["kind"]) if r["kind"] in order else 99)
         for r in res:
             k = r["kind"]
@@ -1778,7 +1816,7 @@ class DatabaseManager:
 
     @staticmethod
     def compact_article(s):
-        """Дополнительно без разделителей - / . _ \\"""
+        """Дополнительно без разделителей: дефис, слэш, точка, подчёркивание, обратный слэш."""
         s = DatabaseManager.normalize_article(s)
         for ch in ("-", "/", ".", "_", "\\"):
             s = s.replace(ch, "")
@@ -1822,7 +1860,7 @@ class DatabaseManager:
         return None
 
     def find_nomenclature_by_article(self, article):
-        """Совместимость со старым кодом + учёт алиасов."""
+        """Единственная версия метода: точное совпадение + нормализация + алиасы."""
         r = self.resolve_article(article)
         return r["row"] if r else None
 
@@ -1892,7 +1930,7 @@ class DatabaseManager:
                                       (canonical, old))
                 self.conn.execute("DELETE FROM nomenclature WHERE id=?", (did,))
                 merged += 1
-        return merged    
+        return merged
 
     # === Статусы артикулов (позиций заказа) ===
     def _ensure_item_statuses(self):
@@ -1948,8 +1986,8 @@ class DatabaseManager:
 
     def set_batch_item_status(self, batch_id, status):
         self.conn.execute("UPDATE orders SET item_status=? WHERE order_batch_id=?", (status, batch_id))
-        self.conn.commit()    
-            
+        self.conn.commit()
+
     def close(self):
         if self.conn:
             try:
