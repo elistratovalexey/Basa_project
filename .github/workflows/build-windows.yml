@@ -54,16 +54,11 @@ jobs:
           pip install -r requirements.txt
           pip install pyinstaller
 
-<<<<<<< HEAD
       - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 0        # нужно для git rev-list --count HEAD
       - name: Check build files exist
-=======
-      # --- 1. Наличие обязательных файлов (ловит Errno 2 и потерянные модули) ---
-      - name: Check required files
->>>>>>> eb530b97f2cefc0e88447bc32c25d0016fd68c35
         shell: bash
         run: |
           miss=0
