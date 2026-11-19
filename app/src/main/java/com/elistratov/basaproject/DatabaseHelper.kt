@@ -18,7 +18,6 @@ class DatabaseHelper(private val context: Context) : SQLiteOpenHelper(context, "
 
     data class TabRecord(val title: String, val details: String, val color: Long = 0L)
 
-    // ================= служебные =================
     fun isDatabaseReady(): Boolean {
         val f = context.getDatabasePath("projects.db")
         if (!f.exists() || f.length() < 100) return false
@@ -140,7 +139,6 @@ class DatabaseHelper(private val context: Context) : SQLiteOpenHelper(context, "
         return fmtDate(cal.time)
     }
 
-    // ================= вкладки =================
     fun tabData(tab: String, project: String?, search: String): List<TabRecord> {
         val out = when (tab) {
             "dashboard" -> dashboard(project)
@@ -158,7 +156,6 @@ class DatabaseHelper(private val context: Context) : SQLiteOpenHelper(context, "
         return if (q.isEmpty()) out else out.filter { (it.title + "\n" + it.details).lowercase().contains(q) }
     }
 
-    // ================= Сегодня (правила Python от 18.11) =================
     private fun dashboard(project: String?): List<TabRecord> {
         val today = Calendar.getInstance().apply {
             set(Calendar.HOUR_OF_DAY, 0); set(Calendar.MINUTE, 0); set(Calendar.SECOND, 0); set(Calendar.MILLISECOND, 0)
@@ -207,7 +204,6 @@ class DatabaseHelper(private val context: Context) : SQLiteOpenHelper(context, "
         return out
     }
 
-    // ================= Финансы =================
     private fun finances(project: String?): List<TabRecord> {
         val out = mutableListOf<TabRecord>()
         val totals = linkedMapOf<String, Double>()
@@ -234,7 +230,6 @@ class DatabaseHelper(private val context: Context) : SQLiteOpenHelper(context, "
         return out
     }
 
-    // ================= Спецификация =================
     private fun specification(project: String?): List<TabRecord> {
         val out = mutableListOf<TabRecord>()
         val totals = linkedMapOf<String, Double>()
@@ -254,15 +249,14 @@ class DatabaseHelper(private val context: Context) : SQLiteOpenHelper(context, "
         return out
     }
 
-    // ================= Закупки (цвета + дата получения, как в Python 18.11) =================
     private fun purchases(project: String?): List<TabRecord> {
         val out = mutableListOf<TabRecord>()
         val where = if (project != null) "WHERE pr.name=?" else ""
         val args = if (project != null) arrayOf(project) else emptyArray()
         rows("SELECT p.number, p.manufacturer, p.subproject, p.kd, p.article, p.name, p.name_eng, p.quantity, p.ordered, p.order_date, p.in_order, p.received, p.receipt_date, p.price_request, p.note, pr.name AS proj FROM purchases p LEFT JOIN projects pr ON pr.id=p.project_id $where ORDER BY pr.name, p.number", args) { c ->
             val color = when {
-                c.i("received") == 1 -> 0xFFD9EAD3L   // зелёный — получено
-                c.i("ordered") == 1 -> 0xFFFFF2CCL    // жёлтый — заказано
+                c.i("received") == 1 -> 0xFFD9EAD3L
+                c.i("ordered") == 1 -> 0xFFFFF2CCL
                 else -> 0L
             }
             out.add(TabRecord(
@@ -274,7 +268,6 @@ class DatabaseHelper(private val context: Context) : SQLiteOpenHelper(context, "
         return out
     }
 
-    // ================= Спецификация Закупок =================
     private fun purchaseSpec(project: String?): List<TabRecord> {
         val out = mutableListOf<TabRecord>()
         val where = if (project != null) "WHERE pr.name=?" else ""
@@ -302,7 +295,6 @@ class DatabaseHelper(private val context: Context) : SQLiteOpenHelper(context, "
         return out
     }
 
-    // ================= Сроки =================
     private fun firstPaymentDate(project: String): String {
         var best: Date? = null
         rows("SELECT p.date FROM payments p JOIN projects pr ON pr.id=p.project_id WHERE pr.name=?", arrayOf(project)) { c ->
@@ -337,7 +329,6 @@ class DatabaseHelper(private val context: Context) : SQLiteOpenHelper(context, "
         return out
     }
 
-    // ================= План-Факт =================
     private fun planFact(project: String?): List<TabRecord> {
         if (!tableExists("plan_fact")) return listOf(TabRecord("Нет данных", "Таблица «План-Факт» отсутствует в базе"))
         val out = mutableListOf<TabRecord>()
@@ -353,7 +344,6 @@ class DatabaseHelper(private val context: Context) : SQLiteOpenHelper(context, "
         return out
     }
 
-    // ================= Бюджет =================
     private fun budget(project: String?): List<TabRecord> {
         val out = mutableListOf<TabRecord>()
         if (!tableExists("currency_rates")) out.add(TabRecord("⚠️ Курсы валют", "Курсы не найдены в базе — пересчёт в рубли по курсу 1"))
@@ -384,7 +374,6 @@ class DatabaseHelper(private val context: Context) : SQLiteOpenHelper(context, "
         return out
     }
 
-    // ================= История цен (новая вкладка, v1.9) =================
     private data class PriceRow(val article: String, val name: String, val manufacturer: String,
                                 val supplier: String, val price: Double, val currency: String,
                                 val date: String, val proj: String, val source: String)
@@ -439,7 +428,7 @@ class DatabaseHelper(private val context: Context) : SQLiteOpenHelper(context, "
         val manufacturer: String, val subproject: String, val kd: String, val paymentDate: String,
         val deliveryDays: Int, val deliveryUnit: String, val minDate: String, val maxDate: String,
         val invoice: String, val supplier: String, val deliveryNumber: String,
-        val received: Boolean, val receiptDate: String, val writeOffDate: String,
+        val received: Boolean, val partialReceived: Boolean, val receiptDate: String, val writeOffDate: String,
         val priceRequest: Boolean, val priceRequestNum: Int,
         val status: String, val etaDate: String, val confirmDate: String, val shipDate: String, val tracking: String
     )
@@ -451,7 +440,18 @@ class DatabaseHelper(private val context: Context) : SQLiteOpenHelper(context, "
         val manufacturer: String, val subproject: String, val kd: String,
         val received: Boolean, val receiptDate: String, val qtyReceived: Double,
         val itemStatus: String
-    )
+    ) {
+        val rest: Double get() = quantity - qtyReceived
+    }
+
+    fun batchOverdue(b: OrderBatch): Boolean {
+        if (b.received) return false
+        val d = parseDate(b.etaDate.ifEmpty { b.maxDate }) ?: return false
+        val today = Calendar.getInstance().apply {
+            set(Calendar.HOUR_OF_DAY, 0); set(Calendar.MINUTE, 0); set(Calendar.SECOND, 0); set(Calendar.MILLISECOND, 0)
+        }.time
+        return d.before(today)
+    }
 
     fun getDistinctProjects(): List<String> = distinctValues("project_name")
     fun getDistinctManufacturers(): List<String> = distinctValues("manufacturer")
@@ -466,7 +466,8 @@ class DatabaseHelper(private val context: Context) : SQLiteOpenHelper(context, "
     fun getOrderBatches(): List<OrderBatch> {
         val list = mutableListOf<OrderBatch>()
         if (!isDatabaseReady()) return list
-        val opt = listOf("status" to "st", "eta_date" to "eta", "confirm_date" to "cd", "ship_date" to "sd", "tracking" to "tr")
+        val opt = listOf("status" to "st", "eta_date" to "eta", "confirm_date" to "cd",
+                         "ship_date" to "sd", "tracking" to "tr", "partial_received" to "part")
             .filter { columnExists("orders", it.first) }
             .joinToString("") { ", MAX(${it.first}) AS ${it.second}" }
         rows("SELECT order_batch_id AS bid, MAX(order_date) AS od, MAX(project_name) AS proj, MAX(manufacturer) AS man, MAX(subproject) AS sub, MAX(kd) AS kd, MAX(payment_date) AS pd, MAX(delivery_days) AS dd, MAX(delivery_unit_order) AS du, MAX(min_delivery_date) AS mind, MAX(max_delivery_date) AS maxd, MAX(invoice_number) AS inv, MAX(supplier) AS sup, MAX(delivery_number) AS dn, MAX(received) AS rec, MAX(receipt_date) AS rdate, MAX(write_off_date) AS wdate, MAX(price_request) AS pr, MAX(price_request_num) AS prn$opt FROM orders GROUP BY order_batch_id ORDER BY order_batch_id DESC") { c ->
@@ -478,7 +479,8 @@ class DatabaseHelper(private val context: Context) : SQLiteOpenHelper(context, "
                 deliveryDays = c.i("dd"), deliveryUnit = c.s("du"),
                 minDate = c.s("mind"), maxDate = c.s("maxd"),
                 invoice = c.s("inv"), supplier = c.s("sup"), deliveryNumber = c.s("dn"),
-                received = c.i("rec") == 1, receiptDate = c.s("rdate"), writeOffDate = c.s("wdate"),
+                received = c.i("rec") == 1, partialReceived = c.i("part") == 1,
+                receiptDate = c.s("rdate"), writeOffDate = c.s("wdate"),
                 priceRequest = pr, priceRequestNum = prn,
                 status = c.s("st"), etaDate = c.s("eta"), confirmDate = c.s("cd"),
                 shipDate = c.s("sd"), tracking = c.s("tr")

@@ -25,7 +25,7 @@ class OrdersActivity : AppCompatActivity() {
     private lateinit var tvItemDetail: TextView
     private var allBatches: List<DatabaseHelper.OrderBatch> = emptyList()
     private var shownBatches: List<DatabaseHelper.OrderBatch> = emptyList()
-    private var selectedItemView: View? = null
+    private var selectedItemView: TextView? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -43,7 +43,13 @@ class OrdersActivity : AppCompatActivity() {
         root.addView(filterRow, LinearLayout.LayoutParams(match, wrap))
 
         batchList = ListView(this).apply { choiceMode = ListView.CHOICE_MODE_SINGLE }
-        batchAdapter = ArrayAdapter(this, android.R.layout.simple_list_item_activated_1, mutableListOf<String>())
+        batchAdapter = object : ArrayAdapter<String>(this, android.R.layout.simple_list_item_activated_1, mutableListOf<String>()) {
+            override fun getView(position: Int, convertView: View?, parent: ViewGroup): View {
+                val v = super.getView(position, convertView, parent)
+                v.setBackgroundColor(batchColor(shownBatches.getOrNull(position)))
+                return v
+            }
+        }
         batchList.adapter = batchAdapter
         root.addView(batchList, LinearLayout.LayoutParams(match, 0, 1f))
 
@@ -92,25 +98,48 @@ class OrdersActivity : AppCompatActivity() {
         }
         spProject.adapter = ad(projects)
         spManufacturer.adapter = ad(manufacturers)
-        spReceived.adapter = ad(listOf("Все", "Получено", "Не получено"))
+        spReceived.adapter = ad(listOf("Все", "Получено", "Частично", "Не получено"))
     }
+
+    private fun batchColor(b: DatabaseHelper.OrderBatch?): Int {
+        if (b == null) return 0x00000000
+        val st = b.status.trim()
+        if (b.received || st == "Получен" || st == "Списан") return 0xFFD9EAD3.toInt()
+        if (b.partialReceived) return 0xFFFFF2CC.toInt()
+        if (db.batchOverdue(b)) return 0xFFF4CCCC.toInt()
+        if (st in listOf("Подтверждён", "Оплачен", "Отгружен")) return 0xFFD0E0F0.toInt()
+        return 0x00000000
+    }
+
+    private fun fmtQty(v: Double): String =
+        if (v == v.toLong().toDouble()) v.toLong().toString() else v.toString()
 
     private fun applyFilters() {
         val proj = spProject.selectedItem?.toString()?.takeIf { it != "Все" }
         val man = spManufacturer.selectedItem?.toString()?.takeIf { it != "Все" }
-        val rec = when (spReceived.selectedItem?.toString()) { "Получено" -> true; "Не получено" -> false; else -> null }
+        val recSel = spReceived.selectedItem?.toString()
         shownBatches = allBatches.filter { b ->
-            (proj == null || b.project == proj) && (man == null || b.manufacturer == man) && (rec == null || b.received == rec)
+            val projOk = proj == null || b.project == proj
+            val manOk = man == null || b.manufacturer == man
+            val recOk = when (recSel) {
+                "Получено" -> b.received
+                "Частично" -> b.partialReceived
+                "Не получено" -> !b.received
+                else -> true
+            }
+            projOk && manOk && recOk
         }
         batchAdapter.clear()
         batchAdapter.addAll(shownBatches.map { b ->
-            "${if (b.received) "✅" else "⬜"} №${b.label} · ${b.manufacturer} · ${b.project} · ${b.orderDate}" +
+            val m = when { b.received -> "✅"; b.partialReceived -> "🟨"; else -> "⬜" }
+            "$m №${b.label} · ${b.manufacturer} · ${b.project} · ${b.orderDate}" +
                 (if (b.status.isNotEmpty()) " · ${b.status}" else "")
         })
         batchAdapter.notifyDataSetChanged()
         tvHeader.text = "Найдено заказов: ${shownBatches.size}. Выберите заказ в списке выше."
         itemsBox.removeAllViews()
         tvItemDetail.text = ""
+        selectedItemView = null
     }
 
     private fun showBatch(b: DatabaseHelper.OrderBatch) {
@@ -120,7 +149,9 @@ class OrdersActivity : AppCompatActivity() {
             append("Номер инвойса: ${b.invoice}\nПоставщик: ${b.supplier}\nНомер поставки: ${b.deliveryNumber}\n")
             append("Производитель: ${b.manufacturer}\nПодпроект: ${b.subproject}\nКД: ${b.kd}\n")
             append("Доставка: ${b.deliveryDays} ${b.deliveryUnit}\nMin дата поставки: ${b.minDate}\nMax дата поставки: ${b.maxDate}\n")
-            append("Получено: ${if (b.received) "✓" else "—"} ${b.receiptDate}\nДата списания: ${b.writeOffDate}\n")
+            append("Получено: ${if (b.received) "✓" else "—"} ${b.receiptDate}\n")
+            append("Частично получено: ${if (b.partialReceived) "✓" else "—"}\n")
+            append("Дата списания: ${b.writeOffDate}\n")
             append("Запрос цены: ${if (b.priceRequest) "✓ Z${b.priceRequestNum}" else "—"}\n")
             if (b.status.isNotEmpty()) append("Статус: ${b.status}\n")
             if (b.etaDate.isNotEmpty()) append("ETA: ${b.etaDate}\n")
@@ -134,29 +165,42 @@ class OrdersActivity : AppCompatActivity() {
         val dp = { v: Int -> (resources.displayMetrics.density * v).toInt() }
         val items = db.getOrderItems(b.batchId)
         for (item in items) {
+            val q = item.quantity.toDouble()
+            val r = item.qtyReceived
+            val itemColor = when {
+                q > 0 && r >= q -> 0xFFD9EAD3.toInt()
+                r > 0 -> 0xFFFFF2CC.toInt()
+                else -> 0x00000000
+            }
+            val baseText = "${item.id} · ${item.article} · ${item.name}\n" +
+                "кол-во ${item.quantity} · получено ${fmtQty(r)} · остаток ${fmtQty(item.rest)} · ${item.price} ${item.currency}" +
+                (if (item.itemStatus.isNotEmpty()) " · ${item.itemStatus}" else "")
             val tv = TextView(this).apply {
-                text = "${item.id} · ${item.article} · ${item.name} · ${item.quantity} шт · ${item.price} ${item.currency}" +
-                    (if (item.itemStatus.isNotEmpty()) " · ${item.itemStatus}" else "")
+                text = baseText
+                tag = baseText
                 textSize = 14f
                 setPadding(dp(6), dp(8), dp(6), dp(8))
-                if (item.received) setBackgroundColor(0xFFD9EAD3.toInt())
+                setBackgroundColor(itemColor)
                 setOnClickListener { v ->
-                    selectedItemView?.setBackgroundColor(0x00000000)
-                    v.setBackgroundColor(0x33FF9800)
-                    selectedItemView = v
+                    selectedItemView?.let { prev -> prev.text = prev.tag as String }
+                    val tvv = v as TextView
+                    tvv.text = "▶ " + (tvv.tag as String)
+                    selectedItemView = tvv
                     tvItemDetail.text = buildString {
                         append("ПОЗИЦИЯ (ID ${item.id})\n")
                         append("Артикул: ${item.article}\nНаименование: ${item.name}\n")
                         if (item.nameEng.isNotEmpty()) append("Наименование (анг): ${item.nameEng}\n")
                         append("Статус артикула: ${item.itemStatus.ifEmpty { "—" }}\n")
-                        append("Кол-во: ${item.quantity}\nСрок поставки: ${item.deliveryTerm} ${item.deliveryUnit}\n")
+                        append("Кол-во: ${item.quantity}\n")
+                        append("Получено, кол-во: ${fmtQty(item.qtyReceived)}\n")
+                        append("Остаток: ${fmtQty(item.rest)}\n")
+                        append("Срок поставки: ${item.deliveryTerm} ${item.deliveryUnit}\n")
                         append("Цена: ${item.price} ${item.currency}\n")
                         val total = item.quantity * db.parseNum(item.price)
                         append("Сумма: ${"%.2f".format(total)} ${item.currency}\n")
                         append("Производитель: ${item.manufacturer}\nПодпроект: ${item.subproject}\nКД: ${item.kd}\n")
-                        append("Получено: ${if (item.received) "✓" else "—"} ${item.receiptDate}")
-                        if (item.qtyReceived > 0) append(" (принято: ${item.qtyReceived})")
-                        append("\nПримечание: ${item.note}")
+                        append("Получено: ${if (item.received) "✓" else "—"} ${item.receiptDate}\n")
+                        append("Примечание: ${item.note}")
                     }
                 }
             }
