@@ -34,7 +34,6 @@ jobs:
       PIP_DISABLE_PIP_VERSION_CHECK: "1"
 
     steps:
-      # ОДИН checkout, сразу с полной историей (нужно для git rev-list --count)
       - name: Checkout
         uses: actions/checkout@v4
         with:
@@ -77,7 +76,8 @@ jobs:
       - name: Report optional modules
         shell: bash
         run: |
-          for f in paths.py terminal_log.py version.py VERSION reminders.py cloud_sync.py installer.iss app.ico; do
+          for f in paths.py terminal_log.py version.py VERSION reminders.py cloud_sync.py \
+                   app_update.py publish_update.py installer.iss app.ico; do
             if [ -f "$f" ]; then echo "present : $f"; else echo "absent  : $f"; fi
           done
 
@@ -105,14 +105,13 @@ jobs:
           sys.exit(1 if bad else 0)
           EOF
 
-      # Главный gate: импорт app ловит отсутствующие модули ДО сборки exe
       - name: Import smoke test
         shell: bash
         run: |
           python - <<'EOF'
           import importlib, os, sys
           required = ["config", "utils", "database", "settings_dialog", "tabs", "dialogs", "app"]
-          optional = ["paths", "terminal_log", "version", "reminders", "cloud_sync"]
+          optional = ["paths", "terminal_log", "version", "reminders", "cloud_sync", "app_update"]
           failed = []
           for m in required:
               try:
@@ -137,7 +136,6 @@ jobs:
           print("IMPORT SMOKE TEST OK")
           EOF
 
-      # ОДИН шаг версии, с fallback пока version.py не добавлен
       - name: Compute version
         id: ver
         shell: bash
@@ -167,21 +165,6 @@ jobs:
           }
           $size = (Get-ChildItem -Recurse dist\BasaProject | Measure-Object -Property Length -Sum).Sum / 1MB
           Write-Host ("Готово: {0} ({1:N1} МБ)" -f $exe, $size)
-      - name: Publish update to Mail.ru cloud
-        if: github.event_name == 'workflow_dispatch'
-        env:
-          MAILRU_USER: ${{ secrets.MAILRU_USER }}
-          MAILRU_APP_PASSWORD: ${{ secrets.MAILRU_APP_PASSWORD }}
-          MAILRU_REMOTE_DIR: BasaProject
-        shell: bash
-        run: |
-          if [ -z "$MAILRU_USER" ] || [ -z "$MAILRU_APP_PASSWORD" ]; then
-            echo "::error::Не заданы секреты MAILRU_USER / MAILRU_APP_PASSWORD"
-            exit 1
-          fi
-          python publish_update.py --info
-          python publish_update.py --win dist/BasaProject \
-            --notes "Сборка run${{ github.run_number }} от $(date +%d.%m.%Y)"
 
       - name: Build installer (Inno Setup)
         if: hashFiles('installer.iss') != ''
@@ -209,6 +192,17 @@ jobs:
           path: Output/*.exe
           retention-days: 30
 
+      - name: Publish hint
+        shell: bash
+        run: |
+          echo "### Сборка готова" >> "$GITHUB_STEP_SUMMARY"
+          echo "Артефакт: BasaProject-windows-${{ steps.ver.outputs.version }}-run${{ github.run_number }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Публикация обновления в облако выполняется с рабочей машины (без секретов):" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          echo "python publish_update.py --win dist/BasaProject --notes \"...\"" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
       - name: Upload PyInstaller diagnostics
         if: failure()
         uses: actions/upload-artifact@v4
@@ -219,12 +213,3 @@ jobs:
             build/**/*.log
           if-no-files-found: ignore
           retention-days: 7
-      - name: Publish update to Mail.ru cloud
-        if: github.event_name == 'workflow_dispatch'
-        env:
-          MAILRU_USER: ${{ secrets.MAILRU_USER }}
-          MAILRU_APP_PASSWORD: ${{ secrets.MAILRU_APP_PASSWORD }}
-        shell: bash
-        run: |
-          python publish_update.py --win dist/BasaProject \
-            --notes "Сборка run${{ github.run_number }}"    
