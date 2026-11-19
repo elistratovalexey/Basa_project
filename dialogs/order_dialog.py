@@ -61,9 +61,11 @@ class OrderDialog(tk.Toplevel):
         self.sort_column = "order_date"
         self.sort_order = "DESC"
         self._display2batch = {}
+        self._inline = None
 
         self.create_ui()
-        # batch_id — параметр __init__, поэтому загрузка позиций именно здесь
+
+        # batch_id — параметр __init__ (в create_ui его нет!)
         if batch_id:
             self.current_batch_id = batch_id
             self.load_items(batch_id)
@@ -190,7 +192,7 @@ class OrderDialog(tk.Toplevel):
         self.lbl_batch_status = ttk.Label(hf, text="", foreground="#0066cc", font=("Arial", 9, "bold"))
         self.lbl_batch_status.grid(row=2, column=4, sticky="w", pady=4)
 
-        # --- Кнопки действий (База статусов артикула — правее «Удалить заказ») ---
+        # --- Кнопки действий ---
         af = ttk.Frame(self)
         af.pack(fill="x", padx=8, pady=4)
         ttk.Button(af, text="Импорт из файла (Excel/PDF)", command=self.import_from_file).pack(side=tk.LEFT, padx=5)
@@ -203,42 +205,49 @@ class OrderDialog(tk.Toplevel):
                    command=self.open_item_statuses).pack(side=tk.LEFT, padx=5)
         ttk.Button(af, text="Заказ в файл АНГ", command=self.export_order_to_excel).pack(side=tk.RIGHT, padx=5)
 
-        # --- Позиции заказа: 10 колонок (#10 = Статус артикула) ---
-        pf = ttk.LabelFrame(self, text="Позиции заказа", padding=6)
+        # --- Позиции заказа: 11 колонок, «Получено, кол-во» справа от «Кол-во» ---
+        pf = ttk.LabelFrame(self, text="Позиции заказа  ·  двойной клик по ячейке — правка, "
+                                       "Enter — сохранить, Tab — дальше, Esc — отмена", padding=6)
         pf.pack(fill="both", expand=True, padx=8, pady=4)
-        cols_i = ("id", "article", "name", "quantity", "delivery_term",
+        cols_i = ("id", "article", "name", "quantity", "qty_received", "delivery_term",
                   "delivery_unit", "price", "currency", "note", "item_status")
         self.tree_items = ttk.Treeview(pf, columns=cols_i, show="headings", height=10,
                                        selectmode="extended")
-        heads_i = {"id": ("ID", 60), "article": ("Артикул", 160), "name": ("Наименование", 300),
-                   "quantity": ("Кол-во", 70), "delivery_term": ("Срок поставки", 90),
-                   "delivery_unit": ("Единица", 100), "price": ("Цена", 90),
-                   "currency": ("Валюта", 70), "note": ("Примечание", 200),
-                   "item_status": ("Статус артикула", 140)}
+        heads_i = {"id": ("ID", 55), "article": ("Артикул", 155), "name": ("Наименование", 280),
+                   "quantity": ("Кол-во", 65), "qty_received": ("Получено, кол-во", 105),
+                   "delivery_term": ("Срок поставки", 90), "delivery_unit": ("Единица", 95),
+                   "price": ("Цена", 85), "currency": ("Валюта", 65),
+                   "note": ("Примечание", 200), "item_status": ("Статус артикула", 130)}
         for c in cols_i:
             t, w = heads_i[c]
             self.tree_items.heading(c, text=t)
             self.tree_items.column(c, width=w, anchor="center" if c in
-                                   ("id", "quantity", "delivery_term", "price", "currency") else "w")
+                                   ("id", "quantity", "qty_received", "delivery_term",
+                                    "price", "currency") else "w")
         si = ttk.Scrollbar(pf, orient=tk.VERTICAL, command=self.tree_items.yview)
         self.tree_items.configure(yscroll=si.set)
         self.tree_items.pack(side=tk.LEFT, fill="both", expand=True)
         si.pack(side=tk.RIGHT, fill="y")
+        self.tree_items.tag_configure('part', background='#fff2cc')     # получено частично
+        self.tree_items.tag_configure('full', background='#d9ead3')     # получено полностью
         self.tree_items.bind("<<TreeviewSelect>>", self.on_select_item)
-        self.tree_items.bind("<Double-1>", lambda e: self.edit_item())
+        self.tree_items.bind("<Double-1>", self.on_items_double_click)
 
         # --- Форма позиции ---
         itf = ttk.LabelFrame(self, text="Позиция", padding=6)
         itf.pack(fill="x", padx=8, pady=4)
         ttk.Label(itf, text="Артикул:").grid(row=0, column=0, sticky="w", padx=(0, 5))
-        self.entry_item_article = ttk.Entry(itf, width=30)
-        self.entry_item_article.grid(row=0, column=1, sticky="ew", padx=(0, 15))
+        self.entry_item_article = ttk.Entry(itf, width=28)
+        self.entry_item_article.grid(row=0, column=1, sticky="ew", padx=(0, 12))
         ttk.Label(itf, text="Наименование:").grid(row=0, column=2, sticky="w", padx=(0, 5))
-        self.entry_item_name = ttk.Entry(itf, width=40)
-        self.entry_item_name.grid(row=0, column=3, sticky="ew", padx=(0, 15))
+        self.entry_item_name = ttk.Entry(itf, width=36)
+        self.entry_item_name.grid(row=0, column=3, sticky="ew", padx=(0, 12))
         ttk.Label(itf, text="Кол-во:").grid(row=0, column=4, sticky="w", padx=(0, 5))
-        self.entry_item_quantity = ttk.Entry(itf, width=10)
-        self.entry_item_quantity.grid(row=0, column=5, sticky="w", padx=(0, 15))
+        self.entry_item_quantity = ttk.Entry(itf, width=9)
+        self.entry_item_quantity.grid(row=0, column=5, sticky="w", padx=(0, 12))
+        ttk.Label(itf, text="Получено:").grid(row=0, column=6, sticky="w", padx=(0, 5))
+        self.entry_item_qty_received = ttk.Entry(itf, width=9)
+        self.entry_item_qty_received.grid(row=0, column=7, sticky="w", padx=(0, 12))
 
         ttk.Label(itf, text="Срок:").grid(row=1, column=0, sticky="w", padx=(0, 5), pady=(8, 0))
         self.entry_item_delivery_term = ttk.Entry(itf, width=10)
@@ -276,6 +285,7 @@ class OrderDialog(tk.Toplevel):
         btnf.grid(row=4, column=0, columnspan=8, pady=(10, 0))
         ttk.Button(btnf, text="Сохранить позицию", command=self.save_item).pack(side=tk.LEFT, padx=5)
         ttk.Button(btnf, text="Удалить позицию", command=self.delete_item).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btnf, text="Карточка позиции", command=self.edit_item).pack(side=tk.LEFT, padx=5)
         ttk.Button(btnf, text="Закрыть", command=self.destroy).pack(side=tk.RIGHT, padx=5)
 
         self.load_manufacturers_for_combo()
@@ -303,6 +313,7 @@ class OrderDialog(tk.Toplevel):
                 self.after(60, lambda a=attempts - 1: self._safe_grab(a))
 
     def _safe_destroy(self):
+        self._inline_cancel()
         for seq, _bid in getattr(self, "_bind_ids", []):
             try:
                 self.unbind_all(seq)
@@ -427,10 +438,9 @@ class OrderDialog(tk.Toplevel):
         self.combo_batch_kd['values'] = [r[0] for r in c.fetchall()]
 
     # ==================================================================
-    # СТАТУСЫ АРТИКУЛОВ
+    # Статусы артикулов
     # ==================================================================
     def _refresh_item_statuses(self):
-        """Заполняет выпадающий список (значения из БД, при пустой БД — набор по умолчанию)."""
         vals = []
         try:
             if hasattr(self.db_manager, "get_item_statuses"):
@@ -446,7 +456,6 @@ class OrderDialog(tk.Toplevel):
             pass
 
     def on_item_status_selected(self, event=None):
-        """Выбор в списке СРАЗУ записывается в текущую позицию."""
         status = self.combo_item_status.get().strip()
         if not status:
             return
@@ -455,17 +464,10 @@ class OrderDialog(tk.Toplevel):
             return
         try:
             self.db_manager.set_item_status(self.current_item_id, status)
-            keep = self.current_item_id
-            self.load_items(self.current_batch_id)
-            for iid in self.tree_items.get_children():
-                if self.tree_items.item(iid)['values'][0] == keep:
-                    self.tree_items.selection_set(iid)
-                    self.tree_items.see(iid)
-                    self.current_item_id = keep
-                    self.combo_item_status.set(status)
-                    break
-            self.lbl_status_hint.config(text=f"позиция #{keep}: {status}")
-            self._log(f"Позиция #{keep}: статус артикула «{status}»")
+            self._reload_items_keep(self.current_item_id)
+            self.combo_item_status.set(status)
+            self.lbl_status_hint.config(text=f"позиция #{self.current_item_id}: {status}")
+            self._log(f"Позиция #{self.current_item_id}: статус артикула «{status}»")
         except Exception as e:
             messagebox.showerror("Ошибка", f"Не удалось сохранить статус:\n{e}", parent=self)
 
@@ -480,7 +482,7 @@ class OrderDialog(tk.Toplevel):
                 messagebox.showwarning("Внимание", "Такой статус уже есть.", parent=self)
 
     def open_item_statuses(self):
-        """Кнопка правее «Удалить заказ»: справочник статусов артикула."""
+        """Кнопка правее «Удалить заказ»."""
         try:
             from dialogs.item_status_dialog import ItemStatusesDialog
         except ImportError:
@@ -489,15 +491,7 @@ class OrderDialog(tk.Toplevel):
         ItemStatusesDialog(self, self.db_manager, on_changed=self._refresh_item_statuses)
         self._refresh_item_statuses()
         if self.current_batch_id is not None:
-            keep = self.current_item_id
-            self.load_items(self.current_batch_id)
-            if keep is not None:
-                for iid in self.tree_items.get_children():
-                    if self.tree_items.item(iid)['values'][0] == keep:
-                        self.tree_items.selection_set(iid)
-                        self.tree_items.see(iid)
-                        self.current_item_id = keep
-                        break
+            self._reload_items_keep(self.current_item_id)
 
     def apply_status_to_selected(self):
         sel = self.tree_items.selection()
@@ -513,6 +507,177 @@ class OrderDialog(tk.Toplevel):
         self.load_items(self.current_batch_id)
         self.lbl_status_hint.config(text=f"«{status}» присвоен {len(sel)} позициям")
         self._log(f"Статус артикула «{status}» присвоен {len(sel)} позициям")
+
+    # ==================================================================
+    # ИНЛАЙН-РЕДАКТИРОВАНИЕ ТАБЛИЦЫ ПОЗИЦИЙ
+    # ==================================================================
+    # индекс колонки -> (поле в БД, тип редактора)
+    _ITEM_EDIT_COLS = {
+        1: ("article", "text"),
+        2: ("name", "text"),
+        3: ("quantity", "int"),
+        4: ("qty_received", "float"),
+        5: ("delivery_term", "int"),
+        6: ("delivery_unit", "unit"),
+        7: ("price", "text"),
+        8: ("currency", "currency"),
+        9: ("note", "text"),
+        10: ("item_status", "status"),
+    }
+
+    def on_items_double_click(self, event):
+        tree = self.tree_items
+        if tree.identify_region(event.x, event.y) != "cell":
+            return
+        row = tree.identify_row(event.y)
+        col = tree.identify_column(event.x)
+        if not row or not col:
+            return
+        idx = int(col.replace("#", "")) - 1
+        if idx == 0:                       # двойной клик по ID — полная карточка
+            self.edit_item()
+            return "break"
+        self._inline_begin(row, col, idx)
+        return "break"
+
+    def _inline_begin(self, row, col, idx):
+        spec = self._ITEM_EDIT_COLS.get(idx)
+        if not spec:
+            return
+        self._inline_cancel()
+        tree = self.tree_items
+        try:
+            if not tree.exists(row):
+                return
+            box = tree.bbox(row, col)
+        except Exception:
+            return
+        if not box:
+            return
+        x, y, w, h = box
+        field, kind = spec
+        values = list(tree.item(row)['values'])
+        old = values[idx] if idx < len(values) else ""
+
+        if kind in ("unit", "currency", "status"):
+            if kind == "unit":
+                vals = TIME_UNITS
+            elif kind == "currency":
+                vals = ORDER_CURRENCIES
+            else:
+                try:
+                    vals = self.db_manager.get_item_statuses()
+                except Exception:
+                    vals = []
+            ed = ttk.Combobox(tree, values=vals, state="readonly")
+            ed.set(old)
+            ed.place(x=x, y=y, width=w, height=h)
+            ed.focus_set()
+            ed.bind("<<ComboboxSelected>>", lambda e: self._inline_commit())
+        else:
+            ed = ttk.Entry(tree)
+            ed.insert(0, str(old))
+            ed.select_range(0, tk.END)
+            ed.place(x=x, y=y, width=w, height=h)
+            ed.focus_set()
+
+        ed.bind("<Return>", lambda e: self._inline_commit())
+        ed.bind("<Escape>", lambda e: self._inline_cancel())
+        ed.bind("<FocusOut>", lambda e: self._inline_commit())
+        ed.bind("<Tab>", lambda e: self._inline_tab(row, idx))
+        self._inline = {"widget": ed, "row": row, "idx": idx,
+                        "field": field, "kind": kind, "old": old}
+
+    def _inline_tab(self, row, idx):
+        self._inline_commit()
+        nxt = idx + 1
+        while nxt <= max(self._ITEM_EDIT_COLS):
+            if nxt in self._ITEM_EDIT_COLS:
+                try:
+                    if self.tree_items.exists(row):
+                        self._inline_begin(row, f"#{nxt + 1}", nxt)
+                except Exception:
+                    pass
+                break
+            nxt += 1
+        return "break"
+
+    def _inline_cancel(self):
+        info = getattr(self, "_inline", None)
+        self._inline = None
+        if info:
+            try:
+                info["widget"].destroy()
+            except Exception:
+                pass
+
+    def _inline_commit(self):
+        info = getattr(self, "_inline", None)
+        if not info:
+            return "break"
+        self._inline = None
+        ed, row, idx = info["widget"], info["row"], info["idx"]
+        try:
+            raw = ed.get()
+        except Exception:
+            raw = info["old"]
+        try:
+            ed.destroy()
+        except Exception:
+            pass
+
+        kind, field = info["kind"], info["field"]
+        value = str(raw).strip()
+        if kind == "int":
+            try:
+                value = int(float(value.replace(",", ".") or 0))
+            except ValueError:
+                messagebox.showwarning("Ошибка", "Нужно целое число!", parent=self)
+                return "break"
+        elif kind == "float":
+            try:
+                value = float(value.replace(" ", "").replace(",", ".") or 0)
+            except ValueError:
+                messagebox.showwarning("Ошибка", "Нужно число!", parent=self)
+                return "break"
+            if value < 0:
+                value = 0
+
+        if str(value) == str(info["old"]):
+            return "break"
+
+        try:
+            item_id = self.tree_items.item(row)['values'][0]
+            self.db_manager.update_order_item(item_id, {field: value})
+            if field in ("quantity", "qty_received"):
+                # БД пересчитала «Получено» — перечитываем строки
+                self._reload_items_keep(item_id)
+            else:
+                vals = list(self.tree_items.item(row)['values'])
+                vals[idx] = value
+                self.tree_items.item(row, values=vals)
+                self.current_item_id = item_id
+                self.on_select_item()
+                self._paint_item_row(row)
+            self._log(f"Позиция #{item_id}: {field} = {value}")
+        except Exception as e:
+            messagebox.showerror("Ошибка", f"Не удалось сохранить:\n{e}", parent=self)
+        return "break"
+
+    def _paint_item_row(self, iid):
+        """Подсветка: получено полностью / частично."""
+        try:
+            v = self.tree_items.item(iid)['values']
+            q = float(str(v[3]).replace(",", ".") or 0)
+            r = float(str(v[4]).replace(",", ".") or 0)
+        except (ValueError, IndexError):
+            return
+        if q > 0 and r >= q:
+            self.tree_items.item(iid, tags=('full',))
+        elif r > 0:
+            self.tree_items.item(iid, tags=('part',))
+        else:
+            self.tree_items.item(iid, tags=())
 
     # ==================================================================
     # Календари
@@ -553,6 +718,19 @@ class OrderDialog(tk.Toplevel):
                 self.current_batch_id = keep_id
                 self._load_batch_to_form(v)
                 self.load_items(keep_id)
+                break
+
+    def _reload_items_keep(self, item_id):
+        """Перечитать позиции и вернуть выделение на ту же строку."""
+        self.load_items(self.current_batch_id)
+        if item_id is None:
+            return
+        for iid in self.tree_items.get_children():
+            if self.tree_items.item(iid)['values'][0] == item_id:
+                self.tree_items.selection_set(iid)
+                self.tree_items.see(iid)
+                self.current_item_id = item_id
+                self.on_select_item()
                 break
 
     def _set_topmost(self, value):
@@ -813,7 +991,8 @@ class OrderDialog(tk.Toplevel):
 
     def clear_item_form(self):
         for e in (self.entry_item_article, self.entry_item_name, self.entry_item_quantity,
-                  self.entry_item_delivery_term, self.entry_item_price, self.entry_item_note):
+                  self.entry_item_qty_received, self.entry_item_delivery_term,
+                  self.entry_item_price, self.entry_item_note):
             e.delete(0, tk.END)
         self.combo_item_delivery_unit.set('')
         self.combo_item_currency.set('')
@@ -835,10 +1014,12 @@ class OrderDialog(tk.Toplevel):
             traceback.print_exc()
             return
         for r in rows:
-            self.tree_items.insert("", tk.END, values=(
+            iid = self.tree_items.insert("", tk.END, values=(
                 r['id'], r['article'] or "", r['name'] or "", r['quantity'] or "",
-                r['delivery_term'] or "", r['delivery_unit'] or "", r['price'] or "",
-                r['currency'] or "", r['note'] or "", r.get('item_status', '')))
+                r.get('qty_received', 0), r['delivery_term'] or "", r['delivery_unit'] or "",
+                r['price'] or "", r['currency'] or "", r['note'] or "",
+                r.get('item_status', '')))
+            self._paint_item_row(iid)
         if not rows:
             print(f"[order_dialog] Заказ {batch_id}: позиций в БД не найдено")
 
@@ -893,17 +1074,15 @@ class OrderDialog(tk.Toplevel):
         self.entry_item_article.delete(0, tk.END); self.entry_item_article.insert(0, v[1])
         self.entry_item_name.delete(0, tk.END); self.entry_item_name.insert(0, v[2])
         self.entry_item_quantity.delete(0, tk.END); self.entry_item_quantity.insert(0, v[3])
-        self.entry_item_delivery_term.delete(0, tk.END); self.entry_item_delivery_term.insert(0, v[4])
-        self.combo_item_delivery_unit.set(v[5])
-        self.entry_item_price.delete(0, tk.END); self.entry_item_price.insert(0, v[6])
-        self.combo_item_currency.set(v[7])
-        self.entry_item_note.delete(0, tk.END); self.entry_item_note.insert(0, v[8])
+        self.entry_item_qty_received.delete(0, tk.END); self.entry_item_qty_received.insert(0, v[4])
+        self.entry_item_delivery_term.delete(0, tk.END); self.entry_item_delivery_term.insert(0, v[5])
+        self.combo_item_delivery_unit.set(v[6])
+        self.entry_item_price.delete(0, tk.END); self.entry_item_price.insert(0, v[7])
+        self.combo_item_currency.set(v[8])
+        self.entry_item_note.delete(0, tk.END); self.entry_item_note.insert(0, v[9])
         try:
-            self.combo_item_status.set(v[9] if len(v) > 9 else "")
-            if len(sel) > 1:
-                self.lbl_status_hint.config(text=f"выбрано позиций: {len(sel)}")
-            else:
-                self.lbl_status_hint.config(text="")
+            self.combo_item_status.set(v[10] if len(v) > 10 else "")
+            self.lbl_status_hint.config(text=f"выбрано позиций: {len(sel)}" if len(sel) > 1 else "")
         except Exception:
             pass
 
@@ -922,18 +1101,18 @@ class OrderDialog(tk.Toplevel):
                 return 0
 
         data = {'id': item_id, 'article': str(v[1] or ''), 'name': str(v[2] or ''),
-                'quantity': num(v[3]), 'delivery_term': num(v[4]),
-                'delivery_unit': str(v[5] or ''), 'price': str(v[6] or ''),
-                'currency': str(v[7] or ''), 'note': str(v[8] or ''),
-                'item_status': str(v[9]) if len(v) > 9 else ''}
+                'quantity': num(v[3]), 'qty_received': num(v[4]),
+                'delivery_term': num(v[5]), 'delivery_unit': str(v[6] or ''),
+                'price': str(v[7] or ''), 'currency': str(v[8] or ''),
+                'note': str(v[9] or ''), 'item_status': str(v[10]) if len(v) > 10 else ''}
         dlg = OrderItemEditDialog(self, data)
         self.wait_window(dlg)
         if dlg.result is not None:
             try:
-                if 'item_status' not in dlg.result:
-                    dlg.result['item_status'] = data['item_status']
+                dlg.result.setdefault('item_status', data['item_status'])
+                dlg.result.setdefault('qty_received', data['qty_received'])
                 self.db_manager.update_order_item(item_id, dlg.result)
-                self.load_items(self.current_batch_id)
+                self._reload_items_keep(item_id)
                 self._log(f"Позиция #{item_id} отредактирована: {dlg.result.get('article','')}")
             except Exception as e:
                 messagebox.showerror("Ошибка", f"Не удалось сохранить изменения:\n{e}", parent=self)
@@ -980,8 +1159,9 @@ class OrderDialog(tk.Toplevel):
             messagebox.showwarning("Внимание", "Выберите позицию!", parent=self)
             return
         try:
-            quantity = int(self.entry_item_quantity.get() or 0)
-            term = int(self.entry_item_delivery_term.get() or 0)
+            quantity = int(float(self.entry_item_quantity.get() or 0))
+            term = int(float(self.entry_item_delivery_term.get() or 0))
+            qty_rec = float((self.entry_item_qty_received.get() or "0").replace(",", "."))
         except ValueError:
             messagebox.showwarning("Ошибка", "Некорректное число!", parent=self)
             return
@@ -989,6 +1169,7 @@ class OrderDialog(tk.Toplevel):
             'article': self.entry_item_article.get(),
             'name': self.entry_item_name.get(),
             'quantity': quantity,
+            'qty_received': qty_rec,
             'delivery_term': term,
             'delivery_unit': self.combo_item_delivery_unit.get(),
             'price': self.entry_item_price.get(),
@@ -996,14 +1177,7 @@ class OrderDialog(tk.Toplevel):
             'note': self.entry_item_note.get(),
             'item_status': self.combo_item_status.get(),
         })
-        keep = self.current_item_id
-        self.load_items(self.current_batch_id)
-        for iid in self.tree_items.get_children():
-            if self.tree_items.item(iid)['values'][0] == keep:
-                self.tree_items.selection_set(iid)
-                self.tree_items.see(iid)
-                self.current_item_id = keep
-                break
+        self._reload_items_keep(self.current_item_id)
 
     def delete_item(self):
         if self.current_item_id is None:

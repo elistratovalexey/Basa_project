@@ -694,7 +694,9 @@ class DatabaseManager:
         c = self.conn.cursor()
         c.execute('''SELECT id, article, name, name_eng, quantity, note,
                             manufacturer, subproject, kd,
-                            delivery_term, delivery_unit, price, currency, item_status
+                            delivery_term, delivery_unit, price, currency,
+                            item_status, IFNULL(qty_received, 0) AS qty_received,
+                            IFNULL(received, 0) AS received, receipt_date
                      FROM orders
                      WHERE order_batch_id=?
                      ORDER BY id''', (batch_id,))
@@ -715,9 +717,12 @@ class DatabaseManager:
                 'subproject': row['subproject'] or '',
                 'kd': row['kd'] or '',
                 'item_status': row['item_status'] or '',
+                'qty_received': row['qty_received'] or 0,
+                'received': row['received'] or 0,
+                'receipt_date': row['receipt_date'] or '',
             })
         return result
-
+    
     def add_order(self, data):
         c = self.conn.cursor()
         c.execute('''INSERT INTO orders
@@ -788,35 +793,66 @@ class DatabaseManager:
             self.conn.execute("DELETE FROM order_items WHERE order_batch_id=?", (batch_id,))
 
     def update_order_item(self, item_id, data):
-        """Обновление позиции заказа в таблице orders по id строки."""
+        """Обновление позиции заказа. Можно передать ТОЛЬКО изменённое поле —
+        остальные сохранятся. При правке qty_received пересчитывается received."""
         c = self.conn.cursor()
         c.execute("""SELECT article, name, name_eng, quantity, note, manufacturer, subproject, kd,
-                            delivery_term, delivery_unit, price, currency, item_status
+                            delivery_term, delivery_unit, price, currency, item_status,
+                            IFNULL(qty_received,0) AS qty_received,
+                            IFNULL(received,0) AS received, receipt_date, order_batch_id
                      FROM orders WHERE id=?""", (item_id,))
         current = c.fetchone()
         if not current:
             return
+
+        def num(v, default=0):
+            try:
+                return float(str(v).replace(" ", "").replace(",", "."))
+            except (TypeError, ValueError):
+                return default
+
+        quantity = num(data.get('quantity', current['quantity']), current['quantity'] or 0)
+        qty_rec = num(data.get('qty_received', current['qty_received']), current['qty_received'] or 0)
+        if qty_rec < 0:
+            qty_rec = 0
+
+        # «Получено» и дата получения follow за количеством
+        received = current['received'] or 0
+        receipt_date = current['receipt_date'] or ''
+        if 'qty_received' in data or 'quantity' in data:
+            if quantity > 0 and qty_rec >= quantity:
+                received = 1
+                if not receipt_date:
+                    receipt_date = datetime.now().strftime("%d.%m.%Y")
+            else:
+                received = 0
+                if qty_rec <= 0:
+                    receipt_date = ''
+
         c.execute('''UPDATE orders SET
                         article=?, name=?, name_eng=?, quantity=?,
                         note=?, manufacturer=?, subproject=?, kd=?,
-                        delivery_term=?, delivery_unit=?, price=?, currency=?, item_status=?
+                        delivery_term=?, delivery_unit=?, price=?, currency=?, item_status=?,
+                        qty_received=?, received=?, receipt_date=?
                      WHERE id=?''',
                   (data.get('article', current['article'] or ''),
                    data.get('name', current['name'] or ''),
                    data.get('name_eng', current['name_eng'] or ''),
-                   data.get('quantity', current['quantity'] or 0),
+                   quantity,
                    data.get('note', current['note'] or ''),
                    data.get('manufacturer', current['manufacturer'] or ''),
                    data.get('subproject', current['subproject'] or ''),
                    data.get('kd', current['kd'] or ''),
-                   data.get('delivery_term', current['delivery_term'] or 0),
+                   num(data.get('delivery_term', current['delivery_term']), current['delivery_term'] or 0),
                    data.get('delivery_unit', current['delivery_unit'] or ''),
                    data.get('price', current['price'] or ''),
                    data.get('currency', current['currency'] or ''),
                    data.get('item_status', current['item_status'] or ''),
+                   qty_rec, received, receipt_date,
                    item_id))
         self.conn.commit()
-
+        self._sync_batch_received(current['order_batch_id'])
+        
     def delete_order_item(self, item_id):
         c = self.conn.cursor()
         c.execute("DELETE FROM orders WHERE id=?", (item_id,))
