@@ -74,17 +74,26 @@ class AppUpdater:
         self.log = log
         self.install_dir, self.local_dir, self.backup_dir, self.upd_dir = _dirs()
         self.app_dir = app_dir or self.install_dir
-        self.cfg = load_config(self.app_dir)
+        self.cfg = load_config()          # было load_config(self.app_dir)
 
     # ---------- клиент ----------
     def client(self):
         if not self.cfg.get("user") or not self.cfg.get("password"):
-            raise WebDavError("Не заданы логин/пароль WebDAV (Облако → Подключение)")
+            raise WebDavError(
+                "Нет учётных данных облака.\n"
+                "Откройте «☁ Облако → Подключение», заполните логин и пароль приложения,\n"
+                "нажмите «Сохранить» — обновление программы использует те же данные.\n"
+                f"Файл настроек: {self.cfg.get('_config_file')}")
         return WebDavClient(self.cfg.get("url"), self.cfg["user"], self.cfg["password"],
                             timeout=max(300, int(self.cfg.get("timeout_sec", 300))),
                             retries=int(self.cfg.get("retries", 4)),
                             log=self.log)
 
+    def credentials_info(self):
+        return {"user": self.cfg.get("user") or "—",
+                "source": self.cfg.get("_source"),
+                "file": self.cfg.get("_config_file"),
+                "update_dir": self.remote_update_dir}
     @property
     def remote_update_dir(self):
         base = (self.cfg.get("remote_dir") or "BasaProject").strip("/")

@@ -182,40 +182,115 @@ class WebDavClient:
 # ==================================================================
 # Конфигурация и состояние
 # ==================================================================
-def load_config(app_dir):
-    cfg = {
-        "url": os.environ.get("MAILRU_WEBDAV_URL", DEFAULT_URL),
-        "user": os.environ.get("MAILRU_USER", ""),
-        "password": os.environ.get("MAILRU_APP_PASSWORD", ""),
-        "remote_dir": "BasaProject",
-        "auto": True,
-        "interval_min": 15,
-        "debounce_sec": 120,
-        "keep_remote": 10,
-        "timeout_sec": 300,
-        "retries": 4,
-        "backup_every_min": 60,
-        "encrypt": False,
-    }
-    path = os.path.join(app_dir, "cloud_config.json")
-    if os.path.exists(path):
+# ==================================================================
+# Конфигурация: ЕДИНЫЙ источник — настройки синхронизации из окна «Облако»
+# ==================================================================
+DEFAULT_CONFIG = {
+    "url": DEFAULT_URL,
+    "user": "",
+    "password": "",
+    "remote_dir": "BasaProject",
+    "auto": True,
+    "interval_min": 15,
+    "debounce_sec": 120,
+    "keep_remote": 10,
+    "timeout_sec": 300,
+    "retries": 4,
+    "backup_every_min": 60,
+    "encrypt": False,
+}
+
+
+def _config_dirs(app_dir=None):
+    """Порядок поиска: папка данных → папка программы → рядом с модулем."""
+    dirs = []
+    try:
+        from paths import CONFIG_DIR, DATA_DIR, INSTALL_DIR
+        for d in (CONFIG_DIR, DATA_DIR, INSTALL_DIR):
+            if d and d not in dirs:
+                dirs.append(d)
+    except Exception:
+        pass
+    if app_dir and app_dir not in dirs:
+        dirs.append(app_dir)
+    here = os.path.dirname(os.path.abspath(__file__))
+    if here not in dirs:
+        dirs.append(here)
+    return dirs
+
+
+def config_file_path(app_dir=None, for_write=False):
+    dirs = _config_dirs(app_dir)
+    if for_write:
+        return os.path.join(dirs[0], "cloud_config.json")
+    for d in dirs:
+        p = os.path.join(d, "cloud_config.json")
+        if os.path.isfile(p):
+            return p
+    return os.path.join(dirs[0], "cloud_config.json")
+
+
+def load_config(app_dir=None):
+    """Настройки синхронизации (cloud_config.json).
+    Переменные окружения ПЕРЕОПРЕДЕЛЯЮТ файл — это нужно для CI/секретов."""
+    cfg = dict(DEFAULT_CONFIG)
+    path = config_file_path(app_dir)
+    source = "значения по умолчанию"
+    if os.path.isfile(path):
         try:
             with open(path, "r", encoding="utf-8") as f:
-                cfg.update(json.load(f))
+                data = json.load(f)
+            if isinstance(data, dict):
+                cfg.update({k: v for k, v in data.items()
+                            if v not in (None, "") and not k.startswith("_")})
+            source = f"настройки синхронизации: {path}"
         except Exception as e:
-            print(f"[sync] конфиг не прочитан: {e}")
+            print(f"[cloud] конфиг не прочитан ({path}): {e}")
+
+    env_user = os.environ.get("MAILRU_USER")
+    env_pass = os.environ.get("MAILRU_APP_PASSWORD")
+    env_url = os.environ.get("MAILRU_WEBDAV_URL")
+    env_dir = os.environ.get("MAILRU_REMOTE_DIR")
+    if env_user:
+        cfg["user"] = env_user
+    if env_pass:
+        cfg["password"] = env_pass
+    if env_url:
+        cfg["url"] = env_url
+    if env_dir:
+        cfg["remote_dir"] = env_dir
+    if env_user or env_pass:
+        source = "переменные окружения (MAILRU_USER / MAILRU_APP_PASSWORD)"
+
+    cfg["_source"] = source
+    cfg["_config_file"] = path
     return cfg
 
 
-def save_config(app_dir, cfg):
-    path = os.path.join(app_dir, "cloud_config.json")
+def save_config(app_dir=None, cfg=None):
+    """Сохраняет настройки в папку ДАННЫХ (переживает переустановку)."""
+    cfg = cfg or {}
+    path = config_file_path(app_dir, for_write=True)
+    data = {k: v for k, v in cfg.items() if not k.startswith("_")}
+    os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
-        json.dump(cfg, f, ensure_ascii=False, indent=2)
+        json.dump(data, f, ensure_ascii=False, indent=2)
     try:
         os.chmod(path, 0o600)
     except OSError:
         pass
+    return path
 
+
+def credentials_info(app_dir=None):
+    """Для диагностики: откуда взяты логин/пароль (пароль не показываем)."""
+    cfg = load_config(app_dir)
+    return {"user": cfg.get("user") or "—",
+            "url": cfg.get("url"),
+            "remote_dir": cfg.get("remote_dir"),
+            "has_password": bool(cfg.get("password")),
+            "source": cfg.get("_source"),
+            "file": cfg.get("_config_file")}
 
 class SyncState:
     def __init__(self, work_dir):
@@ -481,12 +556,13 @@ class SyncManager:
 
     def client(self):
         if not self.cfg.get("user") or not self.cfg.get("password"):
-            raise WebDavError("Не заданы логин/пароль WebDAV (Облако → Подключение)")
+            raise WebDavError("Не заданы логин/пароль WebDAV.\n"
+                              "Заполните их в «Облако → Подключение» и нажмите «Сохранить».\n"
+                              f"Файл настроек: {self.cfg.get('_config_file')}")
         return WebDavClient(self.cfg.get("url"), self.cfg["user"], self.cfg["password"],
                             timeout=self.cfg.get("timeout_sec", 300),
                             retries=self.cfg.get("retries", 4),
                             log=self.log)
-
     # ---------- GUI-поток ----------
     def prepare(self):
         ensure_sync_tables(self.conn)

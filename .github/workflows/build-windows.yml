@@ -167,6 +167,21 @@ jobs:
           }
           $size = (Get-ChildItem -Recurse dist\BasaProject | Measure-Object -Property Length -Sum).Sum / 1MB
           Write-Host ("Готово: {0} ({1:N1} МБ)" -f $exe, $size)
+      - name: Publish update to Mail.ru cloud
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          MAILRU_USER: ${{ secrets.MAILRU_USER }}
+          MAILRU_APP_PASSWORD: ${{ secrets.MAILRU_APP_PASSWORD }}
+          MAILRU_REMOTE_DIR: BasaProject
+        shell: bash
+        run: |
+          if [ -z "$MAILRU_USER" ] || [ -z "$MAILRU_APP_PASSWORD" ]; then
+            echo "::error::Не заданы секреты MAILRU_USER / MAILRU_APP_PASSWORD"
+            exit 1
+          fi
+          python publish_update.py --info
+          python publish_update.py --win dist/BasaProject \
+            --notes "Сборка run${{ github.run_number }} от $(date +%d.%m.%Y)"
 
       - name: Build installer (Inno Setup)
         if: hashFiles('installer.iss') != ''

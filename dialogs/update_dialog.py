@@ -105,6 +105,8 @@ class UpdateDialog(tk.Toplevel):
 
         def work():
             try:
+                ci = self.up.credentials_info()
+                self.say(f"Учётные данные: {ci['user']} · источник: {ci['source']}")
                 info = self.up.check()
                 self.after(0, lambda: self._show(info))
             except Exception as e:
