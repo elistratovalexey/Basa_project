@@ -164,6 +164,8 @@ class ProjectManagerApp:
             self.restart_sync_timer()
         except Exception as e:
             print(f"Облачная синхронизация недоступна: {e}")
+                # --- Проверка обновлений программы (в фоне, не блокирует запуск) ---
+        self.root.after(8000, self.check_updates_silent)    
 
     # ================= База =================
     def _open_database(self, db_path):
@@ -390,6 +392,10 @@ class ProjectManagerApp:
                    command=self.open_global_search).pack(side=tk.RIGHT, padx=5)
         self.lbl_sync = ttk.Label(frame_top, text="☁ —", foreground="gray")
         self.lbl_sync.pack(side=tk.RIGHT, padx=6)
+        self.lbl_update = ttk.Label(frame_top, text="", foreground="#0a0")
+        self.lbl_update.pack(side=tk.RIGHT, padx=6)
+        ttk.Button(frame_top, text="⬆ Обновление",
+                   command=self.open_update_dialog).pack(side=tk.RIGHT, padx=4)
         ttk.Button(frame_top, text="☁ Облако", command=self.open_cloud_sync).pack(side=tk.RIGHT, padx=4)
         ttk.Button(frame_top, text="📁 Папка данных",
                    command=lambda: open_path(cfg.DATA_DIR)).pack(side=tk.RIGHT, padx=4)
@@ -873,6 +879,32 @@ class ProjectManagerApp:
                 h.close()
         except Exception:
             pass
+        def open_update_dialog(self):
+        try:
+            from dialogs.update_dialog import UpdateDialog
+        except ImportError as e:
+            messagebox.showerror("Обновление", f"Модуль обновления недоступен:\n{e}")
+            return
+        UpdateDialog(self.root, app=self)
+
+    def check_updates_silent(self):
+        """Тихая проверка при старте: только метка в панели, без модальных окон."""
+        def work():
+            try:
+                from app_update import AppUpdater
+                info = AppUpdater(log=lambda m: None).check()
+                if info.get("available"):
+                    self.root.after(0, lambda: self._mark_update(info["version"]))
+            except Exception as e:
+                print(f"[update] проверка: {e}")
+        threading.Thread(target=work, daemon=True).start()
+
+    def _mark_update(self, version):
+        try:
+            self.lbl_update.config(text=f"⬆ доступна {version}")
+            self.log_action(f"Обновление: доступна версия {version}")
+        except Exception:
+            pass    
 
 
 if __name__ == "__main__":

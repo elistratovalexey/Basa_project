@@ -204,3 +204,12 @@ jobs:
             build/**/*.log
           if-no-files-found: ignore
           retention-days: 7
+      - name: Publish update to Mail.ru cloud
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          MAILRU_USER: ${{ secrets.MAILRU_USER }}
+          MAILRU_APP_PASSWORD: ${{ secrets.MAILRU_APP_PASSWORD }}
+        shell: bash
+        run: |
+          python publish_update.py --win dist/BasaProject \
+            --notes "Сборка run${{ github.run_number }}"    
