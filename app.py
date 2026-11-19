@@ -879,7 +879,7 @@ class ProjectManagerApp:
                 h.close()
         except Exception:
             pass
-        def open_update_dialog(self):
+    def open_update_dialog(self):
         try:
             from dialogs.update_dialog import UpdateDialog
         except ImportError as e:
