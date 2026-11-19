@@ -51,10 +51,10 @@ class OrderDialog(tk.Toplevel):
                 self.parent = _app
 
         self.title("База заказов")
-        self.geometry("1650x1000")
+        self.geometry("1680x1000")
         try:
             from dialogs.window_geometry import restore_geometry, track_geometry
-            restore_geometry(self, "order_dialog", "1650x1000")
+            restore_geometry(self, "order_dialog", "1680x1000")
             track_geometry(self, "order_dialog")
         except Exception:
             pass
@@ -99,22 +99,23 @@ class OrderDialog(tk.Toplevel):
         self.combo_filter_payment.pack(side=tk.LEFT, padx=5)
         self.combo_filter_payment.bind("<<ComboboxSelected>>", lambda e: self.load_batches())
         ttk.Label(ff, text="Получено:").pack(side=tk.LEFT, padx=(10, 0))
-        self.combo_filter_received = ttk.Combobox(ff, width=12, state="readonly",
-                                                  values=["Все", "Получено", "Не получено"])
+        self.combo_filter_received = ttk.Combobox(ff, width=14, state="readonly",
+                                                  values=["Все", "Получено", "Частично", "Не получено"])
         self.combo_filter_received.set("Все")
         self.combo_filter_received.pack(side=tk.LEFT, padx=5)
         self.combo_filter_received.bind("<<ComboboxSelected>>", lambda e: self.load_batches())
         ttk.Button(ff, text="База Поставщиков", command=self.open_suppliers).pack(side=tk.RIGHT, padx=5)
         ttk.Button(ff, text="Экспорт в Excel", command=self.open_export_dialog).pack(side=tk.RIGHT, padx=5)
 
-        # --- Верхняя таблица: 19 колонок, правка по двойному клику ---
-        bf = ttk.LabelFrame(self, text="Заказы  ·  двойной клик по ячейке — правка, Enter — сохранить, Esc — отмена",
-                            padding=4)
+        # --- Верхняя таблица: 20 колонок ---
+        # #15 Получено, #16 Частично получено, #19 Запрос цены, #20 Статус
+        bf = ttk.LabelFrame(self, text="Заказы  ·  двойной клик по ячейке — правка, Enter — сохранить, "
+                                       "Esc — отмена; галочки переключаются одиночным кликом", padding=4)
         bf.pack(fill="both", expand=False, padx=8, pady=4)
         cols_b = ("batch_id", "manufacturer", "subproject", "kd", "order_date",
                   "project_name", "payment_date", "delivery_days", "delivery_unit_order",
                   "min_delivery_date", "max_delivery_date", "invoice_number", "supplier",
-                  "delivery_number", "received", "receipt_date", "write_off_date",
+                  "delivery_number", "received", "partial", "receipt_date", "write_off_date",
                   "price_request", "status")
         self.tree_batches = ttk.Treeview(bf, columns=cols_b, show="headings", height=8)
         heads = {"batch_id": ("№ заказа", 60), "manufacturer": ("Производитель", 110),
@@ -125,7 +126,8 @@ class OrderDialog(tk.Toplevel):
                  "min_delivery_date": ("Min дата пост.", 100),
                  "max_delivery_date": ("Max дата пост.", 100),
                  "invoice_number": ("Номер инвойса", 110), "supplier": ("Поставщик", 150),
-                 "delivery_number": ("Номер поставки", 100), "received": ("Получено", 60),
+                 "delivery_number": ("Номер поставки", 100), "received": ("Получено", 65),
+                 "partial": ("Частично получено", 110),
                  "receipt_date": ("Дата получения", 100), "write_off_date": ("Дата списания", 100),
                  "price_request": ("Запрос цены", 80), "status": ("Статус", 110)}
         for c in cols_b:
@@ -133,12 +135,14 @@ class OrderDialog(tk.Toplevel):
             self.tree_batches.heading(c, text=t, command=lambda cc=c: self.sort_by_column(cc))
             self.tree_batches.column(c, width=w, anchor="center" if c in
                                      ("batch_id", "order_date", "payment_date", "delivery_days",
-                                      "min_delivery_date", "max_delivery_date", "received",
+                                      "min_delivery_date", "max_delivery_date", "received", "partial",
                                       "receipt_date", "write_off_date", "price_request") else "w")
         sb = ttk.Scrollbar(bf, orient=tk.VERTICAL, command=self.tree_batches.yview)
-        self.tree_batches.configure(yscroll=sb.set)
+        hs = ttk.Scrollbar(bf, orient=tk.HORIZONTAL, command=self.tree_batches.xview)
+        self.tree_batches.configure(yscroll=sb.set, xscroll=hs.set)
         self.tree_batches.pack(side=tk.LEFT, fill="both", expand=True)
         sb.pack(side=tk.RIGHT, fill="y")
+        hs.pack(side=tk.BOTTOM, fill="x")
         self.tree_batches.bind("<<TreeviewSelect>>", self.on_select_batch)
         self.tree_batches.bind("<Button-1>", self.on_batch_click)
         self.tree_batches.bind("<Double-1>", self.on_batch_double_click)
@@ -197,6 +201,11 @@ class OrderDialog(tk.Toplevel):
         ttk.Label(hf, text="Статус:").grid(row=2, column=3, sticky="w", pady=4)
         self.lbl_batch_status = ttk.Label(hf, text="", foreground="#0066cc", font=("Arial", 9, "bold"))
         self.lbl_batch_status.grid(row=2, column=4, sticky="w", pady=4)
+        # НОВОЕ: флажок «Частично получено»
+        self.partial_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(hf, text="Частично получено", variable=self.partial_var,
+                        command=self.on_partial_change).grid(row=2, column=5, columnspan=2,
+                                                             sticky="w", pady=4, padx=(12, 0))
 
         # --- Кнопки действий ---
         af = ttk.Frame(self)
@@ -211,8 +220,8 @@ class OrderDialog(tk.Toplevel):
         ttk.Button(af, text="База статусов артикула", command=self.open_item_statuses).pack(side=tk.LEFT, padx=4)
         ttk.Button(af, text="Заказ в файл АНГ", command=self.export_order_to_excel).pack(side=tk.RIGHT, padx=4)
 
-        # --- Нижняя таблица: 12 колонок, «Остаток» после «Получено, кол-во» ---
-        pf = ttk.LabelFrame(self, text="Позиции заказа  ·  двойной клик по ячейке — правка, "
+        # --- Нижняя таблица: 12 колонок ---
+        pf = ttk.LabelFrame(self, text="Позиции заказа  ·  двойной клик по ячейке — правка (список раскрывается сразу), "
                                        "Enter — сохранить, Tab — дальше, Esc — отмена", padding=6)
         pf.pack(fill="both", expand=True, padx=8, pady=4)
         cols_i = ("id", "article", "name", "quantity", "qty_received", "rest",
@@ -224,7 +233,7 @@ class OrderDialog(tk.Toplevel):
                    "rest": ("Остаток", 75),
                    "delivery_term": ("Срок поставки", 85), "delivery_unit": ("Единица", 90),
                    "price": ("Цена", 85), "currency": ("Валюта", 60),
-                   "note": ("Примечание", 190), "item_status": ("Статус артикула", 125)}
+                   "note": ("Примечание", 190), "item_status": ("Статус артикула", 130)}
         for c in cols_i:
             t, w = heads_i[c]
             self.tree_items.heading(c, text=t)
@@ -232,9 +241,11 @@ class OrderDialog(tk.Toplevel):
                                    ("id", "quantity", "qty_received", "rest", "delivery_term",
                                     "price", "currency") else "w")
         si = ttk.Scrollbar(pf, orient=tk.VERTICAL, command=self.tree_items.yview)
-        self.tree_items.configure(yscroll=si.set)
+        hi = ttk.Scrollbar(pf, orient=tk.HORIZONTAL, command=self.tree_items.xview)
+        self.tree_items.configure(yscroll=si.set, xscroll=hi.set)
         self.tree_items.pack(side=tk.LEFT, fill="both", expand=True)
         si.pack(side=tk.RIGHT, fill="y")
+        hi.pack(side=tk.BOTTOM, fill="x")
         self.tree_items.tag_configure('part', background='#fff2cc')
         self.tree_items.tag_configure('full', background='#d9ead3')
         self.tree_items.bind("<<TreeviewSelect>>", self.on_select_item)
@@ -301,6 +312,11 @@ class OrderDialog(tk.Toplevel):
         self.load_manufacturers_for_combo()
         if hasattr(self.db_manager, "ensure_column"):
             self.db_manager.ensure_column("orders", "write_off_date")
+            # НОВОЕ: колонка флага частичной приёмки (миграция не требует правки database.py)
+            try:
+                self.db_manager.ensure_column("orders", "partial_received", "INTEGER DEFAULT 0")
+            except Exception as e:
+                print(f"[order_dialog] partial_received: {e}")
         self._refresh_item_statuses()
         self.load_batches()
 
@@ -448,7 +464,39 @@ class OrderDialog(tk.Toplevel):
         self.combo_batch_kd['values'] = [r[0] for r in c.fetchall()]
 
     # ==================================================================
-    # НОВОЕ 1: Заполнить статусы артикулов статусом заказа
+    # Частичная приёмка (флаг заказа)
+    # ==================================================================
+    def _set_partial(self, batch_id, value):
+        try:
+            self.db_manager.conn.execute(
+                "UPDATE orders SET partial_received=? WHERE order_batch_id=?",
+                (1 if value else 0, batch_id))
+            self.db_manager.conn.commit()
+        except Exception as e:
+            print(f"[order_dialog] partial_received write: {e}")
+
+    def _sync_partial_flag(self, batch_id):
+        """Автогалочка: получено > 0, но меньше заказанного."""
+        try:
+            rows = self._items_rows(batch_id)
+        except Exception:
+            return
+        if not rows:
+            return
+        total = sum(_f(r.get("quantity"), 0) for r in rows)
+        rec = sum(_f(r.get("qty_received"), 0) for r in rows)
+        self._set_partial(batch_id, 1 if (rec > 0 and rec < total) else 0)
+
+    def on_partial_change(self):
+        if self.current_batch_id is None:
+            return
+        self._set_partial(self.current_batch_id, self.partial_var.get())
+        self._log(f"Заказ {self.current_batch_id}: частично получено = "
+                  f"{1 if self.partial_var.get() else 0}")
+        self._refresh_batches_keep_selection()
+
+    # ==================================================================
+    # Заполнить статусы / Получено ВСЁ
     # ==================================================================
     def _current_order_status(self):
         try:
@@ -480,18 +528,15 @@ class OrderDialog(tk.Toplevel):
                                    parent=self):
             return
         try:
-            self.db_manager.add_item_status(status)     # добавляем в справочник, если нового
+            self.db_manager.add_item_status(status)
         except Exception:
             pass
         self.db_manager.set_batch_item_status(self.current_batch_id, status)
         self._refresh_item_statuses()
         self._reload_items_keep(self.current_item_id)
         self.lbl_status_hint.config(text=f"«{status}» проставлен {len(items)} позициям")
-        self._log(f"Заказ {self.current_batch_id}: статус артикулов «{status}» проставлен {len(items)} позициям")
+        self._log(f"Заказ {self.current_batch_id}: статус артикулов «{status}» — {len(items)} позиций")
 
-    # ==================================================================
-    # НОВОЕ 2: Получено ВСЁ
-    # ==================================================================
     def receive_all_items(self):
         if self.current_batch_id is None:
             messagebox.showwarning("Внимание", "Выберите заказ!", parent=self)
@@ -501,8 +546,7 @@ class OrderDialog(tk.Toplevel):
             messagebox.showinfo("Информация", "В заказе нет позиций.", parent=self)
             return
         if not messagebox.askyesno("Подтверждение",
-                                   f"Отметить полученным ВСЁ количество по {len(items)} позициям?\n"
-                                   "Дата получения будет проставлена, статус заказа станет «Получен».",
+                                   f"Отметить полученным ВСЁ количество по {len(items)} позициям?",
                                    parent=self):
             return
         today = datetime.now().strftime("%d.%m.%Y")
@@ -517,6 +561,7 @@ class OrderDialog(tk.Toplevel):
                 done += 1
             except Exception as e:
                 print(f"[order_dialog] receive_all: {e}")
+        self._set_partial(self.current_batch_id, 0)
         self._reload_items_keep(self.current_item_id)
         self._refresh_batches_keep_selection()
         self._log(f"Заказ {self.current_batch_id}: получено ВСЁ по {done} позициям")
@@ -591,15 +636,14 @@ class OrderDialog(tk.Toplevel):
         self.lbl_status_hint.config(text=f"«{status}» присвоен {len(sel)} позициям")
 
     # ==================================================================
-    # ИНЛАЙН-РЕДАКТИРОВАНИЕ (обе таблицы)
+    # ИНЛАЙН-РЕДАКТИРОВАНИЕ
     # ==================================================================
-    # нижняя таблица: индекс -> (поле БД, тип)
     _ITEM_EDIT_COLS = {
         1: ("article", "text"),
         2: ("name", "text"),
         3: ("quantity", "int"),
         4: ("qty_received", "float"),
-        # 5 = Остаток (вычисляемый, не редактируется)
+        # 5 = Остаток (вычисляемый)
         6: ("delivery_term", "int"),
         7: ("delivery_unit", "unit"),
         8: ("price", "text"),
@@ -607,7 +651,6 @@ class OrderDialog(tk.Toplevel):
         10: ("note", "text"),
         11: ("item_status", "status"),
     }
-    # верхняя таблица: индекс -> (колонка orders, тип)
     _BATCH_EDIT_COLS = {
         1: ("manufacturer", "manufacturer"),
         2: ("subproject", "subproject"),
@@ -622,10 +665,10 @@ class OrderDialog(tk.Toplevel):
         11: ("invoice_number", "text"),
         12: ("supplier", "supplier"),
         13: ("delivery_number", "text"),
-        # 14 и 17 — флаги, переключаются одиночным кликом
-        15: ("receipt_date", "date"),
-        16: ("write_off_date", "date"),
-        18: ("status", "order_status"),
+        # 14, 15, 18 — галочки (одиночный клик)
+        16: ("receipt_date", "date"),
+        17: ("write_off_date", "date"),
+        19: ("status", "order_status"),
     }
 
     def on_items_double_click(self, event):
@@ -640,8 +683,8 @@ class OrderDialog(tk.Toplevel):
             self.edit_item()
             return "break"
         if idx == 5:
-            messagebox.showinfo("Остаток", "Остаток = Кол-во − Получено и считается автоматически.\n"
-                                           "Измените «Кол-во» или «Получено, кол-во».", parent=self)
+            messagebox.showinfo("Остаток", "Остаток = Кол-во − Получено и считается автоматически.",
+                                parent=self)
             return "break"
         self._inline_begin(tree, "items", row, col, idx, self._ITEM_EDIT_COLS)
         return "break"
@@ -654,8 +697,8 @@ class OrderDialog(tk.Toplevel):
         if not row or not col:
             return
         idx = int(col.replace("#", "")) - 1
-        if idx in (0, 14, 17):
-            return "break"          # номер и флаги — одиночный клик
+        if idx in (0, 14, 15, 18):
+            return "break"
         self._inline_begin(tree, "batches", row, col, idx, self._BATCH_EDIT_COLS)
         return "break"
 
@@ -690,7 +733,7 @@ class OrderDialog(tk.Toplevel):
                 "OR project_name IS NULL) ORDER BY kd_number", (self.project_name,))]
         return []
 
-    def _inline_begin(self, tree, which, row, col, idx, mapping):
+    def _inline_begin(self, tree, which, row, col, idx, mapping, _retry=False):
         spec = mapping.get(idx)
         if not spec:
             return
@@ -702,11 +745,20 @@ class OrderDialog(tk.Toplevel):
         except Exception:
             return
         if not box:
+            # ячейка вне видимой области — подскроллим и попробуем ещё раз
+            if not _retry:
+                try:
+                    tree.see(row)
+                except Exception:
+                    pass
+                self.after(60, lambda: self._inline_begin(tree, which, row, col, idx, mapping, True))
             return
         x, y, w, h = box
         field, kind = spec
         values = list(tree.item(row)['values'])
         old = values[idx] if idx < len(values) else ""
+        is_combo = kind in ("unit", "currency", "status", "order_status", "manufacturer",
+                            "supplier", "project", "subproject", "kd")
 
         if kind == "date":
             frame = ttk.Frame(tree)
@@ -726,14 +778,15 @@ class OrderDialog(tk.Toplevel):
                     self._inline_commit()
             ttk.Button(frame, text="📅", width=2, command=pick).pack(side=tk.LEFT)
             widget = frame
-        elif kind in ("unit", "currency", "status", "order_status", "manufacturer",
-                      "supplier", "project", "subproject", "kd"):
-            ed = ttk.Combobox(tree, values=self._editor_values(kind))
+        elif is_combo:
+            ed = ttk.Combobox(tree, values=self._editor_values(kind), state="readonly")
             ed.set(old)
-            ed.place(x=x, y=y, width=w, height=h)
+            ed.place(x=x, y=y, width=max(w, 150), height=h)
             ed.focus_set()
             ed.bind("<<ComboboxSelected>>", lambda e: self._inline_commit())
             widget = ed
+            # НОВОЕ: раскрываем список СРАЗУ, без второго двойного клика
+            self.after(30, lambda w=ed: self._post_combobox(w))
         else:
             ed = ttk.Entry(tree)
             ed.insert(0, str(old))
@@ -744,14 +797,64 @@ class OrderDialog(tk.Toplevel):
 
         ed.bind("<Return>", lambda e: self._inline_commit())
         ed.bind("<Escape>", lambda e: self._inline_cancel())
-        ed.bind("<FocusOut>", lambda e: self.after(120, self._inline_commit_if_alive))
+        ed.bind("<FocusOut>", lambda e, w=ed: self._inline_focus_out(w))
         ed.bind("<Tab>", lambda e: self._inline_tab(tree, which, row, idx, mapping))
         self._inline = {"widget": widget, "entry": ed, "tree": tree, "which": which,
-                        "row": row, "idx": idx, "field": field, "kind": kind, "old": old}
+                        "row": row, "idx": idx, "field": field, "kind": kind,
+                        "old": old, "combo": is_combo}
 
-    def _inline_commit_if_alive(self):
-        if self._inline:
+    def _post_combobox(self, ed):
+        """Открывает выпадающий список программно (Tk 8.5/8.6/9)."""
+        info = getattr(self, "_inline", None)
+        if not info or info["entry"] is not ed:
+            return
+        try:
+            ed.tk.call("ttk::combobox::Post", ed)
+            return
+        except tk.TclError:
+            pass
+        try:
+            ed.event_generate("<Alt-Down>")
+        except Exception:
+            pass
+
+    def _combobox_busy(self, ed):
+        """Список открыт или фокус внутри него — редактор закрывать нельзя."""
+        try:
+            pop = ed.tk.call("ttk::combobox::PopdownWindow", ed)
+        except Exception:
+            return False
+        try:
+            if pop and int(ed.tk.call("winfo", "ismapped", pop)):
+                return True
+        except Exception:
+            pass
+        try:
+            f = self.focus_get()
+            if f is not None and pop and str(f).startswith(str(pop)):
+                return True
+        except Exception:
+            pass
+        return False
+
+    def _inline_focus_out(self, ed):
+        info = getattr(self, "_inline", None)
+        if not info or info["entry"] is not ed:
+            return
+
+        def check():
+            cur = getattr(self, "_inline", None)
+            if not cur or cur["entry"] is not ed:
+                return
+            if cur.get("combo") and self._combobox_busy(ed):
+                return          # пользователь выбирает из списка — ждём
+            try:
+                if self.focus_get() is ed:
+                    return
+            except Exception:
+                pass
             self._inline_commit()
+        self.after(180, check)
 
     def _inline_tab(self, tree, which, row, idx, mapping):
         self._inline_commit()
@@ -794,11 +897,7 @@ class OrderDialog(tk.Toplevel):
         kind, field = info["kind"], info["field"]
         value = str(raw).strip()
         if kind == "int":
-            try:
-                value = int(_f(value, 0))
-            except Exception:
-                messagebox.showwarning("Ошибка", "Нужно целое число!", parent=self)
-                return "break"
+            value = int(_f(value, 0))
         elif kind == "float":
             value = max(0.0, _f(value, 0))
         elif kind == "date" and value:
@@ -828,16 +927,13 @@ class OrderDialog(tk.Toplevel):
 
     def _commit_item(self, row, idx, field, value):
         item_id = self.tree_items.item(row)['values'][0]
-        if field == "qty_received":
-            if hasattr(self.db_manager, "receive_order_item"):
-                self.db_manager.receive_order_item(item_id, value,
-                                                   datetime.now().strftime("%d.%m.%Y"))
-            else:
-                self.db_manager.update_order_item(item_id, {field: value})
+        if field == "qty_received" and hasattr(self.db_manager, "receive_order_item"):
+            self.db_manager.receive_order_item(item_id, value, datetime.now().strftime("%d.%m.%Y"))
         else:
             self.db_manager.update_order_item(item_id, {field: value})
         self._log(f"Позиция #{item_id}: {field} = {value}")
         if field in ("quantity", "qty_received"):
+            self._sync_partial_flag(self.current_batch_id)
             self._reload_items_keep(item_id)
             self._refresh_batches_keep_selection()
         else:
@@ -964,7 +1060,7 @@ class OrderDialog(tk.Toplevel):
     # Форма заказа
     # ==================================================================
     def _load_batch_to_form(self, values):
-        if not values or len(values) < 17:
+        if not values or len(values) < 18:
             return
         self.entry_batch_date.delete(0, tk.END); self.entry_batch_date.insert(0, values[4])
         self.entry_batch_project.delete(0, tk.END); self.entry_batch_project.insert(0, values[5])
@@ -978,10 +1074,14 @@ class OrderDialog(tk.Toplevel):
         self.combo_batch_supplier.set(values[12])
         self.entry_delivery_number.delete(0, tk.END); self.entry_delivery_number.insert(0, values[13])
         self.received_var.set(values[14] == "✓")
-        self.entry_receipt_date.delete(0, tk.END); self.entry_receipt_date.insert(0, values[15])
-        self.entry_write_off_date.delete(0, tk.END); self.entry_write_off_date.insert(0, values[16])
         try:
-            self.lbl_batch_status.config(text=values[18] if len(values) > 18 else "")
+            self.partial_var.set(values[15] == "✓")
+        except Exception:
+            pass
+        self.entry_receipt_date.delete(0, tk.END); self.entry_receipt_date.insert(0, values[16])
+        self.entry_write_off_date.delete(0, tk.END); self.entry_write_off_date.insert(0, values[17])
+        try:
+            self.lbl_batch_status.config(text=values[19] if len(values) > 19 else "")
         except Exception:
             pass
 
@@ -1086,6 +1186,7 @@ class OrderDialog(tk.Toplevel):
             (SELECT supplier FROM orders WHERE order_batch_id=o.order_batch_id LIMIT 1) supplier,
             (SELECT delivery_number FROM orders WHERE order_batch_id=o.order_batch_id LIMIT 1) delivery_number,
             (SELECT received FROM orders WHERE order_batch_id=o.order_batch_id LIMIT 1) received,
+            (SELECT IFNULL(partial_received,0) FROM orders WHERE order_batch_id=o.order_batch_id LIMIT 1) partial,
             (SELECT receipt_date FROM orders WHERE order_batch_id=o.order_batch_id LIMIT 1) receipt_date,
             (SELECT write_off_date FROM orders WHERE order_batch_id=o.order_batch_id LIMIT 1) write_off_date,
             (SELECT price_request FROM orders WHERE order_batch_id=o.order_batch_id LIMIT 1) price_request,
@@ -1107,9 +1208,22 @@ class OrderDialog(tk.Toplevel):
             where += (" AND" if where else " WHERE") + " (received = 0 OR received IS NULL)"
 
         c = self.db_manager.conn.cursor()
-        c.execute(base_query + where + f" GROUP BY order_batch_id {order_clause}", params)
-        for r in c.fetchall():
+        try:
+            c.execute(base_query + where + f" GROUP BY order_batch_id {order_clause}", params)
+            rows = c.fetchall()
+        except Exception:
+            # колонки partial_received ещё нет — читаем без неё
+            q = base_query.replace(
+                "(SELECT IFNULL(partial_received,0) FROM orders WHERE order_batch_id=o.order_batch_id LIMIT 1) partial",
+                "0 partial")
+            c.execute(q + where + f" GROUP BY order_batch_id {order_clause}", params)
+            rows = c.fetchall()
+
+        for r in rows:
             received_mark = "✓" if r['received'] else ""
+            partial_mark = "✓" if (r['partial'] if 'partial' in r.keys() else 0) else ""
+            if f_rec == "Частично" and not partial_mark:
+                continue
             pr, prn = r['price_request'] or 0, r['price_request_num'] or 0
             disp = f"Z{prn}" if (pr and prn) else str(r['order_batch_id'])
             self._display2batch[disp] = r['order_batch_id']
@@ -1119,12 +1233,14 @@ class OrderDialog(tk.Toplevel):
                       r['delivery_days'] or 0, r['delivery_unit_order'] or "",
                       r['min_delivery_date'] or "", r['max_delivery_date'] or "",
                       r['invoice_number'] or "", r['supplier'] or "", r['delivery_number'] or "",
-                      received_mark, r['receipt_date'] or "", r['write_off_date'] or "",
+                      received_mark, partial_mark, r['receipt_date'] or "", r['write_off_date'] or "",
                       "✓" if pr else "", status)
             iid = self.tree_batches.insert("", tk.END, values=values)
             tags = []
             if status in ("Получен", "Списан"):
                 tags.append('st_done')
+            elif partial_mark:
+                tags.append('st_partial')
             elif status in ("Подтверждён", "Оплачен", "Отгружен"):
                 tags.append('st_active')
             if r['min_delivery_date'] and r['max_delivery_date']:
@@ -1143,6 +1259,7 @@ class OrderDialog(tk.Toplevel):
         self.tree_batches.tag_configure('warning', background='lightgreen')
         self.tree_batches.tag_configure('overdue', background='lightcoral')
         self.tree_batches.tag_configure('st_done', background='#d9ead3')
+        self.tree_batches.tag_configure('st_partial', background='#fff2cc')
         self.tree_batches.tag_configure('st_active', background='#d0e0f0')
         self.current_batch_id = None
         self.current_item_id = None
@@ -1150,7 +1267,7 @@ class OrderDialog(tk.Toplevel):
         self.clear_items()
 
     def on_batch_click(self, event):
-        """Одиночный клик по флагам: #15 = Получено, #18 = Запрос цены."""
+        """Одиночный клик по галочкам: #15 Получено, #16 Частично, #19 Запрос цены."""
         tree = self.tree_batches
         try:
             if tree.identify_region(event.x, event.y) != "cell":
@@ -1159,7 +1276,7 @@ class OrderDialog(tk.Toplevel):
             row_id = tree.identify_row(event.y)
         except Exception:
             return
-        if col not in ('#15', '#18') or not row_id:
+        if col not in ('#15', '#16', '#19') or not row_id:
             return
         values = tree.item(row_id)['values']
         batch_id = self._batch_of(values[0])
@@ -1167,8 +1284,14 @@ class OrderDialog(tk.Toplevel):
             new = 0 if values[14] == "✓" else 1
             date = datetime.now().strftime("%d.%m.%Y") if new else ""
             self.db_manager.set_order_received(batch_id, new, date)
+            if new:
+                self._set_partial(batch_id, 0)
+        elif col == '#16':
+            new = 0 if values[15] == "✓" else 1
+            self._set_partial(batch_id, new)
+            self._log(f"Заказ {values[0]}: частично получено = {new}")
         else:
-            new = 0 if values[17] == "✓" else 1
+            new = 0 if values[18] == "✓" else 1
             self.db_manager.set_order_price_request(batch_id, new)
             self._log(f"Переключено price_request={new} у заказа {values[0]}")
         self.current_batch_id = batch_id
@@ -1184,6 +1307,7 @@ class OrderDialog(tk.Toplevel):
             c.set('')
         self.received_var.set(False)
         try:
+            self.partial_var.set(False)
             self.lbl_batch_status.config(text="")
         except Exception:
             pass
@@ -1208,7 +1332,6 @@ class OrderDialog(tk.Toplevel):
             pass
 
     def _items_rows(self, batch_id):
-        """Позиции заказа; qty_received добираем запросом, если БД-метод его не отдаёт."""
         rows = self.db_manager.get_order_items(batch_id)
         if rows and 'qty_received' not in rows[0]:
             q = {r['id']: r['q'] for r in self.db_manager.conn.execute(
@@ -1231,10 +1354,9 @@ class OrderDialog(tk.Toplevel):
         for r in rows:
             q = _f(r.get('quantity'), 0)
             rec = _f(r.get('qty_received'), 0)
-            rest = q - rec
             iid = self.tree_items.insert("", tk.END, values=(
                 r['id'], r['article'] or "", r['name'] or "", r['quantity'] or 0,
-                rec, f"{rest:g}", r['delivery_term'] or "", r['delivery_unit'] or "",
+                rec, f"{q - rec:g}", r['delivery_term'] or "", r['delivery_unit'] or "",
                 r['price'] or "", r['currency'] or "", r['note'] or "",
                 r.get('item_status', '')))
             self._paint_item_row(iid)
@@ -1278,6 +1400,8 @@ class OrderDialog(tk.Toplevel):
             date = datetime.now().strftime("%d.%m.%Y")
             self.entry_receipt_date.insert(0, date)
         self.db_manager.set_order_received(self.current_batch_id, new, date)
+        if new:
+            self._set_partial(self.current_batch_id, 0)
         self._refresh_batches_keep_selection()
 
     # ==================================================================
@@ -1329,7 +1453,9 @@ class OrderDialog(tk.Toplevel):
                 if 'qty_received' in dlg.result and hasattr(self.db_manager, "receive_order_item"):
                     self.db_manager.receive_order_item(item_id, _f(dlg.result['qty_received']),
                                                        datetime.now().strftime("%d.%m.%Y"))
+                self._sync_partial_flag(self.current_batch_id)
                 self._reload_items_keep(item_id)
+                self._refresh_batches_keep_selection()
                 self._log(f"Позиция #{item_id} отредактирована")
             except Exception as e:
                 messagebox.showerror("Ошибка", f"Не удалось сохранить изменения:\n{e}", parent=self)
@@ -1357,6 +1483,7 @@ class OrderDialog(tk.Toplevel):
                                            self.entry_receipt_date.get())
         self.db_manager.set_order_write_off_date(self.current_batch_id,
                                                  self.entry_write_off_date.get().strip())
+        self._set_partial(self.current_batch_id, self.partial_var.get())
         self._refresh_batches_keep_selection()
 
     def delete_batch(self):
@@ -1389,6 +1516,7 @@ class OrderDialog(tk.Toplevel):
             self.db_manager.receive_order_item(item_id, rec, datetime.now().strftime("%d.%m.%Y"))
         else:
             self.db_manager.update_order_item(item_id, {'qty_received': rec})
+        self._sync_partial_flag(self.current_batch_id)
         self._reload_items_keep(item_id)
         self._refresh_batches_keep_selection()
 
@@ -1402,6 +1530,7 @@ class OrderDialog(tk.Toplevel):
                 self.db_manager.delete_order_batch(self.current_batch_id)
                 self.load_batches()
             else:
+                self._sync_partial_flag(self.current_batch_id)
                 self.load_items(self.current_batch_id)
 
     # ==================================================================
