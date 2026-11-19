@@ -1501,9 +1501,12 @@ class DatabaseManager:
         return out
 
     # --- Бюджет проекта (в рублях) ---
+    # --- Бюджет проекта (в рублях) ---
     def get_project_budget(self, project_name, date_str=None):
-        res = {"plan_sell": 0.0, "income": 0.0, "plan_buy": 0.0, "paid_sup": 0.0,
-               "received": 0.0, "margin": 0.0, "plan_margin": 0.0, "detail": []}
+        res = {"plan_sell": 0.0, "income": 0.0,
+               "plan_buy": 0.0, "plan_buy_orders": 0.0, "plan_buy_specs": 0.0,
+               "paid_sup": 0.0, "received": 0.0,
+               "margin": 0.0, "plan_margin": 0.0, "detail": []}
         pid = self.get_project_id(project_name)
         if not pid:
             return res
@@ -1512,35 +1515,82 @@ class DatabaseManager:
             return v * self.get_rate(cur, date_str)
 
         c = self.conn.cursor()
+
+        # --- План продажи (спецификации проекта) ---
         for s in c.execute("SELECT name, quantity, price, currency FROM specifications WHERE project_id=?",
                            (pid,)).fetchall():
             v = self._n(s["quantity"]) * self._n(s["price"])
             res["plan_sell"] += rub(v, s["currency"])
-            res["detail"].append(("План (спецификация)", s["name"] or "", v, s["currency"] or "", rub(v, s["currency"])))
+            res["detail"].append(("План (спецификация)", s["name"] or "", v,
+                                  s["currency"] or "", rub(v, s["currency"])))
+
+        # --- Оплаты заказчика ---
         for p in c.execute("SELECT number, amount, currency, paid FROM payments WHERE project_id=?",
                            (pid,)).fetchall():
             if p["paid"]:
                 v = self._n(p["amount"])
                 res["income"] += rub(v, p["currency"])
-                res["detail"].append(("Оплата заказчика", f"платёж №{p['number']}", v, p["currency"] or "", rub(v, p["currency"])))
+                res["detail"].append(("Оплата заказчика", f"платёж №{p['number']}", v,
+                                      p["currency"] or "", rub(v, p["currency"])))
+
+        # --- Закупки из ЗАКАЗОВ ---
         for o in c.execute("SELECT article, name, quantity, price, currency, received FROM orders WHERE project_name=?",
                            (project_name,)).fetchall():
             v = self._n(o["quantity"]) * self._n(o["price"])
-            res["plan_buy"] += rub(v, o["currency"])
+            res["plan_buy_orders"] += rub(v, o["currency"])
             if o["received"]:
                 res["received"] += rub(v, o["currency"])
-            res["detail"].append(("Закупка (заказ)", o["article"] or o["name"] or "", v, o["currency"] or "", rub(v, o["currency"])))
+            res["detail"].append(("Закупка (заказ)", o["article"] or o["name"] or "", v,
+                                  o["currency"] or "", rub(v, o["currency"])))
+
+        # --- НОВОЕ: закупки из СПЕЦИФИКАЦИЙ ЗАКУПОК (счета поставщиков) ---
+        for s in c.execute("""SELECT id, supplier, name, quantity, price, total, currency, received
+                              FROM purchase_specifications WHERE project_id=?""", (pid,)).fetchall():
+            cur = s["currency"] or ""
+            # сумма счёта: явный total, иначе кол-во × цена
+            base = self._n(s["total"])
+            if base <= 0:
+                base = self._n(s["quantity"]) * self._n(s["price"])
+            label = f'{s["supplier"] or ""} · {s["name"] or "счёт #" + str(s["id"])}'.strip(" ·")
+            if base > 0:
+                # у счёта есть шапка-сумма — учитываем её (позиции не плюсуем, чтобы не задвоить)
+                rv = rub(base, cur)
+                res["plan_buy_specs"] += rv
+                if s["received"]:
+                    res["received"] += rv
+                res["detail"].append(("Закупка (спецификация)", label, base, cur, rv))
+            else:
+                # шапки-суммы нет — берём суммы позиций счёта
+                for it in c.execute("""SELECT name, quantity, price, total
+                                       FROM purchase_spec_items WHERE spec_id=?""", (s["id"],)).fetchall():
+                    iv = self._n(it["total"])
+                    if iv <= 0:
+                        iv = self._n(it["quantity"]) * self._n(it["price"])
+                    if iv <= 0:
+                        continue
+                    rv = rub(iv, cur)
+                    res["plan_buy_specs"] += rv
+                    if s["received"]:
+                        res["received"] += rv
+                    res["detail"].append(("Закупка (спецификация)",
+                                          f'{label} · {it["name"] or ""}'.strip(" ·"), iv, cur, rv))
+
+        res["plan_buy"] = res["plan_buy_orders"] + res["plan_buy_specs"]
+
+        # --- Оплаты поставщикам (по всем счетам проекта) ---
         for pay in c.execute('''SELECT pp.number, pp.amount, pp.currency, pp.paid, s.supplier
              FROM purchase_payments pp JOIN purchase_specifications s ON s.id=pp.spec_id
              WHERE s.project_id=?''', (pid,)).fetchall():
             if pay["paid"]:
                 v = self._n(pay["amount"])
                 res["paid_sup"] += rub(v, pay["currency"])
-                res["detail"].append(("Оплата поставщику", pay["supplier"] or "", v, pay["currency"] or "", rub(v, pay["currency"])))
+                res["detail"].append(("Оплата поставщику", pay["supplier"] or "", v,
+                                      pay["currency"] or "", rub(v, pay["currency"])))
+
         res["margin"] = res["income"] - res["paid_sup"]
         res["plan_margin"] = res["plan_sell"] - res["plan_buy"]
         return res
-
+    
     # === План-Факт: справочники и карточки работ ===
     def _ensure_plan_fact_tables(self):
         c = self.conn.cursor()
