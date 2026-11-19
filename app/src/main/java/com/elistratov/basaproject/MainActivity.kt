@@ -1,15 +1,22 @@
 package com.elistratov.basaproject
 
 import android.content.Intent
+import android.net.Uri
+import android.os.Build
 import android.os.Bundle
+import android.provider.Settings
+import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.content.FileProvider
 import androidx.fragment.app.Fragment
 import com.elistratov.basaproject.databinding.ActivityMainBinding
 import com.google.android.material.tabs.TabLayout
 import com.google.android.material.tabs.TabLayoutMediator
+import java.io.File
 
 class MainActivity : AppCompatActivity() {
     private lateinit var binding: ActivityMainBinding
@@ -27,6 +34,11 @@ class MainActivity : AppCompatActivity() {
             setPadding(dp(12), dp(6), dp(12), 0)
         }
         (binding.root as LinearLayout).addView(tvVersion, 0)
+
+        val btnRow = (binding.root as LinearLayout).getChildAt(1) as LinearLayout
+        val btnUpdate = Button(this).apply { text = "⬆" }
+        btnUpdate.setOnClickListener { checkUpdate() }
+        btnRow.addView(btnUpdate, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT))
 
         val tabs = listOf(
             "Сегодня" to "dashboard",
@@ -61,5 +73,42 @@ class MainActivity : AppCompatActivity() {
                 }
             }
         }
+    }
+
+    private fun checkUpdate() {
+        Toast.makeText(this, "Проверяю обновление в облаке...", Toast.LENGTH_SHORT).show()
+        AppUpdateManager(this).check { result, message, file ->
+            runOnUiThread {
+                when (result) {
+                    AppUpdateManager.Result.UPDATE ->
+                        AlertDialog.Builder(this)
+                            .setTitle("Обновление")
+                            .setMessage(message)
+                            .setPositiveButton("Установить") { _, _ -> installApk(file!!) }
+                            .setNegativeButton("Позже", null)
+                            .show()
+                    else -> Toast.makeText(this, message, Toast.LENGTH_LONG).show()
+                }
+            }
+        }
+    }
+
+    private fun installApk(file: File) {
+        if (Build.VERSION.SDK_INT >= 26 && !packageManager.canRequestPackageInstalls()) {
+            AlertDialog.Builder(this)
+                .setTitle("Разрешите установку")
+                .setMessage("Разрешите установку из этого приложения, затем снова нажмите ⬆.")
+                .setPositiveButton("Открыть настройки") { _, _ ->
+                    startActivity(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:$packageName")))
+                }
+                .setNegativeButton("Отмена", null).show()
+            return
+        }
+        val uri = FileProvider.getUriForFile(this, "$packageName.fileprovider", file)
+        val intent = Intent(Intent.ACTION_VIEW).apply {
+            setDataAndType(uri, "application/vnd.android.package-archive")
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        startActivity(intent)
     }
 }

@@ -277,6 +277,119 @@ del "%~f0"
         app_py = os.path.join(self.install_dir, "app.py")
         subprocess.Popen([sys.executable, app_py], cwd=self.install_dir, close_fds=True)
 
+    # ==================================================================
+    # Публикация дистрибутива в облако (используется GUI и CLI)
+    # ==================================================================
+    _PUB_SKIP_DIRS = {"venv", "venv_win", ".git", "__pycache__", "build", "dist",
+                      "logs", "backups", "cloud_sync", "update", ".github", "app"}
+    _PUB_SKIP_FILES = {"projects.db", "config.json", "cloud_config.json",
+                       "window_geometry.json", "translation_cache.json",
+                       "sync_state.json", "portable.txt"}
+    _SRC_EXT = (".py", ".txt", ".spec", ".sh", ".bat", ".iss", ".yml")
+
+    def detect_version(self, src_dir, kind):
+        """Версия из сборки: version.json (win) или version.py/VERSION (src)."""
+        src_dir = os.path.abspath(src_dir)
+        for root, dirs, files in os.walk(src_dir):
+            dirs[:] = [d for d in dirs if d not in self._PUB_SKIP_DIRS or d == "_internal"]
+            if "version.json" in files:
+                try:
+                    with open(os.path.join(root, "version.json"), encoding="utf-8") as f:
+                        v = json.load(f).get("version")
+                    if v:
+                        return str(v)
+                except Exception:
+                    pass
+        if kind == "src":
+            return current_version()
+        return ""
+
+    def make_zip(self, src_dir, zip_path, kind):
+        src_dir = os.path.abspath(src_dir)
+        if not os.path.isdir(src_dir):
+            raise WebDavError(f"Папка не найдена: {src_dir}")
+        if kind == "win" and not os.path.exists(os.path.join(src_dir, "BasaProject.exe")):
+            raise WebDavError(f"В папке нет BasaProject.exe:\n{src_dir}")
+        if kind == "src" and not os.path.exists(os.path.join(src_dir, "app.py")):
+            raise WebDavError(f"В папке нет app.py:\n{src_dir}")
+        n = 0
+        with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as z:
+            for root, dirs, files in os.walk(src_dir):
+                dirs[:] = [d for d in dirs if d not in self._PUB_SKIP_DIRS]
+                for fn in files:
+                    if fn in self._PUB_SKIP_FILES:
+                        continue
+                    if kind == "src" and not (fn.endswith(self._SRC_EXT) or fn == "VERSION"):
+                        continue
+                    full = os.path.join(root, fn)
+                    z.write(full, os.path.relpath(full, src_dir))
+                    n += 1
+        self.log(f"Упаковано файлов: {n}")
+        return zip_path
+
+    def publish(self, src_dir, kind, version=None, notes=""):
+        """Упаковывает и загружает дистрибутив + манифест в <папка>/update/."""
+        src_dir = os.path.abspath(src_dir)
+        found = self.detect_version(src_dir, kind)
+        version = (version or found or "").strip()
+        if not version:
+            raise WebDavError("Не определена версия. Укажите её вручную (например 1.9.97).")
+        if found and version != found:
+            self.log(f"ВНИМАНИЕ: в сборке версия {found}, публикуете {version}. "
+                     "Если они разойдутся, программа будет предлагать обновление по кругу.")
+
+        c = self.client()
+        c.ensure_dir(self.remote_update_dir)
+
+        name = f"BasaProject-{version}-{kind}.zip"
+        local = os.path.join(self.upd_dir, name)
+        self.log(f"Упаковка {kind}: {src_dir}")
+        self.make_zip(src_dir, local, kind)
+        digest = sha256_file(local)
+        size = os.path.getsize(local)
+        self.log(f"Архив {name}: {size / 1048576:.1f} МБ, sha256 {digest[:16]}…")
+
+        # сохраняем прежний манифест, чтобы не потерять второй артефакт
+        man_path = os.path.join(self.upd_dir, "version.json")
+        man = {"version": version, "artifacts": {}}
+        try:
+            if c.get(self.rpath("version.json"), man_path) is not None:
+                with open(man_path, encoding="utf-8") as f:
+                    old = json.load(f)
+                if old.get("version") == version:
+                    man = old
+        except Exception as e:
+            self.log(f"Прежний манифест не прочитан ({e}) — создаём новый")
+
+        man["version"] = version
+        man["date"] = datetime.now().strftime("%d.%m.%Y")
+        man["notes"] = notes or man.get("notes", "")
+        man["channel"] = man.get("channel") or "stable"
+        man.setdefault("artifacts", {})
+        man["artifacts"][kind] = {"file": name, "sha256": digest, "size": size}
+
+        self.log(f"Загрузка {name} …")
+        c.put(self.rpath(name), local)
+        with open(man_path, "w", encoding="utf-8") as f:
+            json.dump(man, f, ensure_ascii=False, indent=2)
+        c.put(self.rpath("version.json"), man_path)
+        self.log(f"Опубликовано: версия {version} ({kind})")
+        return man
+
+    def published_info(self):
+        """Что сейчас лежит в update/ — для кнопки «Что уже в облаке»."""
+        c = self.client()
+        files = c.list_dir(self.remote_update_dir)
+        man = None
+        p = os.path.join(self.upd_dir, "published_version.json")
+        try:
+            if c.get(self.rpath("version.json"), p) is not None:
+                with open(p, encoding="utf-8") as f:
+                    man = json.load(f)
+        except Exception:
+            pass
+        return {"files": files, "manifest": man}
+    
     # ---------- откат ----------
     def cached_versions(self):
         """Скачанные архивы — из них можно откатиться."""

@@ -2,18 +2,15 @@
     <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical">
         <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="WebDAV URL:" />
         <EditText android:id="@+id/etWebdavUrl" android:layout_width="match_parent" android:layout_height="wrap_content" android:inputType="textUri" />
-        
-        <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Логин (полный email):" android:layout_marginTop="8dp"/>
+        <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Логин (почта):" android:layout_marginTop="8dp"/>
         <EditText android:id="@+id/etLogin" android:layout_width="match_parent" android:layout_height="wrap_content" android:inputType="textEmailAddress" />
-        
-        <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Пароль (для внешних приложений):" android:layout_marginTop="8dp"/>
+        <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Пароль приложения:" android:layout_marginTop="8dp"/>
         <EditText android:id="@+id/etPassword" android:layout_width="match_parent" android:layout_height="wrap_content" android:inputType="textPassword" />
-        
-        <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Путь к БД в облаке:" android:layout_marginTop="8dp"/>
-        <EditText android:id="@+id/etRemotePath" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="/projects.db" />
-
+        <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Путь к базе в облаке:" android:layout_marginTop="8dp"/>
+        <EditText android:id="@+id/etRemotePath" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="/BasaProject/projects.db" />
+        <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Папка с APK для обновления:" android:layout_marginTop="8dp"/>
+        <EditText android:id="@+id/etApkDir" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="/BasaProject/apk" />
         <Button android:id="@+id/btnSave" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Сохранить" android:layout_marginTop="16dp"/>
-        
-        <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="⚠️ Пароль нужно создать в настройках Mail.ru: 'Пароли для внешних приложений'" android:textColor="#FF0000" android:layout_marginTop="16dp"/>
+        <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="⚠️ Пароль — из «Пароли для внешних приложений» Mail.ru. Для обновления положите BasaProject.apk в указанную папку." android:textColor="#B00020" android:layout_marginTop="16dp"/>
     </LinearLayout>
 </ScrollView>

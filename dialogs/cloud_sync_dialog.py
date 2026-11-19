@@ -55,6 +55,8 @@ class CloudSyncDialog(tk.Toplevel):
         tab_run = ttk.Frame(nb, padding=10)
         nb.add(tab_cfg, text="  Подключение  ")
         nb.add(tab_run, text="  Синхронизация  ")
+        tab_pub = ttk.Frame(nb, padding=10)
+        nb.add(tab_pub, text="  Публикация версии  ")
 
         # ================= Вкладка «Подключение» =================
         cfg = self.sm.cfg
@@ -134,6 +136,7 @@ class CloudSyncDialog(tk.Toplevel):
         self.txt = tk.Text(tab_run, height=18, wrap=tk.WORD, state="disabled",
                            font=("Consolas", 9))
         self.txt.pack(fill="both", expand=True)
+        self._build_publish_tab(tab_pub)
 
         self._show_source()
         self.refresh_state()
@@ -424,7 +427,173 @@ class CloudSyncDialog(tk.Toplevel):
                 self.app.update_sync_label()
             except Exception:
                 pass
+    # ==================================================================
+    # Вкладка «Публикация версии»
+    # ==================================================================
+    def _build_publish_tab(self, tab):
+        ttk.Label(tab, text="Публикация обновления программы в облако",
+                  font=("Arial", 10, "bold")).grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 8))
 
+        ttk.Label(tab, text="Что публикуем:").grid(row=1, column=0, sticky="w", pady=4)
+        self.pub_kind = tk.StringVar(value="win")
+        kf = ttk.Frame(tab)
+        kf.grid(row=1, column=1, columnspan=2, sticky="w")
+        ttk.Radiobutton(kf, text="Windows-exe (dist\\BasaProject)", value="win",
+                        variable=self.pub_kind, command=self._pub_autodetect).pack(side=tk.LEFT)
+        ttk.Radiobutton(kf, text="Исходники (.py)", value="src",
+                        variable=self.pub_kind, command=self._pub_autodetect).pack(side=tk.LEFT, padx=12)
+
+        ttk.Label(tab, text="Папка сборки:").grid(row=2, column=0, sticky="w", pady=4)
+        self.pub_dir = tk.StringVar()
+        ttk.Entry(tab, textvariable=self.pub_dir, width=52).grid(row=2, column=1, sticky="w", padx=6)
+        ttk.Button(tab, text="Обзор…", command=self._pub_browse).grid(row=2, column=2, sticky="w")
+
+        ttk.Label(tab, text="Версия:").grid(row=3, column=0, sticky="w", pady=4)
+        self.pub_version = tk.StringVar()
+        vf = ttk.Frame(tab)
+        vf.grid(row=3, column=1, columnspan=2, sticky="w", padx=6)
+        ttk.Entry(vf, textvariable=self.pub_version, width=14).pack(side=tk.LEFT)
+        self.lbl_pub_found = ttk.Label(vf, text="", foreground="gray")
+        self.lbl_pub_found.pack(side=tk.LEFT, padx=8)
+
+        ttk.Label(tab, text="Что нового:").grid(row=4, column=0, sticky="nw", pady=4)
+        self.pub_notes = tk.Text(tab, width=52, height=5, wrap=tk.WORD)
+        self.pub_notes.grid(row=4, column=1, columnspan=2, sticky="w", padx=6)
+
+        ttk.Label(tab, foreground="gray", justify="left",
+                  text="Версия берётся из version.json внутри сборки. Она должна быть БОЛЬШЕ\n"
+                       "установленной у пользователей и совпадать с версией внутри exe —\n"
+                       "иначе обновление будет предлагаться по кругу.\n"
+                       "Данные (база, настройки) обновление не затрагивает."
+                  ).grid(row=5, column=0, columnspan=3, sticky="w", pady=(8, 4))
+
+        bf = ttk.Frame(tab)
+        bf.grid(row=6, column=0, columnspan=3, sticky="w", pady=8)
+        self.btn_publish = ttk.Button(bf, text="Опубликовать", command=self._pub_run)
+        self.btn_publish.pack(side=tk.LEFT, padx=4)
+        ttk.Button(bf, text="Что уже в облаке", command=self._pub_show).pack(side=tk.LEFT, padx=4)
+        ttk.Button(bf, text="Открыть окно обновления",
+                   command=self._pub_open_update).pack(side=tk.LEFT, padx=4)
+
+        self._pub_autodetect()
+
+    def _updater(self):
+        from app_update import AppUpdater
+        up = AppUpdater(log=self.say)
+        up.cfg = dict(self.sm.cfg)          # те же учётные данные, что у синхронизации
+        return up
+
+    def _pub_default_dir(self, kind):
+        try:
+            from paths import INSTALL_DIR
+        except Exception:
+            INSTALL_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        if kind == "win":
+            for cand in (os.path.join(INSTALL_DIR, "dist", "BasaProject"),
+                         os.path.join(os.getcwd(), "dist", "BasaProject")):
+                if os.path.exists(os.path.join(cand, "BasaProject.exe")):
+                    return cand
+            return os.path.join(INSTALL_DIR, "dist", "BasaProject")
+        return INSTALL_DIR
+
+    def _pub_autodetect(self):
+        kind = self.pub_kind.get()
+        if not self.pub_dir.get() or not os.path.isdir(self.pub_dir.get()):
+            self.pub_dir.set(self._pub_default_dir(kind))
+        try:
+            found = self._updater().detect_version(self.pub_dir.get(), kind)
+        except Exception:
+            found = ""
+        if found:
+            self.pub_version.set(found)
+            self.lbl_pub_found.config(text=f"найдена в сборке: {found}")
+        else:
+            self.lbl_pub_found.config(text="версия не найдена — укажите вручную")
+
+    def _pub_browse(self):
+        d = filedialog.askdirectory(title="Папка сборки", parent=self,
+                                    initialdir=self.pub_dir.get() or None)
+        if d:
+            self.pub_dir.set(os.path.normpath(d))
+            self._pub_autodetect()
+
+    def _pub_run(self):
+        if getattr(self, "_pub_busy", False):
+            messagebox.showinfo("Публикация", "Публикация уже выполняется.", parent=self)
+            return
+        folder = self.pub_dir.get().strip()
+        kind = self.pub_kind.get()
+        version = self.pub_version.get().strip()
+        notes = self.pub_notes.get("1.0", tk.END).strip()
+        if not folder or not os.path.isdir(folder):
+            messagebox.showwarning("Внимание", "Укажите существующую папку сборки.", parent=self)
+            return
+        if not version:
+            messagebox.showwarning("Внимание", "Укажите версию (например 1.9.97).", parent=self)
+            return
+        if not messagebox.askyesno(
+                "Подтверждение",
+                f"Опубликовать {version} ({'Windows-exe' if kind == 'win' else 'исходники'})?\n\n"
+                f"Папка: {folder}\n"
+                "После этого пользователи увидят обновление в «⬆ Обновление».", parent=self):
+            return
+        self._pub_busy = True
+        self.btn_publish.config(state="disabled")
+        self.say(f"— Публикация {version} ({kind}) —")
+
+        def work():
+            try:
+                man = self._updater().publish(folder, kind, version, notes)
+                self.after(0, lambda: self._pub_done(man))
+            except Exception as e:
+                msg = f"{type(e).__name__}: {e}"
+                self.after(0, lambda m=msg: self._pub_fail(m))
+        threading.Thread(target=work, daemon=True).start()
+
+    def _pub_done(self, man):
+        self._pub_busy = False
+        self.btn_publish.config(state="normal")
+        arts = ", ".join((man.get("artifacts") or {}).keys())
+        self.say(f"— Готово: {man.get('version')} [{arts}] —")
+        messagebox.showinfo("Публикация",
+                            f"Версия {man.get('version')} опубликована.\n"
+                            f"Артефакты: {arts}\n\n"
+                            "Проверьте: «⬆ Обновление» → «Проверить обновление».", parent=self)
+
+    def _pub_fail(self, err):
+        self._pub_busy = False
+        self.btn_publish.config(state="normal")
+        self.say(f"ОШИБКА публикации: {err}")
+        messagebox.showerror("Публикация", err, parent=self)
+
+    def _pub_show(self):
+        def work():
+            try:
+                info = self._updater().published_info()
+                man = info.get("manifest") or {}
+                self.say("В облаке update/: " +
+                         (", ".join(f["name"] for f in info["files"]) or "пусто"))
+                if man:
+                    self.say(f"Манифест: версия {man.get('version')} от {man.get('date')}")
+                    for k, v in (man.get("artifacts") or {}).items():
+                        self.say(f"  {k}: {v.get('file')} · {int(v.get('size', 0)) / 1048576:.1f} МБ")
+                    self.say(f"  Что нового: {man.get('notes') or '—'}")
+                else:
+                    self.say("Манифест version.json отсутствует — обновлений ещё не публиковали.")
+            except Exception as e:
+                self.say(f"Ошибка чтения update/: {type(e).__name__}: {e}")
+        threading.Thread(target=work, daemon=True).start()
+
+    def _pub_open_update(self):
+        if hasattr(self.app, "open_update_dialog"):
+            try:
+                self.app.open_update_dialog()
+            except Exception as e:
+                messagebox.showerror("Обновление", str(e), parent=self)
+        else:
+            messagebox.showinfo("Обновление", "Кнопка «⬆ Обновление» не найдена в приложении.",
+                                parent=self)
+            
     def show_backups(self):
         def work():
             try:
