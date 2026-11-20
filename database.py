@@ -1613,16 +1613,27 @@ class DatabaseManager:
 
         res["plan_buy"] = res["plan_buy_orders"] + res["plan_buy_specs"]
 
-        # --- Оплачено ПОСТАВЩИКАМ ---
-        for pay in c.execute('''SELECT pp.number, pp.amount, pp.currency, pp.paid, s.supplier
+        # --- Оплачено ПОСТАВЩИКАМ (по факту введённых сумм платежей) ---
+        res["paid_sup_by_flag"] = 0.0      # только помеченные галочкой «Оплачен»
+        res["paid_sup_unmarked"] = 0.0     # суммы есть, галочка не стоит
+        for pay in c.execute('''SELECT pp.number, pp.amount, pp.currency, pp.paid,
+                                       pp.spec_id, s.supplier, s.name AS spec_name
              FROM purchase_payments pp JOIN purchase_specifications s ON s.id=pp.spec_id
-             WHERE s.project_id=?''', (pid,)).fetchall():
+             WHERE s.project_id=? ORDER BY pp.spec_id, pp.number''', (pid,)).fetchall():
+            v = self._n(pay["amount"])
+            if v <= 0:
+                continue                    # пустой платёж не считаем
+            rv = rub(v, pay["currency"])
+            res["paid_sup"] += rv
             if pay["paid"]:
-                v = self._n(pay["amount"])
-                res["paid_sup"] += rub(v, pay["currency"])
-                res["detail"].append(("Оплата поставщику", pay["supplier"] or "", v,
-                                      pay["currency"] or "", rub(v, pay["currency"])))
-
+                res["paid_sup_by_flag"] += rv
+            else:
+                res["paid_sup_unmarked"] += rv
+            mark = "" if pay["paid"] else " (не отмечен «Оплачен»)"
+            label = f'{pay["supplier"] or ""} · счёт #{pay["spec_id"]} · платёж №{pay["number"]}{mark}'
+            res["detail"].append(("Оплата поставщику", label.strip(" ·"),
+                                  v, pay["currency"] or "", rv))
+            
         res["balance"] = res["income"] - res["paid_sup"]      # баланс денег
         res["margin"] = res["balance"]                        # маржа факт (по оплатам)
         res["plan_margin"] = res["plan_sell"] - res["plan_buy"]
