@@ -70,6 +70,9 @@ class OrderDialog(tk.Toplevel):
         self._display2batch = {}
         self._inline = None
         self._filter_job = None
+        self._loading_form = False
+        self._header_snapshot = {}
+        self._autosave_jobs = {}
 
         self.create_ui()
 
@@ -170,8 +173,9 @@ class OrderDialog(tk.Toplevel):
         self.tree_batches.bind("<Button-1>", self.on_batch_click)
         self.tree_batches.bind("<Double-1>", self.on_batch_double_click)
 
-        # --- Заголовок заказа ---
-        hf = ttk.LabelFrame(self, text="Заголовок заказа", padding=8)
+        # --- Заголовок заказа (автосохранение при выходе из поля) ---
+        hf = ttk.LabelFrame(self, text="Заголовок заказа  ·  значения сохраняются автоматически "
+                                       "при выходе из поля", padding=8)
         hf.pack(fill="x", padx=8, pady=4)
         ttk.Label(hf, text="Дата заказа:").grid(row=0, column=0, sticky="w")
         self.entry_batch_date = ttk.Entry(hf, width=12)
@@ -228,6 +232,8 @@ class OrderDialog(tk.Toplevel):
         ttk.Checkbutton(hf, text="Частично получено", variable=self.partial_var,
                         command=self.on_partial_change).grid(row=2, column=5, columnspan=2,
                                                              sticky="w", pady=4, padx=(12, 0))
+        self.lbl_autosave = ttk.Label(hf, text="", foreground="#198754")
+        self.lbl_autosave.grid(row=2, column=7, columnspan=6, sticky="w", pady=4, padx=(12, 0))
 
         # --- Кнопки действий ---
         af = ttk.Frame(self)
@@ -341,6 +347,7 @@ class OrderDialog(tk.Toplevel):
                     print(f"[order_dialog] ensure_column {col}: {e}")
         self._refresh_item_statuses()
         self.load_batches()
+        self._bind_header_autosave()
 
         self._bind_ids = []
         for seq in ("<Control-c>", "<Control-C>", "<Control-v>", "<Control-V>",
@@ -362,6 +369,11 @@ class OrderDialog(tk.Toplevel):
 
     def _safe_destroy(self):
         self._inline_cancel()
+        for job in list(getattr(self, "_autosave_jobs", {}).values()):
+            try:
+                self.after_cancel(job)
+            except Exception:
+                pass
         for seq, _bid in getattr(self, "_bind_ids", []):
             try:
                 self.unbind_all(seq)
@@ -521,6 +533,140 @@ class OrderDialog(tk.Toplevel):
         self.combo_batch_kd['values'] = [r[0] for r in c.fetchall()]
 
     # ==================================================================
+    # АВТОСОХРАНЕНИЕ заголовка заказа (по покиданию поля)
+    # ==================================================================
+    # атрибут виджета -> (колонка orders, индекс в tree_batches, тип)
+    _HEADER_FIELDS = {
+        "entry_batch_date":         ("order_date",          4,  "date"),
+        "entry_batch_project":      ("project_name",        5,  "text"),
+        "entry_batch_payment":      ("payment_date",        6,  "date"),
+        "entry_delivery_days":      ("delivery_days",       7,  "int"),
+        "combo_delivery_unit":      ("delivery_unit_order", 8,  "text"),
+        "entry_invoice_number":     ("invoice_number",      11, "text"),
+        "combo_batch_supplier":     ("supplier",            12, "text"),
+        "entry_delivery_number":    ("delivery_number",     13, "text"),
+        "combo_batch_manufacturer": ("manufacturer",        1,  "text"),
+        "combo_batch_subproject":   ("subproject",          2,  "text"),
+        "combo_batch_kd":           ("kd",                  3,  "text"),
+        "entry_receipt_date":       ("receipt_date",        16, "date"),
+        "entry_write_off_date":     ("write_off_date",      17, "date"),
+    }
+
+    def _bind_header_autosave(self):
+        for attr in self._HEADER_FIELDS:
+            w = getattr(self, attr, None)
+            if w is None:
+                continue
+            w.bind("<FocusOut>", lambda e, a=attr: self._header_focus_out(a), add="+")
+            w.bind("<Return>", lambda e, a=attr: self._autosave_header(a), add="+")
+            if isinstance(w, ttk.Combobox):
+                w.bind("<<ComboboxSelected>>",
+                       lambda e, a=attr: self._autosave_header(a), add="+")
+
+    def _header_value(self, attr):
+        w = getattr(self, attr, None)
+        try:
+            return (w.get() or "").strip()
+        except Exception:
+            return ""
+
+    def _snapshot_header(self):
+        """Запоминает значения формы как «уже сохранённые»."""
+        self._header_snapshot = {a: self._header_value(a) for a in self._HEADER_FIELDS}
+
+    def _header_focus_out(self, attr):
+        job = self._autosave_jobs.get(attr)
+        if job:
+            try:
+                self.after_cancel(job)
+            except Exception:
+                pass
+
+        def check():
+            self._autosave_jobs.pop(attr, None)
+            if getattr(self, "_loading_form", False):
+                return
+            w = getattr(self, attr, None)
+            if w is None:
+                return
+            # фокус ушёл в календарь/список этого же поля — ещё не «покинул»
+            try:
+                f = self.focus_get()
+                if f is w:
+                    return
+                if f is not None and str(f).startswith(str(w)):
+                    return
+            except Exception:
+                pass
+            self._autosave_header(attr)
+        self._autosave_jobs[attr] = self.after(180, check)
+
+    def _autosave_header(self, attr):
+        if getattr(self, "_loading_form", False) or self.current_batch_id is None:
+            return "break"
+        spec = self._HEADER_FIELDS.get(attr)
+        if not spec:
+            return "break"
+        col, tree_idx, kind = spec
+        raw = self._header_value(attr)
+        if raw == self._header_snapshot.get(attr, ""):
+            return "break"                      # ничего не изменилось
+
+        value = raw
+        if kind == "int":
+            value = int(_f(raw, 0))
+        elif kind == "date" and raw:
+            d = None
+            for fmt in ("%d.%m.%Y", "%d.%m.%y"):
+                try:
+                    d = datetime.strptime(raw, fmt)
+                    break
+                except ValueError:
+                    continue
+            if d is None:
+                self.lbl_autosave.config(foreground="#b02a37",
+                                         text="⚠ дата должна быть ДД.ММ.ГГГГ — не сохранено")
+                return "break"
+            value = d.strftime("%d.%m.%Y")
+            w = getattr(self, attr)
+            w.delete(0, tk.END)
+            w.insert(0, value)
+
+        try:
+            self.db_manager.conn.execute(
+                f"UPDATE orders SET {col}=? WHERE order_batch_id=?",
+                (value, self.current_batch_id))
+            self.db_manager.conn.commit()
+        except Exception as e:
+            self.lbl_autosave.config(foreground="#b02a37", text=f"⚠ не сохранено: {e}")
+            return "break"
+
+        self._header_snapshot[attr] = str(value)
+        self._update_batch_cell(self.current_batch_id, tree_idx, value)
+
+        if col == "project_name":
+            self.project_name = str(value)
+            self.load_subprojects_for_combo()
+            self.load_kd_for_combo()
+            self.load_project_filter()
+
+        self.lbl_autosave.config(foreground="#198754",
+                                 text=f"✓ сохранено {datetime.now():%H:%M:%S}")
+        self._log(f"Заказ {self.current_batch_id}: {col} = {value}")
+        return "break"
+
+    def _update_batch_cell(self, batch_id, idx, value):
+        """Обновляет ячейку строки без перезагрузки таблицы (фокус не теряется)."""
+        for iid in self.tree_batches.get_children():
+            vals = list(self.tree_batches.item(iid)["values"])
+            if self._batch_of(vals[0]) == batch_id:
+                while len(vals) < 20:
+                    vals.append("")
+                vals[idx] = value
+                self.tree_batches.item(iid, values=vals)
+                break
+
+    # ==================================================================
     # Частичная приёмка
     # ==================================================================
     def _set_partial(self, batch_id, value):
@@ -533,6 +679,7 @@ class OrderDialog(tk.Toplevel):
             print(f"[order_dialog] partial_received write: {e}")
 
     def _sync_partial_flag(self, batch_id):
+        """Автогалочка: получено > 0, но меньше заказанного."""
         try:
             rows = self._items_rows(batch_id)
         except Exception:
@@ -873,6 +1020,7 @@ class OrderDialog(tk.Toplevel):
             pass
 
     def _combobox_busy(self, ed):
+        """Список открыт или фокус внутри него — редактор закрывать нельзя."""
         try:
             pop = ed.tk.call("ttk::combobox::PopdownWindow", ed)
         except Exception:
@@ -1046,20 +1194,20 @@ class OrderDialog(tk.Toplevel):
         return False
 
     def select_order_date(self):
-        self._pick_date(self.entry_batch_date)
+        if self._pick_date(self.entry_batch_date):
+            self._autosave_header("entry_batch_date")
 
     def select_payment_date(self):
-        self._pick_date(self.entry_batch_payment)
+        if self._pick_date(self.entry_batch_payment):
+            self._autosave_header("entry_batch_payment")
 
     def select_receipt_date(self):
-        if self._pick_date(self.entry_receipt_date) and self.current_batch_id:
-            self.save_batch()
+        if self._pick_date(self.entry_receipt_date):
+            self._autosave_header("entry_receipt_date")
 
     def select_write_off_date(self):
-        if self._pick_date(self.entry_write_off_date) and self.current_batch_id:
-            self.db_manager.set_order_write_off_date(self.current_batch_id,
-                                                     self.entry_write_off_date.get())
-            self._refresh_batches_keep_selection()
+        if self._pick_date(self.entry_write_off_date):
+            self._autosave_header("entry_write_off_date")
 
     def _refresh_batches_keep_selection(self):
         keep_id = self.current_batch_id
@@ -1115,28 +1263,37 @@ class OrderDialog(tk.Toplevel):
     def _load_batch_to_form(self, values):
         if not values or len(values) < 18:
             return
-        self.entry_batch_date.delete(0, tk.END); self.entry_batch_date.insert(0, values[4])
-        self.entry_batch_project.delete(0, tk.END); self.entry_batch_project.insert(0, values[5])
-        self.entry_batch_payment.delete(0, tk.END); self.entry_batch_payment.insert(0, values[6])
-        self.entry_delivery_days.delete(0, tk.END); self.entry_delivery_days.insert(0, values[7])
-        self.combo_delivery_unit.set(values[8])
-        self.combo_batch_manufacturer.set(values[1])
-        self.combo_batch_subproject.set(values[2])
-        self.combo_batch_kd.set(values[3])
-        self.entry_invoice_number.delete(0, tk.END); self.entry_invoice_number.insert(0, values[11])
-        self.combo_batch_supplier.set(values[12])
-        self.entry_delivery_number.delete(0, tk.END); self.entry_delivery_number.insert(0, values[13])
-        self.received_var.set(values[14] == "✓")
+        self._loading_form = True
         try:
-            self.partial_var.set(values[15] == "✓")
-        except Exception:
-            pass
-        self.entry_receipt_date.delete(0, tk.END); self.entry_receipt_date.insert(0, values[16])
-        self.entry_write_off_date.delete(0, tk.END); self.entry_write_off_date.insert(0, values[17])
-        try:
-            self.lbl_batch_status.config(text=values[19] if len(values) > 19 else "")
-        except Exception:
-            pass
+            self.entry_batch_date.delete(0, tk.END); self.entry_batch_date.insert(0, values[4])
+            self.entry_batch_project.delete(0, tk.END); self.entry_batch_project.insert(0, values[5])
+            self.entry_batch_payment.delete(0, tk.END); self.entry_batch_payment.insert(0, values[6])
+            self.entry_delivery_days.delete(0, tk.END); self.entry_delivery_days.insert(0, values[7])
+            self.combo_delivery_unit.set(values[8])
+            self.combo_batch_manufacturer.set(values[1])
+            self.combo_batch_subproject.set(values[2])
+            self.combo_batch_kd.set(values[3])
+            self.entry_invoice_number.delete(0, tk.END); self.entry_invoice_number.insert(0, values[11])
+            self.combo_batch_supplier.set(values[12])
+            self.entry_delivery_number.delete(0, tk.END); self.entry_delivery_number.insert(0, values[13])
+            self.received_var.set(values[14] == "✓")
+            try:
+                self.partial_var.set(values[15] == "✓")
+            except Exception:
+                pass
+            self.entry_receipt_date.delete(0, tk.END); self.entry_receipt_date.insert(0, values[16])
+            self.entry_write_off_date.delete(0, tk.END); self.entry_write_off_date.insert(0, values[17])
+            try:
+                self.lbl_batch_status.config(text=values[19] if len(values) > 19 else "")
+            except Exception:
+                pass
+        finally:
+            self._loading_form = False
+            self._snapshot_header()
+            try:
+                self.lbl_autosave.config(text="")
+            except Exception:
+                pass
 
     def calculate_delivery_dates(self):
         self._set_topmost(True)
@@ -1285,8 +1442,8 @@ class OrderDialog(tk.Toplevel):
         except Exception:
             # колонки partial_received ещё нет — читаем без неё
             q = base_query.replace(partial_sub, "0 partial")
-            q = q.replace(" IFNULL(partial_received,0) = 1", " 1=0")
-            c.execute(q + sql_tail.replace(" IFNULL(partial_received,0) = 1", " 1=0"), params)
+            tail = sql_tail.replace(" IFNULL(partial_received,0) = 1", " 1=0")
+            c.execute(q + tail, params)
             rows = c.fetchall()
 
         for r in rows:
@@ -1366,19 +1523,28 @@ class OrderDialog(tk.Toplevel):
         self._refresh_batches_keep_selection()
 
     def clear_batch_form(self):
-        for e in (self.entry_batch_date, self.entry_batch_project, self.entry_batch_payment,
-                  self.entry_delivery_days, self.entry_invoice_number, self.entry_delivery_number,
-                  self.entry_receipt_date, self.entry_write_off_date):
-            e.delete(0, tk.END)
-        for c in (self.combo_delivery_unit, self.combo_batch_manufacturer,
-                  self.combo_batch_subproject, self.combo_batch_kd, self.combo_batch_supplier):
-            c.set('')
-        self.received_var.set(False)
+        self._loading_form = True
         try:
-            self.partial_var.set(False)
-            self.lbl_batch_status.config(text="")
-        except Exception:
-            pass
+            for e in (self.entry_batch_date, self.entry_batch_project, self.entry_batch_payment,
+                      self.entry_delivery_days, self.entry_invoice_number, self.entry_delivery_number,
+                      self.entry_receipt_date, self.entry_write_off_date):
+                e.delete(0, tk.END)
+            for c in (self.combo_delivery_unit, self.combo_batch_manufacturer,
+                      self.combo_batch_subproject, self.combo_batch_kd, self.combo_batch_supplier):
+                c.set('')
+            self.received_var.set(False)
+            try:
+                self.partial_var.set(False)
+                self.lbl_batch_status.config(text="")
+            except Exception:
+                pass
+        finally:
+            self._loading_form = False
+            self._header_snapshot = {}
+            try:
+                self.lbl_autosave.config(text="")
+            except Exception:
+                pass
 
     def clear_items(self):
         for item in self.tree_items.get_children():
