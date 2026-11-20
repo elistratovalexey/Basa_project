@@ -1,6 +1,7 @@
 package com.elistratov.basaproject
 
 import android.content.Context
+import android.content.SharedPreferences
 import android.os.Bundle
 import android.text.Editable
 import android.text.TextWatcher
@@ -29,6 +30,10 @@ class DataTabFragment : Fragment() {
     private var tab: String = ""
     private var suppressSpinner = false
     private val prefs by lazy { requireContext().getSharedPreferences("app_settings", Context.MODE_PRIVATE) }
+
+    private val syncListener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+        if (key == "last_sync") activity?.runOnUiThread { if (view != null) refresh() }
+    }
 
     companion object {
         private const val ALL = "Все проекты"
@@ -99,6 +104,12 @@ class DataTabFragment : Fragment() {
         spinner.setSelection(names.indexOf(saved).coerceAtLeast(0))
         suppressSpinner = false
         refresh()
+        prefs.registerOnSharedPreferenceChangeListener(syncListener)
+    }
+
+    override fun onPause() {
+        prefs.unregisterOnSharedPreferenceChangeListener(syncListener)
+        super.onPause()
     }
 
     private fun refresh() {
