@@ -1,10 +1,15 @@
 package com.elistratov.basaproject
 
 import android.os.Bundle
+import android.text.Editable
+import android.text.TextWatcher
 import android.view.View
 import android.view.ViewGroup
 import android.widget.AdapterView
 import android.widget.ArrayAdapter
+import android.widget.Button
+import android.widget.CheckBox
+import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ListView
 import android.widget.ScrollView
@@ -18,6 +23,9 @@ class OrdersActivity : AppCompatActivity() {
     private lateinit var spProject: Spinner
     private lateinit var spManufacturer: Spinner
     private lateinit var spReceived: Spinner
+    private lateinit var spPayment: Spinner
+    private lateinit var etDelivery: EditText
+    private lateinit var cbPartial: CheckBox
     private lateinit var batchList: ListView
     private lateinit var batchAdapter: ArrayAdapter<String>
     private lateinit var tvHeader: TextView
@@ -36,11 +44,22 @@ class OrdersActivity : AppCompatActivity() {
 
         val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(12), dp(8), dp(12), dp(8)) }
 
-        val filterRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        val row1 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         spProject = Spinner(this); spManufacturer = Spinner(this); spReceived = Spinner(this)
         for (sp in listOf(spProject, spManufacturer, spReceived))
-            filterRow.addView(sp, LinearLayout.LayoutParams(0, wrap, 1f))
-        root.addView(filterRow, LinearLayout.LayoutParams(match, wrap))
+            row1.addView(sp, LinearLayout.LayoutParams(0, wrap, 1f))
+        root.addView(row1, LinearLayout.LayoutParams(match, wrap))
+
+        val row2 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        etDelivery = EditText(this).apply { hint = "№ поставки"; setSingleLine() }
+        spPayment = Spinner(this)
+        cbPartial = CheckBox(this).apply { text = "Частично" }
+        val btnReset = Button(this).apply { text = "✕" }
+        row2.addView(etDelivery, LinearLayout.LayoutParams(0, wrap, 1f))
+        row2.addView(spPayment, LinearLayout.LayoutParams(0, wrap, 1f))
+        row2.addView(cbPartial, LinearLayout.LayoutParams(wrap, wrap))
+        row2.addView(btnReset, LinearLayout.LayoutParams(wrap, wrap))
+        root.addView(row2, LinearLayout.LayoutParams(match, wrap))
 
         batchList = ListView(this).apply { choiceMode = ListView.CHOICE_MODE_SINGLE }
         batchAdapter = object : ArrayAdapter<String>(this, android.R.layout.simple_list_item_activated_1, mutableListOf<String>()) {
@@ -84,6 +103,20 @@ class OrdersActivity : AppCompatActivity() {
         spProject.onItemSelectedListener = listener
         spManufacturer.onItemSelectedListener = listener
         spReceived.onItemSelectedListener = listener
+        spPayment.onItemSelectedListener = listener
+        cbPartial.setOnCheckedChangeListener { _, _ -> applyFilters() }
+        etDelivery.addTextChangedListener(object : TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
+            override fun afterTextChanged(s: Editable?) { applyFilters() }
+        })
+        btnReset.setOnClickListener {
+            spProject.setSelection(0); spManufacturer.setSelection(0)
+            spReceived.setSelection(0); spPayment.setSelection(0)
+            cbPartial.isChecked = false
+            etDelivery.setText("")
+            applyFilters()
+        }
 
         batchList.onItemClickListener = AdapterView.OnItemClickListener { _, _, position, _ ->
             batchList.setItemChecked(position, true)
@@ -98,7 +131,8 @@ class OrdersActivity : AppCompatActivity() {
         }
         spProject.adapter = ad(projects)
         spManufacturer.adapter = ad(manufacturers)
-        spReceived.adapter = ad(listOf("Все", "Получено", "Частично", "Не получено"))
+        spReceived.adapter = ad(listOf("Все", "Получено", "Не получено"))
+        spPayment.adapter = ad(listOf("Все", "Есть дата", "Нет даты"))
     }
 
     private fun batchColor(b: DatabaseHelper.OrderBatch?): Int {
@@ -118,16 +152,25 @@ class OrdersActivity : AppCompatActivity() {
         val proj = spProject.selectedItem?.toString()?.takeIf { it != "Все" }
         val man = spManufacturer.selectedItem?.toString()?.takeIf { it != "Все" }
         val recSel = spReceived.selectedItem?.toString()
+        val paySel = spPayment.selectedItem?.toString()
+        val dn = etDelivery.text.toString().trim()
+        val partialOnly = cbPartial.isChecked
         shownBatches = allBatches.filter { b ->
             val projOk = proj == null || b.project == proj
             val manOk = man == null || b.manufacturer == man
             val recOk = when (recSel) {
                 "Получено" -> b.received
-                "Частично" -> b.partialReceived
                 "Не получено" -> !b.received
                 else -> true
             }
-            projOk && manOk && recOk
+            val payOk = when (paySel) {
+                "Есть дата" -> b.paymentDate.isNotBlank()
+                "Нет даты" -> b.paymentDate.isBlank()
+                else -> true
+            }
+            val dnOk = dn.isEmpty() || b.deliveryNumber.contains(dn, ignoreCase = true)
+            val partOk = !partialOnly || b.partialReceived
+            projOk && manOk && recOk && payOk && dnOk && partOk
         }
         batchAdapter.clear()
         batchAdapter.addAll(shownBatches.map { b ->
