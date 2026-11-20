@@ -1,5 +1,6 @@
 package com.elistratov.basaproject
 
+import android.content.SharedPreferences
 import android.os.Bundle
 import android.text.Editable
 import android.text.TextWatcher
@@ -34,6 +35,10 @@ class OrdersActivity : AppCompatActivity() {
     private var allBatches: List<DatabaseHelper.OrderBatch> = emptyList()
     private var shownBatches: List<DatabaseHelper.OrderBatch> = emptyList()
     private var selectedItemView: TextView? = null
+
+    private val syncListener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+        if (key == "last_sync") runOnUiThread { reloadAfterSync() }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -89,13 +94,6 @@ class OrdersActivity : AppCompatActivity() {
 
         setContentView(root)
 
-        if (!db.isDatabaseReady()) {
-            tvHeader.text = "База не загружена. Вернитесь на главный экран, настройте облако (⚙️) и нажмите «Синхронизировать»."
-            setupSpinners(listOf("Все"), listOf("Все"))
-            return
-        }
-        setupSpinners(db.getDistinctProjects(), db.getDistinctManufacturers())
-        allBatches = db.getOrderBatches()
         val listener = object : AdapterView.OnItemSelectedListener {
             override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) = applyFilters()
             override fun onNothingSelected(parent: AdapterView<*>?) {}
@@ -117,11 +115,35 @@ class OrdersActivity : AppCompatActivity() {
             etDelivery.setText("")
             applyFilters()
         }
-
         batchList.onItemClickListener = AdapterView.OnItemClickListener { _, _, position, _ ->
             batchList.setItemChecked(position, true)
             shownBatches.getOrNull(position)?.let { showBatch(it) }
         }
+
+        if (!db.isDatabaseReady()) {
+            setupSpinners(listOf("Все"), listOf("Все"))
+            tvHeader.text = "База загружается... Если данные не появились, вернитесь на главный экран и дождитесь синхронизации."
+            return
+        }
+        setupSpinners(db.getDistinctProjects(), db.getDistinctManufacturers())
+        allBatches = db.getOrderBatches()
+        applyFilters()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        getSharedPreferences("app_settings", MODE_PRIVATE).registerOnSharedPreferenceChangeListener(syncListener)
+    }
+
+    override fun onPause() {
+        getSharedPreferences("app_settings", MODE_PRIVATE).unregisterOnSharedPreferenceChangeListener(syncListener)
+        super.onPause()
+    }
+
+    private fun reloadAfterSync() {
+        if (!db.isDatabaseReady()) return
+        setupSpinners(db.getDistinctProjects(), db.getDistinctManufacturers())
+        allBatches = db.getOrderBatches()
         applyFilters()
     }
 
@@ -251,4 +273,4 @@ class OrdersActivity : AppCompatActivity() {
         }
         if (items.isEmpty()) tvItemDetail.text = "В этом заказе нет позиций"
     }
-}
+                   }
