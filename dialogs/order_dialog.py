@@ -44,6 +44,7 @@ class OrderDialog(tk.Toplevel):
     def __init__(self, parent, db_manager, batch_id=None,
                  russian_holidays=None, project_name=None):
         super().__init__(parent)
+        # self.parent нужен для записи в журнал приложения
         self.parent = parent
         if not hasattr(self.parent, "log_action"):
             _app = getattr(parent, "app", None)
@@ -51,10 +52,10 @@ class OrderDialog(tk.Toplevel):
                 self.parent = _app
 
         self.title("База заказов")
-        self.geometry("1680x1000")
+        self.geometry("1700x1010")
         try:
             from dialogs.window_geometry import restore_geometry, track_geometry
-            restore_geometry(self, "order_dialog", "1680x1000")
+            restore_geometry(self, "order_dialog", "1700x1010")
             track_geometry(self, "order_dialog")
         except Exception:
             pass
@@ -68,9 +69,11 @@ class OrderDialog(tk.Toplevel):
         self.sort_order = "DESC"
         self._display2batch = {}
         self._inline = None
+        self._filter_job = None
 
         self.create_ui()
 
+        # batch_id — параметр __init__ (в create_ui его нет!)
         if batch_id:
             self.current_batch_id = batch_id
             self.load_items(batch_id)
@@ -85,29 +88,49 @@ class OrderDialog(tk.Toplevel):
     # Интерфейс
     # ==================================================================
     def create_ui(self):
+        # --- Верхний ряд фильтров ---
         ff = ttk.Frame(self)
         ff.pack(fill="x", padx=8, pady=6)
         ttk.Label(ff, text="Заказы", font=("Arial", 10, "bold")).pack(side=tk.LEFT, padx=(0, 10))
-        ttk.Label(ff, text="Фильтр по производителю:").pack(side=tk.LEFT)
-        self.combo_filter_manufacturer = ttk.Combobox(ff, width=20, state="readonly")
-        self.combo_filter_manufacturer.pack(side=tk.LEFT, padx=5)
+        ttk.Label(ff, text="Производитель:").pack(side=tk.LEFT)
+        self.combo_filter_manufacturer = ttk.Combobox(ff, width=16, state="readonly")
+        self.combo_filter_manufacturer.pack(side=tk.LEFT, padx=4)
         self.combo_filter_manufacturer.bind("<<ComboboxSelected>>", lambda e: self.load_batches())
-        ttk.Label(ff, text="Дата оплаты:").pack(side=tk.LEFT, padx=(10, 0))
+
+        ttk.Label(ff, text="Проект:").pack(side=tk.LEFT, padx=(8, 0))
+        self.combo_filter_project = ttk.Combobox(ff, width=16, state="readonly")
+        self.combo_filter_project.pack(side=tk.LEFT, padx=4)
+        self.combo_filter_project.bind("<<ComboboxSelected>>", lambda e: self.load_batches())
+
+        ttk.Label(ff, text="№ поставки:").pack(side=tk.LEFT, padx=(8, 0))
+        self.entry_filter_delivery = ttk.Entry(ff, width=13)
+        self.entry_filter_delivery.pack(side=tk.LEFT, padx=4)
+        self.entry_filter_delivery.bind("<Return>", lambda e: self.load_batches())
+        self.entry_filter_delivery.bind("<KeyRelease>", lambda e: self._filter_debounce())
+
+        ttk.Label(ff, text="Оплата:").pack(side=tk.LEFT, padx=(8, 0))
         self.combo_filter_payment = ttk.Combobox(ff, width=10, state="readonly",
                                                  values=["Все", "Есть дата", "Нет даты"])
         self.combo_filter_payment.set("Все")
-        self.combo_filter_payment.pack(side=tk.LEFT, padx=5)
+        self.combo_filter_payment.pack(side=tk.LEFT, padx=4)
         self.combo_filter_payment.bind("<<ComboboxSelected>>", lambda e: self.load_batches())
-        ttk.Label(ff, text="Получено:").pack(side=tk.LEFT, padx=(10, 0))
-        self.combo_filter_received = ttk.Combobox(ff, width=14, state="readonly",
-                                                  values=["Все", "Получено", "Частично", "Не получено"])
-        self.combo_filter_received.set("Все")
-        self.combo_filter_received.pack(side=tk.LEFT, padx=5)
-        self.combo_filter_received.bind("<<ComboboxSelected>>", lambda e: self.load_batches())
-        ttk.Button(ff, text="База Поставщиков", command=self.open_suppliers).pack(side=tk.RIGHT, padx=5)
-        ttk.Button(ff, text="Экспорт в Excel", command=self.open_export_dialog).pack(side=tk.RIGHT, padx=5)
 
-        # --- Верхняя таблица: 20 колонок ---
+        ttk.Label(ff, text="Получено:").pack(side=tk.LEFT, padx=(8, 0))
+        self.combo_filter_received = ttk.Combobox(ff, width=13, state="readonly",
+                                                  values=["Все", "Получено", "Не получено"])
+        self.combo_filter_received.set("Все")
+        self.combo_filter_received.pack(side=tk.LEFT, padx=4)
+        self.combo_filter_received.bind("<<ComboboxSelected>>", lambda e: self.load_batches())
+
+        self.partial_only_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(ff, text="Частично получено", variable=self.partial_only_var,
+                        command=self.load_batches).pack(side=tk.LEFT, padx=8)
+        ttk.Button(ff, text="Сброс", command=self.reset_batch_filters).pack(side=tk.LEFT, padx=4)
+
+        ttk.Button(ff, text="База Поставщиков", command=self.open_suppliers).pack(side=tk.RIGHT, padx=4)
+        ttk.Button(ff, text="Экспорт в Excel", command=self.open_export_dialog).pack(side=tk.RIGHT, padx=4)
+
+        # --- Таблица заказов: 20 колонок ---
         # #15 Получено, #16 Частично получено, #19 Запрос цены, #20 Статус
         bf = ttk.LabelFrame(self, text="Заказы  ·  двойной клик по ячейке — правка, Enter — сохранить, "
                                        "Esc — отмена; галочки переключаются одиночным кликом", padding=4)
@@ -201,7 +224,6 @@ class OrderDialog(tk.Toplevel):
         ttk.Label(hf, text="Статус:").grid(row=2, column=3, sticky="w", pady=4)
         self.lbl_batch_status = ttk.Label(hf, text="", foreground="#0066cc", font=("Arial", 9, "bold"))
         self.lbl_batch_status.grid(row=2, column=4, sticky="w", pady=4)
-        # НОВОЕ: флажок «Частично получено»
         self.partial_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(hf, text="Частично получено", variable=self.partial_var,
                         command=self.on_partial_change).grid(row=2, column=5, columnspan=2,
@@ -220,7 +242,7 @@ class OrderDialog(tk.Toplevel):
         ttk.Button(af, text="База статусов артикула", command=self.open_item_statuses).pack(side=tk.LEFT, padx=4)
         ttk.Button(af, text="Заказ в файл АНГ", command=self.export_order_to_excel).pack(side=tk.RIGHT, padx=4)
 
-        # --- Нижняя таблица: 12 колонок ---
+        # --- Позиции заказа: 12 колонок ---
         pf = ttk.LabelFrame(self, text="Позиции заказа  ·  двойной клик по ячейке — правка (список раскрывается сразу), "
                                        "Enter — сохранить, Tab — дальше, Esc — отмена", padding=6)
         pf.pack(fill="both", expand=True, padx=8, pady=4)
@@ -228,12 +250,12 @@ class OrderDialog(tk.Toplevel):
                   "delivery_term", "delivery_unit", "price", "currency", "note", "item_status")
         self.tree_items = ttk.Treeview(pf, columns=cols_i, show="headings", height=10,
                                        selectmode="extended")
-        heads_i = {"id": ("ID", 55), "article": ("Артикул", 150), "name": ("Наименование", 260),
+        heads_i = {"id": ("ID", 55), "article": ("Артикул", 150), "name": ("Наименование", 250),
                    "quantity": ("Кол-во", 65), "qty_received": ("Получено, кол-во", 100),
                    "rest": ("Остаток", 75),
                    "delivery_term": ("Срок поставки", 85), "delivery_unit": ("Единица", 90),
                    "price": ("Цена", 85), "currency": ("Валюта", 60),
-                   "note": ("Примечание", 190), "item_status": ("Статус артикула", 130)}
+                   "note": ("Примечание", 180), "item_status": ("Статус артикула", 125)}
         for c in cols_i:
             t, w = heads_i[c]
             self.tree_items.heading(c, text=t)
@@ -311,12 +333,12 @@ class OrderDialog(tk.Toplevel):
 
         self.load_manufacturers_for_combo()
         if hasattr(self.db_manager, "ensure_column"):
-            self.db_manager.ensure_column("orders", "write_off_date")
-            # НОВОЕ: колонка флага частичной приёмки (миграция не требует правки database.py)
-            try:
-                self.db_manager.ensure_column("orders", "partial_received", "INTEGER DEFAULT 0")
-            except Exception as e:
-                print(f"[order_dialog] partial_received: {e}")
+            for col, typ in (("write_off_date", "TEXT DEFAULT ''"),
+                             ("partial_received", "INTEGER DEFAULT 0")):
+                try:
+                    self.db_manager.ensure_column("orders", col, typ)
+                except Exception as e:
+                    print(f"[order_dialog] ensure_column {col}: {e}")
         self._refresh_item_statuses()
         self.load_batches()
 
@@ -411,13 +433,47 @@ class OrderDialog(tk.Toplevel):
         return "break"
 
     # ==================================================================
-    # Справочники
+    # Справочники и фильтры
     # ==================================================================
     def load_manufacturers_filter(self):
         c = self.db_manager.conn.cursor()
         c.execute("SELECT DISTINCT manufacturer FROM orders WHERE manufacturer IS NOT NULL "
                   "AND manufacturer != '' ORDER BY manufacturer")
-        self.combo_filter_manufacturer['values'] = [''] + [r[0] for r in c.fetchall()]
+        cur = self.combo_filter_manufacturer.get()
+        vals = [''] + [r[0] for r in c.fetchall()]
+        self.combo_filter_manufacturer['values'] = vals
+        if cur not in vals:
+            self.combo_filter_manufacturer.set('')
+
+    def load_project_filter(self):
+        try:
+            vals = [''] + list(self.db_manager.get_order_projects())
+            cur = self.combo_filter_project.get()
+            self.combo_filter_project['values'] = vals
+            if cur not in vals:
+                self.combo_filter_project.set('')
+        except Exception:
+            pass
+
+    def _filter_debounce(self):
+        if self._filter_job:
+            try:
+                self.after_cancel(self._filter_job)
+            except Exception:
+                pass
+        self._filter_job = self.after(400, self.load_batches)
+
+    def reset_batch_filters(self):
+        try:
+            self.combo_filter_manufacturer.set('')
+            self.combo_filter_project.set('')
+            self.entry_filter_delivery.delete(0, tk.END)
+            self.combo_filter_payment.set("Все")
+            self.combo_filter_received.set("Все")
+            self.partial_only_var.set(False)
+        except Exception:
+            pass
+        self.load_batches()
 
     def load_suppliers(self):
         c = self.db_manager.conn.cursor()
@@ -444,6 +500,7 @@ class OrderDialog(tk.Toplevel):
         self.load_kd_for_combo()
         self.load_suppliers()
         self.load_manufacturers_filter()
+        self.load_project_filter()
 
     def load_subprojects_for_combo(self):
         c = self.db_manager.conn.cursor()
@@ -464,7 +521,7 @@ class OrderDialog(tk.Toplevel):
         self.combo_batch_kd['values'] = [r[0] for r in c.fetchall()]
 
     # ==================================================================
-    # Частичная приёмка (флаг заказа)
+    # Частичная приёмка
     # ==================================================================
     def _set_partial(self, batch_id, value):
         try:
@@ -476,7 +533,6 @@ class OrderDialog(tk.Toplevel):
             print(f"[order_dialog] partial_received write: {e}")
 
     def _sync_partial_flag(self, batch_id):
-        """Автогалочка: получено > 0, но меньше заказанного."""
         try:
             rows = self._items_rows(batch_id)
         except Exception:
@@ -636,7 +692,7 @@ class OrderDialog(tk.Toplevel):
         self.lbl_status_hint.config(text=f"«{status}» присвоен {len(sel)} позициям")
 
     # ==================================================================
-    # ИНЛАЙН-РЕДАКТИРОВАНИЕ
+    # ИНЛАЙН-РЕДАКТИРОВАНИЕ (обе таблицы)
     # ==================================================================
     _ITEM_EDIT_COLS = {
         1: ("article", "text"),
@@ -745,7 +801,6 @@ class OrderDialog(tk.Toplevel):
         except Exception:
             return
         if not box:
-            # ячейка вне видимой области — подскроллим и попробуем ещё раз
             if not _retry:
                 try:
                     tree.see(row)
@@ -785,7 +840,7 @@ class OrderDialog(tk.Toplevel):
             ed.focus_set()
             ed.bind("<<ComboboxSelected>>", lambda e: self._inline_commit())
             widget = ed
-            # НОВОЕ: раскрываем список СРАЗУ, без второго двойного клика
+            # список раскрывается СРАЗУ, без второго двойного клика
             self.after(30, lambda w=ed: self._post_combobox(w))
         else:
             ed = ttk.Entry(tree)
@@ -804,7 +859,6 @@ class OrderDialog(tk.Toplevel):
                         "old": old, "combo": is_combo}
 
     def _post_combobox(self, ed):
-        """Открывает выпадающий список программно (Tk 8.5/8.6/9)."""
         info = getattr(self, "_inline", None)
         if not info or info["entry"] is not ed:
             return
@@ -819,7 +873,6 @@ class OrderDialog(tk.Toplevel):
             pass
 
     def _combobox_busy(self, ed):
-        """Список открыт или фокус внутри него — редактор закрывать нельзя."""
         try:
             pop = ed.tk.call("ttk::combobox::PopdownWindow", ed)
         except Exception:
@@ -1040,7 +1093,7 @@ class OrderDialog(tk.Toplevel):
             pass
 
     # ==================================================================
-    # Статус заказа
+    # Статус заказа — таблица обновляется СРАЗУ
     # ==================================================================
     def edit_status(self):
         if self.current_batch_id is None:
@@ -1164,6 +1217,13 @@ class OrderDialog(tk.Toplevel):
         f_man = self.combo_filter_manufacturer.get().strip()
         f_pay = self.combo_filter_payment.get()
         f_rec = self.combo_filter_received.get()
+        try:
+            f_proj = self.combo_filter_project.get().strip()
+            f_dn = self.entry_filter_delivery.get().strip()
+            f_partial = self.partial_only_var.get()
+        except Exception:
+            f_proj, f_dn, f_partial = "", "", False
+        self.load_project_filter()
 
         if self.sort_column == "order_date":
             order_clause = ("ORDER BY CASE WHEN MAX(order_date)='' OR MAX(order_date) IS NULL "
@@ -1175,6 +1235,8 @@ class OrderDialog(tk.Toplevel):
         else:
             order_clause = f"ORDER BY MAX({self.sort_column}) {self.sort_order}"
 
+        partial_sub = ("(SELECT IFNULL(partial_received,0) FROM orders "
+                       "WHERE order_batch_id=o.order_batch_id LIMIT 1) partial")
         base_query = '''SELECT order_batch_id, MAX(order_date) order_date,
             MAX(project_name) project_name, MAX(payment_date) payment_date,
             MAX(manufacturer) manufacturer, MAX(delivery_days) delivery_days,
@@ -1186,7 +1248,7 @@ class OrderDialog(tk.Toplevel):
             (SELECT supplier FROM orders WHERE order_batch_id=o.order_batch_id LIMIT 1) supplier,
             (SELECT delivery_number FROM orders WHERE order_batch_id=o.order_batch_id LIMIT 1) delivery_number,
             (SELECT received FROM orders WHERE order_batch_id=o.order_batch_id LIMIT 1) received,
-            (SELECT IFNULL(partial_received,0) FROM orders WHERE order_batch_id=o.order_batch_id LIMIT 1) partial,
+            ''' + partial_sub + ''',
             (SELECT receipt_date FROM orders WHERE order_batch_id=o.order_batch_id LIMIT 1) receipt_date,
             (SELECT write_off_date FROM orders WHERE order_batch_id=o.order_batch_id LIMIT 1) write_off_date,
             (SELECT price_request FROM orders WHERE order_batch_id=o.order_batch_id LIMIT 1) price_request,
@@ -1198,6 +1260,12 @@ class OrderDialog(tk.Toplevel):
         if f_man:
             where += " WHERE manufacturer = ?"
             params.append(f_man)
+        if f_proj:
+            where += (" AND" if where else " WHERE") + " project_name = ?"
+            params.append(f_proj)
+        if f_dn:
+            where += (" AND" if where else " WHERE") + " delivery_number LIKE ?"
+            params.append(f"%{f_dn}%")
         if f_pay == "Есть дата":
             where += (" AND" if where else " WHERE") + " payment_date IS NOT NULL AND payment_date != ''"
         elif f_pay == "Нет даты":
@@ -1206,24 +1274,24 @@ class OrderDialog(tk.Toplevel):
             where += (" AND" if where else " WHERE") + " received = 1"
         elif f_rec == "Не получено":
             where += (" AND" if where else " WHERE") + " (received = 0 OR received IS NULL)"
+        if f_partial:
+            where += (" AND" if where else " WHERE") + " IFNULL(partial_received,0) = 1"
 
         c = self.db_manager.conn.cursor()
+        sql_tail = where + f" GROUP BY order_batch_id {order_clause}"
         try:
-            c.execute(base_query + where + f" GROUP BY order_batch_id {order_clause}", params)
+            c.execute(base_query + sql_tail, params)
             rows = c.fetchall()
         except Exception:
             # колонки partial_received ещё нет — читаем без неё
-            q = base_query.replace(
-                "(SELECT IFNULL(partial_received,0) FROM orders WHERE order_batch_id=o.order_batch_id LIMIT 1) partial",
-                "0 partial")
-            c.execute(q + where + f" GROUP BY order_batch_id {order_clause}", params)
+            q = base_query.replace(partial_sub, "0 partial")
+            q = q.replace(" IFNULL(partial_received,0) = 1", " 1=0")
+            c.execute(q + sql_tail.replace(" IFNULL(partial_received,0) = 1", " 1=0"), params)
             rows = c.fetchall()
 
         for r in rows:
             received_mark = "✓" if r['received'] else ""
             partial_mark = "✓" if (r['partial'] if 'partial' in r.keys() else 0) else ""
-            if f_rec == "Частично" and not partial_mark:
-                continue
             pr, prn = r['price_request'] or 0, r['price_request_num'] or 0
             disp = f"Z{prn}" if (pr and prn) else str(r['order_batch_id'])
             self._display2batch[disp] = r['order_batch_id']
@@ -1332,6 +1400,7 @@ class OrderDialog(tk.Toplevel):
             pass
 
     def _items_rows(self, batch_id):
+        """Позиции заказа; qty_received добираем запросом, если БД-метод его не отдаёт."""
         rows = self.db_manager.get_order_items(batch_id)
         if rows and 'qty_received' not in rows[0]:
             q = {r['id']: r['q'] for r in self.db_manager.conn.execute(

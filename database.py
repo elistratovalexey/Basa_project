@@ -48,6 +48,7 @@ class DatabaseManager:
         self._ensure_purchase_spec_items_table()
         self._ensure_purchase_spec_delivery_address()
         self._ensure_suppliers_columns()
+        self.ensure_column("projects", "orders_cost_coef", "REAL DEFAULT 1.8")        
         self._ensure_indexes()
 
     # === Индексы ===
@@ -482,6 +483,32 @@ class DatabaseManager:
     def update_project_path(self, name, path):
         with self.conn:
             self.conn.execute("UPDATE projects SET path=? WHERE name=?", (path, name))
+
+        # === Коэффициент расходов на заказы (свой для каждого проекта) ===
+    DEFAULT_ORDER_COST_COEF = 1.8
+
+    def get_orders_cost_coef(self, project_name):
+        """Множитель расходов по строкам из «Заказов». По умолчанию 1.8."""
+        row = self.get_project(project_name)
+        if row is not None and "orders_cost_coef" in row.keys():
+            try:
+                v = float(row["orders_cost_coef"])
+                if v > 0:
+                    return v
+            except (TypeError, ValueError):
+                pass
+        return self.DEFAULT_ORDER_COST_COEF
+
+    def set_orders_cost_coef(self, project_name, value):
+        try:
+            v = float(str(value).replace(",", "."))
+        except (TypeError, ValueError):
+            return False
+        if v <= 0:
+            return False
+        self.conn.execute("UPDATE projects SET orders_cost_coef=? WHERE name=?", (v, project_name))
+        self.conn.commit()
+        return True        
 
     def delete_project(self, name):
         """Удаляет проект и все зависимые записи одной транзакцией.
@@ -1502,21 +1529,29 @@ class DatabaseManager:
 
     # --- Бюджет проекта (в рублях) ---
     # --- Бюджет проекта (в рублях) ---
-    def get_project_budget(self, project_name, date_str=None):
+    # --- Бюджет проекта (в рублях) ---
+    def get_project_budget(self, project_name, date_str=None, cost_coef=None):
+        """coef применяется ТОЛЬКО к строкам из orders (заказы).
+        Счета поставщиков (purchase_specifications) берутся как есть."""
         res = {"plan_sell": 0.0, "income": 0.0,
                "plan_buy": 0.0, "plan_buy_orders": 0.0, "plan_buy_specs": 0.0,
-               "paid_sup": 0.0, "received": 0.0,
-               "margin": 0.0, "plan_margin": 0.0, "detail": []}
+               "orders_base": 0.0, "orders_markup": 0.0,
+               "paid_sup": 0.0, "received": 0.0, "balance": 0.0,
+               "margin": 0.0, "plan_margin": 0.0,
+               "coef": 0.0, "detail": []}
         pid = self.get_project_id(project_name)
         if not pid:
             return res
+
+        coef = float(cost_coef) if cost_coef else self.get_orders_cost_coef(project_name)
+        res["coef"] = coef
 
         def rub(v, cur):
             return v * self.get_rate(cur, date_str)
 
         c = self.conn.cursor()
 
-        # --- План продажи (спецификации проекта) ---
+        # --- План продажи ---
         for s in c.execute("SELECT name, quantity, price, currency FROM specifications WHERE project_id=?",
                            (pid,)).fetchall():
             v = self._n(s["quantity"]) * self._n(s["price"])
@@ -1524,7 +1559,7 @@ class DatabaseManager:
             res["detail"].append(("План (спецификация)", s["name"] or "", v,
                                   s["currency"] or "", rub(v, s["currency"])))
 
-        # --- Оплаты заказчика ---
+        # --- Оплачено КЛИЕНТОМ ---
         for p in c.execute("SELECT number, amount, currency, paid FROM payments WHERE project_id=?",
                            (pid,)).fetchall():
             if p["paid"]:
@@ -1533,34 +1568,35 @@ class DatabaseManager:
                 res["detail"].append(("Оплата заказчика", f"платёж №{p['number']}", v,
                                       p["currency"] or "", rub(v, p["currency"])))
 
-        # --- Закупки из ЗАКАЗОВ ---
+        # --- Закупки из ЗАКАЗОВ × коэффициент проекта ---
+        mark = "" if abs(coef - 1.0) < 1e-9 else f" ×{coef:g}"
         for o in c.execute("SELECT article, name, quantity, price, currency, received FROM orders WHERE project_name=?",
                            (project_name,)).fetchall():
-            v = self._n(o["quantity"]) * self._n(o["price"])
+            base = self._n(o["quantity"]) * self._n(o["price"])
+            v = base * coef
+            res["orders_base"] += rub(base, o["currency"])
             res["plan_buy_orders"] += rub(v, o["currency"])
             if o["received"]:
                 res["received"] += rub(v, o["currency"])
-            res["detail"].append(("Закупка (заказ)", o["article"] or o["name"] or "", v,
-                                  o["currency"] or "", rub(v, o["currency"])))
+            label = (o["article"] or o["name"] or "") + mark
+            res["detail"].append(("Закупка (заказ)", label, v, o["currency"] or "", rub(v, o["currency"])))
+        res["orders_markup"] = res["plan_buy_orders"] - res["orders_base"]
 
-        # --- НОВОЕ: закупки из СПЕЦИФИКАЦИЙ ЗАКУПОК (счета поставщиков) ---
+        # --- Закупки из СПЕЦИФИКАЦИЙ ЗАКУПОК (без коэффициента) ---
         for s in c.execute("""SELECT id, supplier, name, quantity, price, total, currency, received
                               FROM purchase_specifications WHERE project_id=?""", (pid,)).fetchall():
             cur = s["currency"] or ""
-            # сумма счёта: явный total, иначе кол-во × цена
             base = self._n(s["total"])
             if base <= 0:
                 base = self._n(s["quantity"]) * self._n(s["price"])
             label = f'{s["supplier"] or ""} · {s["name"] or "счёт #" + str(s["id"])}'.strip(" ·")
             if base > 0:
-                # у счёта есть шапка-сумма — учитываем её (позиции не плюсуем, чтобы не задвоить)
                 rv = rub(base, cur)
                 res["plan_buy_specs"] += rv
                 if s["received"]:
                     res["received"] += rv
                 res["detail"].append(("Закупка (спецификация)", label, base, cur, rv))
             else:
-                # шапки-суммы нет — берём суммы позиций счёта
                 for it in c.execute("""SELECT name, quantity, price, total
                                        FROM purchase_spec_items WHERE spec_id=?""", (s["id"],)).fetchall():
                     iv = self._n(it["total"])
@@ -1577,7 +1613,7 @@ class DatabaseManager:
 
         res["plan_buy"] = res["plan_buy_orders"] + res["plan_buy_specs"]
 
-        # --- Оплаты поставщикам (по всем счетам проекта) ---
+        # --- Оплачено ПОСТАВЩИКАМ ---
         for pay in c.execute('''SELECT pp.number, pp.amount, pp.currency, pp.paid, s.supplier
              FROM purchase_payments pp JOIN purchase_specifications s ON s.id=pp.spec_id
              WHERE s.project_id=?''', (pid,)).fetchall():
@@ -1587,10 +1623,11 @@ class DatabaseManager:
                 res["detail"].append(("Оплата поставщику", pay["supplier"] or "", v,
                                       pay["currency"] or "", rub(v, pay["currency"])))
 
-        res["margin"] = res["income"] - res["paid_sup"]
+        res["balance"] = res["income"] - res["paid_sup"]      # баланс денег
+        res["margin"] = res["balance"]                        # маржа факт (по оплатам)
         res["plan_margin"] = res["plan_sell"] - res["plan_buy"]
         return res
-    
+        
     # === План-Факт: справочники и карточки работ ===
     def _ensure_plan_fact_tables(self):
         c = self.conn.cursor()

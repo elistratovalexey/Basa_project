@@ -1,10 +1,8 @@
 # -*- coding: utf-8 -*-
-"""Вкладка «Бюджет»: план / заказано / оплачено / получено в рублях + курсы ЦБ.
+"""Вкладка «Бюджет»: план / закупки / оплаты клиентом и поставщикам / баланс.
 
-Закупки считаются из ДВУХ источников:
-  • orders                    — вкладка «Заказы»
-  • purchase_specifications   — вкладка «Спецификация Закупок» (счета поставщиков)
-Разбивка показывается отдельными итогами и типами строк в расшифровке.
+Расходы по строкам из «Заказов» умножаются на коэффициент проекта (по умолчанию 1.8).
+Счета поставщиков из «Спецификации Закупок» берутся без коэффициента.
 """
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
@@ -14,14 +12,15 @@ from tabs.base import BaseTab
 
 
 class BudgetTab(BaseTab):
-    # (ключ в словаре бюджета, заголовок, мелкий шрифт)
     SUMMARY_KEYS = [
         ("plan_sell", "План продажи", False),
-        ("income", "Оплачено заказчиком", False),
+        ("income", "Оплачено Клиентом", False),
+        ("paid_sup", "Оплачено Поставщикам", False),
+        ("balance", "Баланс (клиент − поставщики)", False),
         ("plan_buy", "Закупки (план, всего)", False),
-        ("plan_buy_orders", "в т.ч. заказы", True),
+        ("plan_buy_orders", "в т.ч. заказы × коэф.", True),
         ("plan_buy_specs", "в т.ч. счета поставщиков", True),
-        ("paid_sup", "Оплачено поставщикам", False),
+        ("orders_markup", "надбавка по коэф.", True),
         ("received", "Получено (закупки)", False),
         ("plan_margin", "Маржа план", False),
         ("margin", "Маржа факт", False),
@@ -29,11 +28,9 @@ class BudgetTab(BaseTab):
 
     def __init__(self, app, parent):
         super().__init__(app, parent)
-        self._last = None          # последний рассчитанный бюджет (для фильтров)
+        self._last = None
         self.create_ui()
 
-    # ==================================================================
-    # Интерфейс
     # ==================================================================
     def create_ui(self):
         top = ttk.Frame(self.parent)
@@ -44,6 +41,18 @@ class BudgetTab(BaseTab):
         ttk.Button(top, text="Экспорт в Excel", command=self.export).pack(side=tk.RIGHT, padx=5)
         self.lbl_rates = ttk.Label(top, text="", foreground="gray")
         self.lbl_rates.pack(side=tk.RIGHT, padx=10)
+
+        # --- коэффициент проекта ---
+        cf = ttk.LabelFrame(self.parent, text="Коэффициент расходов на заказы (для этого проекта)", padding=6)
+        cf.pack(fill="x", pady=3)
+        ttk.Label(cf, text="Множитель:").pack(side=tk.LEFT, padx=(4, 4))
+        self.entry_coef = ttk.Entry(cf, width=8)
+        self.entry_coef.pack(side=tk.LEFT)
+        self.entry_coef.insert(0, "1.8")
+        ttk.Button(cf, text="Сохранить и пересчитать", command=self.save_coef).pack(side=tk.LEFT, padx=8)
+        ttk.Label(cf, foreground="gray",
+                  text="Применяется только к строкам из «Заказы». Счета поставщиков — без множителя."
+                  ).pack(side=tk.LEFT, padx=8)
 
         summary = ttk.LabelFrame(self.parent, text="Итоги по проекту (₽)", padding=8)
         summary.pack(fill="x", pady=5)
@@ -59,42 +68,47 @@ class BudgetTab(BaseTab):
         self.lbl_split = ttk.Label(self.parent, text="", foreground="#666", justify="left")
         self.lbl_split.pack(fill="x", padx=14, pady=(0, 4))
 
-        # --- Фильтры расшифровки ---
         flt = ttk.Frame(self.parent)
         flt.pack(fill="x", pady=(2, 0))
         ttk.Label(flt, text="Тип строки:").pack(side=tk.LEFT, padx=(14, 4))
-        self.combo_kind = ttk.Combobox(flt, width=28, state="readonly", values=["Все типы"])
+        self.combo_kind = ttk.Combobox(flt, width=26, state="readonly", values=["Все типы"])
         self.combo_kind.set("Все типы")
         self.combo_kind.pack(side=tk.LEFT)
         self.combo_kind.bind("<<ComboboxSelected>>", lambda e: self._fill_detail())
         self.hide_zero = tk.BooleanVar(value=True)
         ttk.Checkbutton(flt, text="Скрывать нулевые", variable=self.hide_zero,
                         command=self._fill_detail).pack(side=tk.LEFT, padx=12)
+        self.show_total_row = tk.BooleanVar(value=True)
+        ttk.Checkbutton(flt, text="Итоговая строка", variable=self.show_total_row,
+                        command=self._fill_detail).pack(side=tk.LEFT, padx=6)
         self.lbl_count = ttk.Label(flt, text="", foreground="gray")
         self.lbl_count.pack(side=tk.LEFT, padx=8)
 
         det = ttk.LabelFrame(self.parent, text="Расшифровка", padding=6)
         det.pack(fill="both", expand=True, pady=5)
-        cols = ("kind", "item", "amount", "cur", "rub")
-        self.tree = ttk.Treeview(det, columns=cols, show="headings", height=16)
-        for c, t, w in (("kind", "Тип", 190), ("item", "Позиция", 380),
-                        ("amount", "Сумма", 120), ("cur", "Валюта", 70), ("rub", "В рублях", 140)):
+        cols = ("kind", "item", "amount", "cur", "rub", "paid_client", "paid_sup")
+        self.tree = ttk.Treeview(det, columns=cols, show="headings", height=15)
+        for c, t, w in (("kind", "Тип", 175), ("item", "Позиция", 300),
+                        ("amount", "Сумма", 110), ("cur", "Валюта", 60),
+                        ("rub", "В рублях", 120),
+                        ("paid_client", "Оплачено Клиентом", 135),
+                        ("paid_sup", "Оплачено Поставщикам", 150)):
             self.tree.heading(c, text=t)
-            self.tree.column(c, width=w, anchor="e" if c in ("amount", "rub") else "w")
+            self.tree.column(c, width=w, anchor="w" if c in ("kind", "item") else "e")
         sb = ttk.Scrollbar(det, orient=tk.VERTICAL, command=self.tree.yview)
-        self.tree.configure(yscroll=sb.set)
+        hs = ttk.Scrollbar(det, orient=tk.HORIZONTAL, command=self.tree.xview)
+        self.tree.configure(yscroll=sb.set, xscroll=hs.set)
         self.tree.pack(side=tk.LEFT, fill="both", expand=True)
         sb.pack(side=tk.RIGHT, fill="y")
+        hs.pack(side=tk.BOTTOM, fill="x")
 
-        # подсветка типов строк
         self.tree.tag_configure("sell", foreground="#0a58ca")
         self.tree.tag_configure("income", foreground="#198754")
         self.tree.tag_configure("order", foreground="#333333")
-        self.tree.tag_configure("spec", background="#fff3cd")     # счета поставщиков — новые
+        self.tree.tag_configure("spec", background="#fff3cd")
         self.tree.tag_configure("paysup", foreground="#b02a37")
+        self.tree.tag_configure("total", background="#d0e0f0", font=("Arial", 9, "bold"))
 
-    # ==================================================================
-    # Форматирование
     # ==================================================================
     def _fmt(self, v):
         try:
@@ -123,7 +137,36 @@ class BudgetTab(BaseTab):
         return "order"
 
     # ==================================================================
-    # Курсы
+    def save_coef(self):
+        proj = self.app.current_project
+        if not proj:
+            messagebox.showwarning("Внимание", "Выберите проект!")
+            return
+        try:
+            v = float(self.entry_coef.get().replace(",", "."))
+            if v <= 0:
+                raise ValueError
+        except ValueError:
+            messagebox.showwarning("Ошибка", "Коэффициент — положительное число, например 1.8")
+            return
+        if not hasattr(self.db_manager, "set_orders_cost_coef"):
+            messagebox.showerror("Ошибка", "Обновите database.py: нет set_orders_cost_coef")
+            return
+        if self.db_manager.set_orders_cost_coef(proj, v):
+            self.app.log_action(f"Бюджет: коэффициент расходов на заказы для «{proj}» = {v:g}")
+            self.load_budget()
+        else:
+            messagebox.showerror("Ошибка", "Не удалось сохранить коэффициент")
+
+    def _load_coef_into_entry(self, proj):
+        try:
+            v = self.db_manager.get_orders_cost_coef(proj) if hasattr(
+                self.db_manager, "get_orders_cost_coef") else 1.8
+        except Exception:
+            v = 1.8
+        self.entry_coef.delete(0, tk.END)
+        self.entry_coef.insert(0, f"{v:g}")
+
     # ==================================================================
     def _auto_fetch_rates(self, silent=False):
         try:
@@ -182,15 +225,12 @@ class BudgetTab(BaseTab):
             pass
 
     # ==================================================================
-    # Расчёт и вывод
-    # ==================================================================
     def load_budget(self):
         for i in self.tree.get_children():
             self.tree.delete(i)
         self._last = None
         proj = self.app.current_project
 
-        # если курсов ещё нет — пробуем один раз подтянуть ЦБ автоматически
         if not self.db_manager.has_rates():
             self._auto_fetch_rates(silent=True)
 
@@ -201,6 +241,7 @@ class BudgetTab(BaseTab):
             self.lbl_count.config(text="")
             return
 
+        self._load_coef_into_entry(proj)
         try:
             b = self.db_manager.get_project_budget(proj)
         except Exception as e:
@@ -208,45 +249,38 @@ class BudgetTab(BaseTab):
             return
         self._last = b
 
-        # --- итоги ---
         for k, lab in self.lbl.items():
             val = b.get(k, 0.0)
             lab.config(text=self._fmt(val),
                        foreground="green" if (val or 0) >= 0 else "red")
 
-        # --- разбивка закупок / совместимость со старым database.py ---
+        coef = b.get("coef", 1.8)
         if "plan_buy_specs" in b:
-            orders = b.get("plan_buy_orders", 0.0)
-            specs = b.get("plan_buy_specs", 0.0)
-            n_spec = sum(1 for d in b.get("detail", []) if d[0] == "Закупка (спецификация)")
             self.lbl_split.config(
                 foreground="#666",
-                text=f"Закупки: заказы {self._num(orders)} ₽ + счета поставщиков "
-                     f"{self._num(specs)} ₽ = {self._num(b.get('plan_buy', 0.0))} ₽   "
-                     f"(строк по счетам: {n_spec})")
+                text=f"Закупки: заказы {self._num(b.get('orders_base', 0))} ₽ × {coef:g} = "
+                     f"{self._num(b.get('plan_buy_orders', 0))} ₽  +  счета поставщиков "
+                     f"{self._num(b.get('plan_buy_specs', 0))} ₽  =  "
+                     f"{self._num(b.get('plan_buy', 0))} ₽   |   "
+                     f"Баланс оплат: {self._num(b.get('balance', 0))} ₽")
         else:
             self.lbl_split.config(
                 foreground="red",
-                text="⚠ database.py без поддержки счетов: обновите метод get_project_budget — "
-                     "суммы из «Спецификации Закупок» пока не учитываются.")
+                text="⚠ Обновите get_project_budget в database.py — нет разбивки и коэффициента.")
 
-        # --- расшифровка ---
         kinds = sorted({d[0] for d in b.get("detail", []) if d[0]})
         self.combo_kind["values"] = ["Все типы"] + kinds
         if self.combo_kind.get() not in self.combo_kind["values"]:
             self.combo_kind.set("Все типы")
         self._fill_detail()
 
-        # --- курсы ---
         rates_txt = " · ".join(f"{c} {self.db_manager.get_rate(c):.4f}"
                                for c in ("USD", "EUR", "CNY", "TRY"))
         if self.db_manager.has_rates():
             self.lbl_rates.config(foreground="gray", text="Курсы: " + rates_txt)
         else:
-            self.lbl_rates.config(
-                foreground="red",
-                text="⚠ Курсы не загружены (все валюты = 1). "
-                     "Нажмите «Курсы ЦБ на сегодня» или «Курсы вручную».")
+            self.lbl_rates.config(foreground="red",
+                                  text="⚠ Курсы не загружены (все валюты = 1).")
 
     def _fill_detail(self):
         for i in self.tree.get_children():
@@ -255,19 +289,28 @@ class BudgetTab(BaseTab):
         rows = b.get("detail", [])
         kind_filter = self.combo_kind.get()
         hide_zero = self.hide_zero.get()
+        shown = sum_client = sum_sup = 0.0
         shown = 0
         for kind, item, amount, cur, rub in rows:
             if kind_filter and kind_filter != "Все типы" and kind != kind_filter:
                 continue
             if hide_zero and not (amount or rub):
                 continue
+            pc = rub if kind == "Оплата заказчика" else 0.0
+            ps = rub if kind == "Оплата поставщику" else 0.0
+            sum_client += pc
+            sum_sup += ps
             self.tree.insert("", tk.END, tags=(self._tag_for(kind),), values=(
-                kind, item, self._num(amount), cur, self._num(rub)))
+                kind, item, self._num(amount), cur, self._num(rub),
+                self._num(pc) if pc else "", self._num(ps) if ps else ""))
             shown += 1
+        if self.show_total_row.get() and shown:
+            bal = sum_client - sum_sup
+            self.tree.insert("", tk.END, tags=("total",), values=(
+                "ИТОГО", f"Баланс: {self._num(bal)} ₽", "", "", "",
+                self._num(sum_client), self._num(sum_sup)))
         self.lbl_count.config(text=f"показано {shown} из {len(rows)}")
 
-    # ==================================================================
-    # Экспорт
     # ==================================================================
     def export(self):
         try:
@@ -292,19 +335,31 @@ class BudgetTab(BaseTab):
         bold = Font(bold=True)
         ws.append(["Проект", self.app.current_project])
         ws.append(["Дата", datetime.now().strftime("%d.%m.%Y %H:%M")])
+        ws.append(["Коэффициент расходов на заказы", b.get("coef", 1.8)])
         ws.append([])
-        for k, title, _small in self.SUMMARY_KEYS:
+        for k, title, _s in self.SUMMARY_KEYS:
             ws.append([title, round(b.get(k, 0.0), 2)])
         ws["A1"].font = bold
         ws.append([])
-        ws.append(["Тип", "Позиция", "Сумма", "Валюта", "В рублях"])
+        ws.append(["Тип", "Позиция", "Сумма", "Валюта", "В рублях",
+                   "Оплачено Клиентом", "Оплачено Поставщикам"])
         for cell in ws[ws.max_row]:
             cell.font = bold
-        for row in b.get("detail", []):
-            ws.append([row[0], row[1], round(row[2] or 0, 2), row[3], round(row[4] or 0, 2)])
-        for col, width in (("A", 26), ("B", 52), ("C", 16), ("D", 10), ("E", 18)):
+        tc = ts = 0.0
+        for kind, item, amount, cur, rub in b.get("detail", []):
+            pc = rub if kind == "Оплата заказчика" else 0.0
+            ps = rub if kind == "Оплата поставщику" else 0.0
+            tc += pc
+            ts += ps
+            ws.append([kind, item, round(amount or 0, 2), cur, round(rub or 0, 2),
+                       round(pc, 2) if pc else "", round(ps, 2) if ps else ""])
+        ws.append(["ИТОГО", f"Баланс: {round(tc - ts, 2)}", "", "", "", round(tc, 2), round(ts, 2)])
+        for cell in ws[ws.max_row]:
+            cell.font = bold
+        for col, width in (("A", 26), ("B", 50), ("C", 16), ("D", 10),
+                           ("E", 18), ("F", 20), ("G", 22)):
             ws.column_dimensions[col].width = width
-        ws.freeze_panes = "A5"
+        ws.freeze_panes = "A6"
         try:
             wb.save(path)
             messagebox.showinfo("Успех", f"Сохранено:\n{path}")
