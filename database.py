@@ -19,6 +19,48 @@ def _date_sort_key(date_str):
             d = None
     return (0, d) if d else (1, datetime.max)
 
+def sync_purchase_payment_flags(self, project_name=None):
+    """paid=1 для платежей с суммой > 0; fully_paid у счёта — если суммы покрывают total.
+    Возвращает (сколько платежей отмечено, сколько счетов закрыто)."""
+    pid = self.get_project_id(project_name) if project_name else None
+    q = '''SELECT pp.id, pp.amount, pp.paid, pp.spec_id
+            FROM purchase_payments pp JOIN purchase_specifications s ON s.id=pp.spec_id'''
+    params = []
+    if pid:
+        q += " WHERE s.project_id=?"
+        params.append(pid)
+    marked = 0
+    specs = set()
+    with self.conn:
+        for r in self.conn.execute(q, params).fetchall():
+            specs.add(r["spec_id"])
+            if self._n(r["amount"]) > 0 and not r["paid"]:
+                self.conn.execute("UPDATE purchase_payments SET paid=1 WHERE id=?", (r["id"],))
+                marked += 1
+        closed = 0
+        for sid in specs:
+            s = self.conn.execute(
+                "SELECT total, quantity, price, fully_paid FROM purchase_specifications WHERE id=?",
+                (sid,)).fetchone()
+            if not s:
+                continue
+            total = self._n(s["total"]) or (self._n(s["quantity"]) * self._n(s["price"]))
+            if total <= 0:
+                items = self.conn.execute(
+                    "SELECT quantity, price, total FROM purchase_spec_items WHERE spec_id=?",
+                    (sid,)).fetchall()
+                total = sum(self._n(i["total"]) or
+                            self._n(i["quantity"]) * self._n(i["price"]) for i in items)
+            paid_sum = self._n(self.conn.execute(
+                "SELECT SUM(IFNULL(amount,0)) s FROM purchase_payments WHERE spec_id=?",
+                (sid,)).fetchone()["s"])
+            need = 1 if (total > 0 and paid_sum >= total - 0.01) else 0
+            if need != (s["fully_paid"] or 0):
+                self.conn.execute("UPDATE purchase_specifications SET fully_paid=? WHERE id=?",
+                                    (need, sid))
+                closed += 1
+    return marked, closed
+
 
 class DatabaseManager:
     def __init__(self, db_path):

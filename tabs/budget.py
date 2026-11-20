@@ -264,9 +264,18 @@ class BudgetTab(BaseTab):
                      f"{self._num(b.get('plan_buy', 0))} ₽   |   "
                      f"Баланс оплат: {self._num(b.get('balance', 0))} ₽")
         else:
+            unmarked = b.get("paid_sup_unmarked", 0.0)
+            extra = ""
+            if unmarked > 0:
+                extra = (f"\n⚠ Оплаты без галочки «Оплачен»: {self._num(unmarked)} ₽ — "
+                         f"учтены в бюджете, но отметьте их в карточках счетов.")
             self.lbl_split.config(
-                foreground="red",
-                text="⚠ Обновите get_project_budget в database.py — нет разбивки и коэффициента.")
+                foreground="#666" if not unmarked else "#b02a37",
+                text=f"Закупки: заказы {self._num(b.get('orders_base', 0))} ₽ × {coef:g} = "
+                     f"{self._num(b.get('plan_buy_orders', 0))} ₽  +  счета поставщиков "
+                     f"{self._num(b.get('plan_buy_specs', 0))} ₽  =  "
+                     f"{self._num(b.get('plan_buy', 0))} ₽   |   "
+                     f"Баланс оплат: {self._num(b.get('balance', 0))} ₽" + extra)            
 
         kinds = sorted({d[0] for d in b.get("detail", []) if d[0]})
         self.combo_kind["values"] = ["Все типы"] + kinds

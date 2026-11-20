@@ -5,6 +5,7 @@ venv/
 cloud_config.json
 cloud_sync/
 
+Обновление/
 
 # Кэш Python
 __pycache__/
