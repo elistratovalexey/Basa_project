@@ -1569,118 +1569,124 @@ class DatabaseManager:
             out[k].sort(key=lambda r: r.get("Дней", 0))
         return out
 
-    # --- Бюджет проекта (в рублях) ---
-    # --- Бюджет проекта (в рублях) ---
+
     # --- Бюджет проекта (в рублях) ---
     def get_project_budget(self, project_name, date_str=None, cost_coef=None):
-        """coef применяется ТОЛЬКО к строкам из orders (заказы).
-        Счета поставщиков (purchase_specifications) берутся как есть."""
         res = {"plan_sell": 0.0, "income": 0.0,
                "plan_buy": 0.0, "plan_buy_orders": 0.0, "plan_buy_specs": 0.0,
                "orders_base": 0.0, "orders_markup": 0.0,
-               "paid_sup": 0.0, "received": 0.0, "balance": 0.0,
-               "margin": 0.0, "plan_margin": 0.0,
-               "coef": 0.0, "detail": []}
+               "paid_sup": 0.0, "paid_sup_by_flag": 0.0, "paid_sup_unmarked": 0.0,
+               "received": 0.0, "balance": 0.0, "margin": 0.0, "plan_margin": 0.0,
+               "coef": 0.0, "detail": [], "detail_refs": []}
         pid = self.get_project_id(project_name)
         if not pid:
             return res
 
-        coef = float(cost_coef) if cost_coef else self.get_orders_cost_coef(project_name)
+        if cost_coef:
+            coef = float(cost_coef)
+        elif hasattr(self, "get_orders_cost_coef"):
+            coef = self.get_orders_cost_coef(project_name)
+        else:
+            coef = 1.8
         res["coef"] = coef
 
         def rub(v, cur):
             return v * self.get_rate(cur, date_str)
 
+        def add(kind, item, amount, cur, rv, ref):
+            res["detail"].append((kind, item, amount, cur, rv))
+            res["detail_refs"].append(ref)
+
         c = self.conn.cursor()
 
         # --- План продажи ---
-        for s in c.execute("SELECT name, quantity, price, currency FROM specifications WHERE project_id=?",
+        for s in c.execute("SELECT number, name, quantity, price, currency FROM specifications WHERE project_id=?",
                            (pid,)).fetchall():
             v = self._n(s["quantity"]) * self._n(s["price"])
-            res["plan_sell"] += rub(v, s["currency"])
-            res["detail"].append(("План (спецификация)", s["name"] or "", v,
-                                  s["currency"] or "", rub(v, s["currency"])))
+            rv = rub(v, s["currency"])
+            res["plan_sell"] += rv
+            add("План (спецификация)", s["name"] or "", v, s["currency"] or "", rv,
+                {"kind": "specification", "number": s["number"], "project": project_name})
 
         # --- Оплачено КЛИЕНТОМ ---
         for p in c.execute("SELECT number, amount, currency, paid FROM payments WHERE project_id=?",
                            (pid,)).fetchall():
             if p["paid"]:
                 v = self._n(p["amount"])
-                res["income"] += rub(v, p["currency"])
-                res["detail"].append(("Оплата заказчика", f"платёж №{p['number']}", v,
-                                      p["currency"] or "", rub(v, p["currency"])))
+                rv = rub(v, p["currency"])
+                res["income"] += rv
+                add("Оплата заказчика", f"платёж №{p['number']}", v, p["currency"] or "", rv,
+                    {"kind": "payment", "number": p["number"], "project": project_name})
 
-        # --- Закупки из ЗАКАЗОВ × коэффициент проекта ---
+        # --- Закупки из ЗАКАЗОВ × коэффициент ---
         mark = "" if abs(coef - 1.0) < 1e-9 else f" ×{coef:g}"
-        for o in c.execute("SELECT article, name, quantity, price, currency, received FROM orders WHERE project_name=?",
-                           (project_name,)).fetchall():
+        for o in c.execute("""SELECT order_batch_id, article, name, quantity, price, currency, received
+                              FROM orders WHERE project_name=?""", (project_name,)).fetchall():
             base = self._n(o["quantity"]) * self._n(o["price"])
             v = base * coef
             res["orders_base"] += rub(base, o["currency"])
             res["plan_buy_orders"] += rub(v, o["currency"])
             if o["received"]:
                 res["received"] += rub(v, o["currency"])
-            label = (o["article"] or o["name"] or "") + mark
-            res["detail"].append(("Закупка (заказ)", label, v, o["currency"] or "", rub(v, o["currency"])))
+            add("Закупка (заказ)", (o["article"] or o["name"] or "") + mark, v, o["currency"] or "",
+                rub(v, o["currency"]),
+                {"kind": "order", "batch_id": o["order_batch_id"],
+                 "article": o["article"] or "", "project": project_name})
         res["orders_markup"] = res["plan_buy_orders"] - res["orders_base"]
 
-        # --- Закупки из СПЕЦИФИКАЦИЙ ЗАКУПОК (без коэффициента) ---
+        # --- Закупки из СПЕЦИФИКАЦИЙ ЗАКУПОК (счета поставщиков) ---
         for s in c.execute("""SELECT id, supplier, name, quantity, price, total, currency, received
                               FROM purchase_specifications WHERE project_id=?""", (pid,)).fetchall():
             cur = s["currency"] or ""
-            base = self._n(s["total"])
-            if base <= 0:
-                base = self._n(s["quantity"]) * self._n(s["price"])
+            spec_dict = dict(s)
+            base = self._n(s["total"]) or (self._n(s["quantity"]) * self._n(s["price"]))
             label = f'{s["supplier"] or ""} · {s["name"] or "счёт #" + str(s["id"])}'.strip(" ·")
             if base > 0:
                 rv = rub(base, cur)
                 res["plan_buy_specs"] += rv
                 if s["received"]:
                     res["received"] += rv
-                res["detail"].append(("Закупка (спецификация)", label, base, cur, rv))
+                add("Закупка (спецификация)", label, base, cur, rv,
+                    {"kind": "purchase_spec", "spec_id": s["id"], "spec": spec_dict, "project": project_name})
             else:
                 for it in c.execute("""SELECT name, quantity, price, total
                                        FROM purchase_spec_items WHERE spec_id=?""", (s["id"],)).fetchall():
-                    iv = self._n(it["total"])
-                    if iv <= 0:
-                        iv = self._n(it["quantity"]) * self._n(it["price"])
+                    iv = self._n(it["total"]) or (self._n(it["quantity"]) * self._n(it["price"]))
                     if iv <= 0:
                         continue
                     rv = rub(iv, cur)
                     res["plan_buy_specs"] += rv
                     if s["received"]:
                         res["received"] += rv
-                    res["detail"].append(("Закупка (спецификация)",
-                                          f'{label} · {it["name"] or ""}'.strip(" ·"), iv, cur, rv))
+                    add("Закупка (спецификация)", f'{label} · {it["name"] or ""}'.strip(" ·"), iv, cur, rv,
+                        {"kind": "purchase_spec", "spec_id": s["id"], "spec": spec_dict, "project": project_name})
 
         res["plan_buy"] = res["plan_buy_orders"] + res["plan_buy_specs"]
 
-        # --- Оплачено ПОСТАВЩИКАМ (по факту введённых сумм платежей) ---
-        res["paid_sup_by_flag"] = 0.0      # только помеченные галочкой «Оплачен»
-        res["paid_sup_unmarked"] = 0.0     # суммы есть, галочка не стоит
+        # --- Оплачено ПОСТАВЩИКАМ (по факту суммы) ---
         for pay in c.execute('''SELECT pp.number, pp.amount, pp.currency, pp.paid,
-                                       pp.spec_id, s.supplier, s.name AS spec_name
+                                       pp.spec_id, s.supplier
              FROM purchase_payments pp JOIN purchase_specifications s ON s.id=pp.spec_id
              WHERE s.project_id=? ORDER BY pp.spec_id, pp.number''', (pid,)).fetchall():
             v = self._n(pay["amount"])
             if v <= 0:
-                continue                    # пустой платёж не считаем
+                continue
             rv = rub(v, pay["currency"])
             res["paid_sup"] += rv
             if pay["paid"]:
                 res["paid_sup_by_flag"] += rv
             else:
                 res["paid_sup_unmarked"] += rv
-            mark = "" if pay["paid"] else " (не отмечен «Оплачен»)"
-            label = f'{pay["supplier"] or ""} · счёт #{pay["spec_id"]} · платёж №{pay["number"]}{mark}'
-            res["detail"].append(("Оплата поставщику", label.strip(" ·"),
-                                  v, pay["currency"] or "", rv))
-            
-        res["balance"] = res["income"] - res["paid_sup"]      # баланс денег
-        res["margin"] = res["balance"]                        # маржа факт (по оплатам)
+            mk = "" if pay["paid"] else " (не отмечен «Оплачен»)"
+            label = f'{pay["supplier"] or ""} · счёт #{pay["spec_id"]} · платёж №{pay["number"]}{mk}'
+            add("Оплата поставщику", label.strip(" ·"), v, pay["currency"] or "", rv,
+                {"kind": "supplier_payment", "spec_id": pay["spec_id"], "project": project_name})
+
+        res["balance"] = res["income"] - res["paid_sup"]
+        res["margin"] = res["balance"]
         res["plan_margin"] = res["plan_sell"] - res["plan_buy"]
         return res
-        
+            
     # === План-Факт: справочники и карточки работ ===
     def _ensure_plan_fact_tables(self):
         c = self.conn.cursor()

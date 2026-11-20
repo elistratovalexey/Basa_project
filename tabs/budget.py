@@ -95,6 +95,10 @@ class BudgetTab(BaseTab):
                         ("paid_sup", "Оплачено Поставщикам", 150)):
             self.tree.heading(c, text=t)
             self.tree.column(c, width=w, anchor="w" if c in ("kind", "item") else "e")
+        self._row_refs = {}
+        self.tree.bind("<Double-1>", self._on_row_double_click)
+        self.tree.bind("<<TreeviewSelect>>", self._on_row_select)
+        self.tree.tag_configure("link", foreground="#0a58ca")
         sb = ttk.Scrollbar(det, orient=tk.VERTICAL, command=self.tree.yview)
         hs = ttk.Scrollbar(det, orient=tk.HORIZONTAL, command=self.tree.xview)
         self.tree.configure(yscroll=sb.set, xscroll=hs.set)
@@ -294,13 +298,16 @@ class BudgetTab(BaseTab):
     def _fill_detail(self):
         for i in self.tree.get_children():
             self.tree.delete(i)
+        self._row_refs = {}
         b = self._last or {}
         rows = b.get("detail", [])
-        kind_filter = self.combo_kind.get()
-        hide_zero = self.hide_zero.get()
-        shown = sum_client = sum_sup = 0.0
+        refs = b.get("detail_refs", [])
+        kind_filter = self.combo_kind.get() if hasattr(self, "combo_kind") else "Все типы"
+        hide_zero = self.hide_zero.get() if hasattr(self, "hide_zero") else False
         shown = 0
-        for kind, item, amount, cur, rub in rows:
+        sum_client = sum_sup = 0.0
+        for idx, row in enumerate(rows):
+            kind, item, amount, cur, rub = row
             if kind_filter and kind_filter != "Все типы" and kind != kind_filter:
                 continue
             if hide_zero and not (amount or rub):
@@ -309,16 +316,22 @@ class BudgetTab(BaseTab):
             ps = rub if kind == "Оплата поставщику" else 0.0
             sum_client += pc
             sum_sup += ps
-            self.tree.insert("", tk.END, tags=(self._tag_for(kind),), values=(
-                kind, item, self._num(amount), cur, self._num(rub),
-                self._num(pc) if pc else "", self._num(ps) if ps else ""))
+            vals = [kind, item, self._num(amount), cur, self._num(rub)]
+            if "paid_client" in self.tree["columns"]:
+                vals += [self._num(pc) if pc else "", self._num(ps) if ps else ""]
+            iid = self.tree.insert("", tk.END, tags=(self._tag_for(kind),), values=vals)
+            ref = refs[idx] if idx < len(refs) else None
+            if ref:
+                self._row_refs[iid] = ref
             shown += 1
-        if self.show_total_row.get() and shown:
+        if getattr(self, "show_total_row", None) and self.show_total_row.get() and shown:
             bal = sum_client - sum_sup
-            self.tree.insert("", tk.END, tags=("total",), values=(
-                "ИТОГО", f"Баланс: {self._num(bal)} ₽", "", "", "",
-                self._num(sum_client), self._num(sum_sup)))
-        self.lbl_count.config(text=f"показано {shown} из {len(rows)}")
+            tvals = ["ИТОГО", f"Баланс: {self._num(bal)} ₽", "", "", ""]
+            if "paid_client" in self.tree["columns"]:
+                tvals += [self._num(sum_client), self._num(sum_sup)]
+            self.tree.insert("", tk.END, tags=("total",), values=tvals)
+        if hasattr(self, "lbl_count"):
+            self.lbl_count.config(text=f"показано {shown} из {len(rows)} · двойной клик открывает документ")
 
     # ==================================================================
     def export(self):
@@ -377,3 +390,95 @@ class BudgetTab(BaseTab):
                                  f"Файл открыт в другой программе или нет прав:\n{path}")
         except Exception as e:
             messagebox.showerror("Ошибка", str(e))
+
+    # === Открытие документа по двойному клику на строку расшифровки ===
+    def _on_row_select(self, event=None):
+        sel = self.tree.selection()
+        if not sel or not hasattr(self, "lbl_split"):
+            return
+        ref = self._row_refs.get(sel[0])
+        if ref:
+            self.lbl_split.config(foreground="#0a58ca",
+                                  text="Двойной клик по строке откроет документ: " + self._doc_label(ref))
+
+    def _doc_label(self, ref):
+        k = ref.get("kind")
+        if k == "order":
+            return f"заказ №{ref.get('batch_id')} ({ref.get('article') or 'позиция'})"
+        if k == "purchase_spec":
+            return f"счёт поставщика #{ref.get('spec_id')}"
+        if k == "supplier_payment":
+            return f"оплаты по счёту #{ref.get('spec_id')}"
+        if k == "payment":
+            return f"платёж заказчика №{ref.get('number')}"
+        if k == "specification":
+            return f"спецификация №{ref.get('number')}"
+        return "документ"
+
+    def _on_row_double_click(self, event):
+        iid = self.tree.identify_row(event.y)
+        if not iid:
+            return
+        ref = self._row_refs.get(iid)
+        if not ref:
+            return  # итоговая строка — не документ
+        try:
+            self._open_source_document(ref)
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            messagebox.showerror("Ошибка", f"Не удалось открыть документ:\n{e}", parent=self.root)
+
+    def _open_source_document(self, ref):
+        kind = ref.get("kind")
+        if kind == "order":
+            from dialogs.order_dialog import OrderDialog
+            dlg = OrderDialog(self.root, self.db_manager, batch_id=ref.get("batch_id"),
+                              russian_holidays=getattr(self.app, "russian_holidays", None),
+                              project_name=ref.get("project") or self.app.current_project)
+            dlg.parent = self.app
+            self.root.wait_window(dlg)
+            self.load_budget()
+        elif kind in ("purchase_spec", "supplier_payment"):
+            self._open_spec_payments(ref.get("spec_id"))
+        elif kind == "payment":
+            self._goto_tab_row("finances_tab", "payment_tree", 0, ref.get("number"), "Финансы")
+        elif kind == "specification":
+            self._goto_tab_row("specification_tab", "spec_tree", 0, ref.get("number"), "Спецификация")
+        else:
+            messagebox.showinfo("Документ", "Для этой строки нет связанного документа.", parent=self.root)
+
+    def _open_spec_payments(self, spec_id):
+        from dialogs.payment_window_dialog import PaymentWindowDialog
+        spec = self.db_manager.get_purchase_spec_by_id(spec_id)
+        if not spec:
+            messagebox.showwarning("Счёт", f"Счёт #{spec_id} не найден.", parent=self.root)
+            return
+        spec_data = dict(spec)
+        dlg = PaymentWindowDialog(self.root, spec_id, spec_data, self.db_manager)
+        self.root.wait_window(dlg)
+        self.load_budget()
+
+    def _goto_tab_row(self, tab_attr, tree_attr, col, value, tab_title):
+        nb = getattr(self.app, "notebook", None)
+        tab = getattr(self.app, tab_attr, None)
+        if nb is not None and tab is not None:
+            frame = getattr(tab, "parent", None)
+            if frame is not None:
+                try:
+                    nb.select(frame)
+                except Exception:
+                    pass
+        tree = getattr(tab, tree_attr, None)
+        if tree is None:
+            tree = getattr(self.app, tree_attr, None)
+        if tree is not None:
+            for iid in tree.get_children():
+                vals = tree.item(iid)["values"]
+                if vals and str(vals[col]) == str(value):
+                    tree.selection_set(iid)
+                    tree.focus(iid)
+                    tree.see(iid)
+                    break
+        if hasattr(self.app, "log_action"):
+            self.app.log_action(f"Бюджет → переход к документу: {tab_title} №{value}")
