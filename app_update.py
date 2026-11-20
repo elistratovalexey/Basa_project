@@ -284,14 +284,27 @@ del "%~f0"
                       "logs", "backups", "cloud_sync", "update", ".github", "app"}
     _PUB_SKIP_FILES = {"projects.db", "config.json", "cloud_config.json",
                        "window_geometry.json", "translation_cache.json",
-                       "sync_state.json", "portable.txt"}
+                       "sync_state.json", "portable.txt",
+                       "unins000.exe", "unins000.dat"}
     _SRC_EXT = (".py", ".txt", ".spec", ".sh", ".bat", ".iss", ".yml")
 
     def detect_version(self, src_dir, kind):
-        """Версия из сборки: version.json (win) или version.py/VERSION (src)."""
-        src_dir = os.path.abspath(src_dir)
+        """Версия сборки: version.json в корне или в _internal (PyInstaller onedir)."""
+        src_dir = os.path.abspath(src_dir or "")
+        if not os.path.isdir(src_dir):
+            return ""
+        for rel in ("version.json", os.path.join("_internal", "version.json")):
+            p = os.path.join(src_dir, rel)
+            if os.path.isfile(p):
+                try:
+                    with open(p, encoding="utf-8") as f:
+                        v = json.load(f).get("version")
+                    if v:
+                        return str(v)
+                except Exception:
+                    pass
         for root, dirs, files in os.walk(src_dir):
-            dirs[:] = [d for d in dirs if d not in self._PUB_SKIP_DIRS or d == "_internal"]
+            dirs[:] = [d for d in dirs if d not in self._PUB_SKIP_DIRS]
             if "version.json" in files:
                 try:
                     with open(os.path.join(root, "version.json"), encoding="utf-8") as f:
@@ -302,8 +315,15 @@ del "%~f0"
                     pass
         if kind == "src":
             return current_version()
+        # указали папку запущенной установленной программы — её версия и есть версия сборки
+        try:
+            from paths import INSTALL_DIR
+            if os.path.normcase(src_dir) == os.path.normcase(os.path.abspath(INSTALL_DIR)):
+                return current_version()
+        except Exception:
+            pass
         return ""
-
+    
     def make_zip(self, src_dir, zip_path, kind):
         src_dir = os.path.abspath(src_dir)
         if not os.path.isdir(src_dir):

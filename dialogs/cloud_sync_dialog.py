@@ -10,7 +10,7 @@ import tempfile
 import threading
 import time
 import tkinter as tk
-from tkinter import ttk, messagebox
+from tkinter import ttk, messagebox, filedialog
 
 from cloud_sync import (WebDavError, save_config, load_config, apply_ops,
                         make_snapshot, DEFAULT_URL)
@@ -488,28 +488,41 @@ class CloudSyncDialog(tk.Toplevel):
             from paths import INSTALL_DIR
         except Exception:
             INSTALL_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        if kind == "win":
-            for cand in (os.path.join(INSTALL_DIR, "dist", "BasaProject"),
-                         os.path.join(os.getcwd(), "dist", "BasaProject")):
-                if os.path.exists(os.path.join(cand, "BasaProject.exe")):
-                    return cand
-            return os.path.join(INSTALL_DIR, "dist", "BasaProject")
+        if kind == "src":
+            return INSTALL_DIR
+        # 1) машина сборки: выход PyInstaller
+        for cand in (os.path.join(INSTALL_DIR, "dist", "BasaProject"),
+                     os.path.join(os.getcwd(), "dist", "BasaProject")):
+            if os.path.exists(os.path.join(cand, "BasaProject.exe")):
+                return cand
+        # 2) установленная программа: папка установки сама является дистрибутивом
+        if os.path.exists(os.path.join(INSTALL_DIR, "BasaProject.exe")):
+            return INSTALL_DIR
         return INSTALL_DIR
 
     def _pub_autodetect(self):
         kind = self.pub_kind.get()
-        if not self.pub_dir.get() or not os.path.isdir(self.pub_dir.get()):
+        cur = self.pub_dir.get()
+        if not cur or not os.path.isdir(cur):
             self.pub_dir.set(self._pub_default_dir(kind))
+        folder = self.pub_dir.get()
+        if not os.path.isdir(folder):
+            self.lbl_pub_found.config(text="папка не найдена — выберите через «Обзор…»",
+                                      foreground="red")
+            return
+        if kind == "win" and not os.path.exists(os.path.join(folder, "BasaProject.exe")):
+            self.lbl_pub_found.config(text="в папке нет BasaProject.exe", foreground="red")
+            return
         try:
-            found = self._updater().detect_version(self.pub_dir.get(), kind)
+            found = self._updater().detect_version(folder, kind)
         except Exception:
             found = ""
         if found:
             self.pub_version.set(found)
-            self.lbl_pub_found.config(text=f"найдена в сборке: {found}")
+            self.lbl_pub_found.config(text=f"найдена: {found}", foreground="#0a0")
         else:
-            self.lbl_pub_found.config(text="версия не найдена — укажите вручную")
-
+            self.lbl_pub_found.config(text="версия не найдена — укажите вручную", foreground="red")
+            
     def _pub_browse(self):
         d = filedialog.askdirectory(title="Папка сборки", parent=self,
                                     initialdir=self.pub_dir.get() or None)
