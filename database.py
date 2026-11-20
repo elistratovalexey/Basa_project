@@ -90,6 +90,8 @@ class DatabaseManager:
         self._ensure_purchase_spec_items_table()
         self._ensure_purchase_spec_delivery_address()
         self._ensure_suppliers_columns()
+        self._ensure_kd_columns()          # ← добавить
+        self._ensure_indexes()        
         self.ensure_column("projects", "orders_cost_coef", "REAL DEFAULT 1.8")        
         self._ensure_indexes()
 
@@ -112,6 +114,15 @@ class DatabaseManager:
             except sqlite3.OperationalError as e:
                 print(f"Индекс не создан: {e}")
         self.conn.commit()
+
+    def _ensure_kd_columns(self):
+        c = self.conn.cursor()
+        c.execute("PRAGMA table_info(kd_directory)")
+        cols = [r[1] for r in c.fetchall()]
+        if "kd_name" not in cols:
+            c.execute("ALTER TABLE kd_directory ADD COLUMN kd_name TEXT DEFAULT ''")
+            self.conn.commit()
+            print("Миграция: добавлена колонка kd_directory.kd_name")   
 
     # === Резервное копирование ===
     def backup(self, backup_dir, keep=15, prefix="projects"):
@@ -1032,17 +1043,23 @@ class DatabaseManager:
             c.execute("SELECT * FROM kd_directory ORDER BY kd_number")
         return c.fetchall()
 
-    def add_kd(self, kd_number, project_name=""):
+    def add_kd(self, kd_number, project_name="", kd_name=""):
         c = self.conn.cursor()
-        c.execute("INSERT INTO kd_directory (kd_number, project_name) VALUES (?, ?)",
-                  (kd_number, project_name))
+        c.execute("INSERT INTO kd_directory (kd_number, project_name, kd_name) VALUES (?, ?, ?)",
+                  (kd_number, project_name, kd_name))
+        self.conn.commit()
+        return c.lastrowid
+
+    def update_kd(self, kd_id, kd_number, kd_name="", project_name=""):
+        self.conn.execute("UPDATE kd_directory SET kd_number=?, kd_name=?, project_name=? WHERE id=?",
+                          (kd_number, kd_name, project_name, kd_id))
         self.conn.commit()
 
     def delete_kd(self, kd_number):
         c = self.conn.cursor()
         c.execute("DELETE FROM kd_directory WHERE kd_number=?", (kd_number,))
         self.conn.commit()
-
+        
     # === Поставщики ===
     def get_suppliers(self):
         c = self.conn.cursor()
