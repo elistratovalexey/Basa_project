@@ -85,6 +85,7 @@ class DatabaseManager:
         self._ensure_article_aliases()
         self._ensure_plan_fact_tables()
         self._ensure_plan_fact_v2()
+        self._ensure_plan_fact_v3()
         self._ensure_v19()
         self._ensure_delivery_addresses_table()
         self._ensure_purchase_payments_ext_columns()
@@ -95,6 +96,274 @@ class DatabaseManager:
         self._ensure_indexes()        
         self.ensure_column("projects", "orders_cost_coef", "REAL DEFAULT 1.8")        
         self._ensure_indexes()
+
+        # ================= План-Факт v3 =================
+    PF_AUDIT_FIELDS = ("start_plan", "end_plan", "start_fact", "end_fact",
+                       "duration_qty", "duration_unit", "status", "responsible",
+                       "progress", "is_blocked", "delay_reason", "cost_weight")
+
+    def _ensure_plan_fact_v3(self):
+        if hasattr(self, "_ensure_plan_fact_v2"):
+            self._ensure_plan_fact_v2()
+        c = self.conn.cursor()
+        c.execute("PRAGMA table_info(plan_fact)")
+        cols = [r[1] for r in c.fetchall()]
+        for col, typ in (("is_blocked", "INTEGER DEFAULT 0"),
+                         ("delay_reason", "TEXT DEFAULT ''"),
+                         ("blocked_note", "TEXT DEFAULT ''"),
+                         ("link_order_batch", "INTEGER DEFAULT 0"),
+                         ("auto_dates", "INTEGER DEFAULT 0"),
+                         ("cost_weight", "REAL DEFAULT 0"),
+                         ("notify_days", "INTEGER DEFAULT 3"),
+                         ("baseline_start", "TEXT DEFAULT ''"),
+                         ("baseline_end", "TEXT DEFAULT ''")):
+            if col not in cols:
+                c.execute(f"ALTER TABLE plan_fact ADD COLUMN {col} {typ}")
+        c.execute('''CREATE TABLE IF NOT EXISTS delay_reasons (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE NOT NULL)''')
+        c.execute("SELECT COUNT(*) FROM delay_reasons")
+        if c.fetchone()[0] == 0:
+            for n in ("Нет материалов", "Нет КД", "Ожидание оплаты", "Нет ответа поставщика",
+                      "Задержка производства", "Нет транспорта", "Нет людей", "Прочее"):
+                c.execute("INSERT OR IGNORE INTO delay_reasons (name) VALUES (?)", (n,))
+        c.execute('''CREATE TABLE IF NOT EXISTS plan_fact_audit (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts TEXT, project_id INTEGER, work_id INTEGER, number INTEGER,
+            field TEXT, old_value TEXT, new_value TEXT,
+            author TEXT DEFAULT '', device TEXT DEFAULT '')''')
+        c.execute("CREATE INDEX IF NOT EXISTS idx_pf_audit ON plan_fact_audit(project_id, work_id)")
+        self.conn.commit()
+
+    # --- Причины задержек ---
+    def get_delay_reasons(self):
+        return [r[0] for r in self.conn.execute("SELECT name FROM delay_reasons ORDER BY name")]
+
+    def add_delay_reason(self, name):
+        name = (name or "").strip()
+        if not name:
+            return False
+        try:
+            self.conn.execute("INSERT INTO delay_reasons (name) VALUES (?)", (name,))
+            self.conn.commit()
+            return True
+        except sqlite3.IntegrityError:
+            return False
+
+    def rename_delay_reason(self, old, new):
+        new = (new or "").strip()
+        if not new or old == new:
+            return False
+        try:
+            with self.conn:
+                self.conn.execute("UPDATE delay_reasons SET name=? WHERE name=?", (new, old))
+                self.conn.execute("UPDATE plan_fact SET delay_reason=? WHERE delay_reason=?", (new, old))
+            return True
+        except sqlite3.IntegrityError:
+            return False
+
+    def delete_delay_reason(self, name):
+        self.conn.execute("DELETE FROM delay_reasons WHERE name=?", (name,))
+        self.conn.commit()
+
+    # --- Baseline ---
+    def pf_set_baseline(self, project_id, only_empty=False):
+        n = 0
+        for r in self.get_plan_fact(project_id):
+            has = (r["baseline_end"] or "") if "baseline_end" in r.keys() else ""
+            if only_empty and has:
+                continue
+            self.conn.execute("UPDATE plan_fact SET baseline_start=?, baseline_end=? WHERE id=?",
+                              (r["start_plan"] or "", r["end_plan"] or "", r["id"]))
+            n += 1
+        self.conn.commit()
+        return n
+
+    def pf_reset_baseline(self, project_id):
+        self.conn.execute("UPDATE plan_fact SET baseline_start='', baseline_end='' WHERE project_id=?",
+                          (project_id,))
+        self.conn.commit()
+
+    # --- Аудит ---
+    def _pf_audit_write(self, project_id, work_id, number, changes):
+        if not changes:
+            return
+        import socket
+        try:
+            author = os.environ.get("USERNAME") or os.environ.get("USER") or ""
+        except Exception:
+            author = ""
+        ts = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
+        dev = socket.gethostname()
+        with self.conn:
+            for field, (old, new) in changes.items():
+                self.conn.execute("""INSERT INTO plan_fact_audit
+                    (ts, project_id, work_id, number, field, old_value, new_value, author, device)
+                    VALUES (?,?,?,?,?,?,?,?,?)""",
+                    (ts, project_id, work_id, number, field, str(old or ""), str(new or ""), author, dev))
+
+    def pf_audit(self, project_id, work_id=None, limit=500):
+        if work_id:
+            return self.conn.execute("""SELECT * FROM plan_fact_audit
+                WHERE project_id=? AND work_id=? ORDER BY id DESC LIMIT ?""",
+                (project_id, work_id, limit)).fetchall()
+        return self.conn.execute("""SELECT * FROM plan_fact_audit
+            WHERE project_id=? ORDER BY id DESC LIMIT ?""", (project_id, limit)).fetchall()
+
+    # --- Даты и стоимость из заказов ---
+    def pf_sync_from_orders(self, project_id):
+        n = 0
+        for r in self.get_plan_fact(project_id):
+            batch = int(r["link_order_batch"] or 0) if "link_order_batch" in r.keys() else 0
+            auto = int(r["auto_dates"] or 0) if "auto_dates" in r.keys() else 0
+            if not batch or not auto:
+                continue
+            st = self.get_order_status(batch) or {}
+            end = st.get("eta_date") or ""
+            if not end:
+                row = self.conn.execute("""SELECT MAX(max_delivery_date) d, MAX(order_date) od,
+                                                  MAX(payment_date) pd
+                                           FROM orders WHERE order_batch_id=?""", (batch,)).fetchone()
+                end = (row["d"] or "") if row else ""
+                start = (row["pd"] or row["od"] or "") if row else ""
+            else:
+                start = st.get("confirm_date") or ""
+            changes = {}
+            if end and end != (r["end_plan"] or ""):
+                changes["end_plan"] = (r["end_plan"], end)
+            if start and start != (r["start_plan"] or ""):
+                changes["start_plan"] = (r["start_plan"], start)
+            if changes:
+                self.conn.execute("UPDATE plan_fact SET start_plan=COALESCE(NULLIF(?,''),start_plan),
+                                   end_plan=COALESCE(NULLIF(?,''),end_plan) WHERE id=?",
+                                  (start, end, r["id"]))
+                self._pf_audit_write(project_id, r["id"], r["number"], changes)
+                n += 1
+        self.conn.commit()
+        return n
+
+    def pf_cost_from_orders(self, project_id):
+        n = 0
+        for r in self.get_plan_fact(project_id):
+            batch = int(r["link_order_batch"] or 0) if "link_order_batch" in r.keys() else 0
+            if not batch:
+                continue
+            total = 0.0
+            for o in self.conn.execute("""SELECT quantity, price, currency FROM orders
+                                          WHERE order_batch_id=?""", (batch,)):
+                total += self._n(o["quantity"]) * self._n(o["price"]) * self.get_rate(o["currency"])
+            if total > 0 and abs(total - float(r["cost_weight"] or 0)) > 0.01:
+                self.conn.execute("UPDATE plan_fact SET cost_weight=? WHERE id=?", (total, r["id"]))
+                n += 1
+        self.conn.commit()
+        return n
+
+    # --- Загрузка ответственных ---
+    def pf_workload(self, project_id, max_parallel=3):
+        rows = [dict(r) for r in self.get_plan_fact(project_id)]
+        met = self.pf_metrics(project_id)["rows"]
+        groups = {}
+        for r in rows:
+            done = (r.get("status") or "") in ("Выполнено", "Завершено")
+            if done:
+                continue
+            name = (r.get("responsible") or "— не назначен —").strip() or "— не назначен —"
+            g = groups.setdefault(name, {"works": 0, "days": 0.0, "overdue": 0, "blocked": 0,
+                                         "intervals": [], "numbers": []})
+            g["works"] += 1
+            g["numbers"].append(str(r["number"]))
+            unit = r.get("duration_unit") or "Календарные дни"
+            q = float(r.get("duration_qty") or 0)
+            g["days"] += q * 7 if unit == "Недели" else q
+            mm = met.get(r["id"], {})
+            if mm.get("light") == "overdue":
+                g["overdue"] += 1
+            if r.get("is_blocked"):
+                g["blocked"] += 1
+            s, e = self.pf_parse(r.get("start_plan")), self.pf_parse(r.get("end_plan"))
+            if s and e:
+                g["intervals"].append((s.date(), e.date()))
+        out = []
+        for name, g in groups.items():
+            events = []
+            for s, e in g["intervals"]:
+                events.append((s, 1))
+                events.append((e, -1))
+            events.sort()
+            cur = peak = 0
+            for _, d in events:
+                cur += d
+                peak = max(peak, cur)
+            overload = peak > max_parallel or g["days"] > 60
+            out.append({"name": name, "works": g["works"], "days": round(g["days"], 1),
+                        "overdue": g["overdue"], "blocked": g["blocked"], "peak": peak,
+                        "overload": overload, "numbers": ", ".join(g["numbers"])})
+        out.sort(key=lambda x: (-x["overload"], -x["peak"], -x["days"]))
+        return out
+
+    # --- Аналитика задержек ---
+    def pf_delay_analytics(self, project_id):
+        rows = [dict(r) for r in self.get_plan_fact(project_id)]
+        met = self.pf_metrics(project_id)["rows"]
+        groups = {}
+        for r in rows:
+            mm = met.get(r["id"], {})
+            late = (mm.get("delta") or 0) > 0
+            if not (r.get("is_blocked") or late or mm.get("late_start")):
+                continue
+            reason = (r.get("delay_reason") or "").strip() or "— причина не указана —"
+            g = groups.setdefault(reason, {"count": 0, "days": 0, "blocked": 0, "numbers": []})
+            g["count"] += 1
+            g["days"] += max(0, mm.get("delta") or 0)
+            g["blocked"] += 1 if r.get("is_blocked") else 0
+            g["numbers"].append(str(r["number"]))
+        out = [{"reason": k, "count": v["count"], "days": v["days"], "blocked": v["blocked"],
+                "numbers": ", ".join(v["numbers"])} for k, v in groups.items()]
+        out.sort(key=lambda x: (-x["days"], -x["count"]))
+        return out
+
+    # --- Уведомления ---
+    def pf_notifications(self, project_id=None, days_ahead=3):
+        today = datetime.now().date()
+        projects = ([{"id": project_id, "name": self.conn.execute(
+            "SELECT name FROM projects WHERE id=?", (project_id,)).fetchone()["name"]}]
+            if project_id else [dict(p) for p in self.get_all_projects()])
+        out = []
+        for p in projects:
+            if not p.get("id"):
+                continue
+            met = self.pf_metrics(p["id"])["rows"]
+            for r in self.get_plan_fact(p["id"]):
+                r = dict(r)
+                done = (r.get("status") or "") in ("Выполнено", "Завершено")
+                if done:
+                    continue
+                mm = met.get(r["id"], {})
+                ahead = int(r.get("notify_days") or days_ahead)
+                sp, ep = self.pf_parse(r.get("start_plan")), self.pf_parse(r.get("end_plan"))
+                base = {"project": p["name"], "number": r["number"], "name": r.get("name") or "",
+                        "responsible": r.get("responsible") or "—", "work_id": r["id"]}
+                if r.get("is_blocked"):
+                    out.append({**base, "kind": "blocked", "days": 0,
+                                "text": f'🔒 заблокирована: {r.get("delay_reason") or "причина не указана"}'})
+                if sp and not r.get("start_fact"):
+                    d = (sp.date() - today).days
+                    if d < 0:
+                        out.append({**base, "kind": "late_start", "days": -d,
+                                    "text": f"старт просрочен на {-d} дн (план {r.get('start_plan')})"})
+                    elif d <= 1:
+                        out.append({**base, "kind": "start_soon", "days": d,
+                                    "text": "старт сегодня" if d == 0 else "старт завтра"})
+                if ep:
+                    d = (ep.date() - today).days
+                    if d < 0:
+                        out.append({**base, "kind": "overdue", "days": -d,
+                                    "text": f"ПРОСРОЧКА {-d} дн (дедлайн {r.get('end_plan')})"})
+                    elif d <= ahead:
+                        out.append({**base, "kind": "deadline_soon", "days": d,
+                                    "text": f"дедлайн через {d} дн ({r.get('end_plan')})"})
+        rank = {"overdue": 0, "late_start": 1, "blocked": 2, "deadline_soon": 3, "start_soon": 4}
+        out.sort(key=lambda x: (rank.get(x["kind"], 9), -x["days"]))
+        return out
 
     # === Индексы ===
     def _ensure_indexes(self):
@@ -1824,20 +2093,33 @@ class DatabaseManager:
         self.conn.commit()
         return cur.lastrowid
 
+        PF_FIELDS = ("name", "work_type", "status", "note", "subproject", "responsible",
+                 "start_plan", "start_fact", "duration_qty", "duration_unit",
+                 "end_plan", "end_fact", "comment", "progress", "is_milestone", "parent_id",
+                 "is_blocked", "delay_reason", "blocked_note", "link_order_batch",
+                 "auto_dates", "cost_weight", "notify_days")
+
     def update_plan_fact(self, project_id, number, data):
         cur = self.conn.execute("SELECT * FROM plan_fact WHERE project_id=? AND number=?",
                                 (project_id, number)).fetchone()
         if not cur:
             return
-        d = {}
+        keys = cur.keys()
+        d, changes = {}, {}
         for k in self.PF_FIELDS:
-            d[k] = data.get(k, cur[k] if k in cur.keys() else "")
+            new = data.get(k, cur[k] if k in keys else "")
+            d[k] = new
+            if k in self.PF_AUDIT_FIELDS and k in keys and str(cur[k] or "") != str(new or ""):
+                changes[k] = (cur[k], new)
         d["end_plan"] = data.get("end_plan") or self.pf_end_plan(
             d["start_plan"], d["duration_qty"], d["duration_unit"])
+        if "end_plan" in keys and str(cur["end_plan"] or "") != str(d["end_plan"] or ""):
+            changes["end_plan"] = (cur["end_plan"], d["end_plan"])
         sets = ",".join(f"{k}=?" for k in self.PF_FIELDS)
         self.conn.execute(f"UPDATE plan_fact SET {sets} WHERE project_id=? AND number=?",
                           [d[k] for k in self.PF_FIELDS] + [project_id, number])
         self.conn.commit()
+        self._pf_audit_write(project_id, cur["id"], number, changes)
 
     def delete_plan_fact(self, project_id, number):
         c = self.conn.cursor()
@@ -2455,8 +2737,7 @@ class DatabaseManager:
     def pf_metrics(self, project_id):
         rows = [dict(r) for r in self.get_plan_fact(project_id)]
         today = datetime.now().date()
-        links = {}
-        succ = {}
+        links, succ = {}, {}
         for l in self.get_pf_links(project_id):
             links.setdefault(l["work_id"], []).append(dict(l))
             succ.setdefault(l["depends_on"], []).append(l["work_id"])
@@ -2465,21 +2746,24 @@ class DatabaseManager:
         ends = [e for e in ends if e]
         project_end = max(ends) if ends else None
 
-        out, total_w, done_w = {}, 0.0, 0.0
+        out = {}
+        tw = dw = cw = ccw = 0.0
         summary = {"total": len(rows), "done": 0, "in_work": 0, "overdue": 0,
-                   "late_start": 0, "critical": 0, "progress": 0}
+                   "late_start": 0, "critical": 0, "blocked": 0,
+                   "progress": 0, "progress_cost": 0, "base_shift": 0}
         for r in rows:
             wid = r["id"]
             sp, sf = self.pf_parse(r.get("start_plan")), self.pf_parse(r.get("start_fact"))
             ep, ef = self.pf_parse(r.get("end_plan")), self.pf_parse(r.get("end_fact"))
+            be = self.pf_parse(r.get("baseline_end"))
             dur = float(r.get("duration_qty") or 0)
+            cost = float(r.get("cost_weight") or 0)
             weight = dur if dur > 0 else 1.0
             done = (r.get("status") or "") in ("Выполнено", "Завершено")
-            prog = int(r.get("progress") or 0)
-            if done:
-                prog = 100
-            total_w += weight
-            done_w += weight * prog / 100.0
+            prog = 100 if done else int(r.get("progress") or 0)
+            tw += weight; dw += weight * prog / 100.0
+            if cost > 0:
+                cw += cost; ccw += cost * prog / 100.0
 
             delta = None
             if ef and ep:
@@ -2488,27 +2772,31 @@ class DatabaseManager:
                 delta = (today - ep.date()).days
             elif done:
                 delta = 0
+            base_shift = (ep.date() - be.date()).days if (ep and be) else None
+            if base_shift:
+                summary["base_shift"] = max(summary["base_shift"], base_shift)
 
             forecast = ""
             if sf and not done:
                 f = self.pf_shift(sf, dur, r.get("duration_unit"))
                 forecast = f.strftime("%d.%m.%Y") if f else ""
-
             late_start = bool(sp and not sf and sp.date() < today and not done)
 
             slack = None
             if ep:
                 if succ.get(wid):
-                    s_starts = [self.pf_parse(by_id[s].get("start_plan")) for s in succ[wid] if s in by_id]
-                    s_starts = [x for x in s_starts if x]
-                    if s_starts:
-                        slack = (min(s_starts).date() - ep.date()).days - 1
+                    ss = [self.pf_parse(by_id[s].get("start_plan")) for s in succ[wid] if s in by_id]
+                    ss = [x for x in ss if x]
+                    if ss:
+                        slack = (min(ss).date() - ep.date()).days - 1
                 elif project_end:
                     slack = (project_end.date() - ep.date()).days
             critical = (slack is not None and slack <= 0 and not done)
 
             if done:
                 light = "done"
+            elif r.get("is_blocked"):
+                light = "blocked"
             elif delta is not None and delta > 0:
                 light = "overdue"
             elif ep and 0 <= (ep.date() - today).days <= 3:
@@ -2517,18 +2805,20 @@ class DatabaseManager:
                 light = "ok"
 
             out[wid] = {"delta": delta, "forecast": forecast, "late_start": late_start,
-                        "slack": slack, "critical": critical, "light": light,
-                        "progress": prog,
+                        "slack": slack, "critical": critical, "light": light, "progress": prog,
+                        "base_shift": base_shift, "blocked": bool(r.get("is_blocked")),
+                        "cost": cost,
                         "depends": ", ".join(f'№{by_id[l["depends_on"]]["number"]}({l["link_type"]})'
-                                             for l in links.get(wid, [])
-                                             if l["depends_on"] in by_id) or "—"}
+                                             for l in links.get(wid, []) if l["depends_on"] in by_id) or "—"}
             summary["done"] += 1 if done else 0
             summary["in_work"] += 1 if (not done and sf) else 0
             summary["overdue"] += 1 if light == "overdue" else 0
             summary["late_start"] += 1 if late_start else 0
             summary["critical"] += 1 if critical else 0
-        summary["progress"] = round(done_w / total_w * 100, 1) if total_w else 0.0
-        return {"rows": out, "summary": summary}    
+            summary["blocked"] += 1 if r.get("is_blocked") else 0
+        summary["progress"] = round(dw / tw * 100, 1) if tw else 0.0
+        summary["progress_cost"] = round(ccw / cw * 100, 1) if cw else summary["progress"]
+        return {"rows": out, "summary": summary}
 
     def close(self):
         if self.conn:
