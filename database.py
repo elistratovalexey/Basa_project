@@ -2,7 +2,7 @@ import sqlite3
 import os
 import glob
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 
 
 def _date_sort_key(date_str):
@@ -84,6 +84,7 @@ class DatabaseManager:
         self._ensure_item_statuses()
         self._ensure_article_aliases()
         self._ensure_plan_fact_tables()
+        self._ensure_plan_fact_v2()
         self._ensure_v19()
         self._ensure_delivery_addresses_table()
         self._ensure_purchase_payments_ext_columns()
@@ -1805,20 +1806,37 @@ class DatabaseManager:
         c.execute("SELECT * FROM plan_fact WHERE project_id=? ORDER BY number", (project_id,))
         return c.fetchall()
 
+    PF_FIELDS = ("name", "work_type", "status", "note", "subproject", "responsible",
+                 "start_plan", "start_fact", "duration_qty", "duration_unit",
+                 "end_plan", "end_fact", "comment", "progress", "is_milestone", "parent_id")
+
     def add_plan_fact(self, project_id, data):
-        c = self.conn.cursor()
-        c.execute('''INSERT INTO plan_fact (project_id, number, name, work_type, status, note)
-                     VALUES (?, ?, ?, ?, ?, ?)''',
-                  (project_id, data.get('number', 1), data.get('name', ''),
-                   data.get('work_type', ''), data.get('status', ''), data.get('note', '')))
+        d = {k: data.get(k, "") for k in self.PF_FIELDS}
+        d["duration_unit"] = d["duration_unit"] or "Календарные дни"
+        d["end_plan"] = d["end_plan"] or self.pf_end_plan(d["start_plan"], d["duration_qty"], d["duration_unit"])
+        if d["start_plan"] and not data.get("baseline_start"):
+            self.conn.execute("SELECT 1")  # baseline задаётся ниже после вставки
+        cols = ("project_id", "number") + self.PF_FIELDS + ("baseline_start", "baseline_end")
+        vals = [project_id, data.get("number", 1)] + [d[k] for k in self.PF_FIELDS] + \
+               [d["start_plan"], d["end_plan"]]
+        ph = ",".join("?" for _ in cols)
+        cur = self.conn.execute(f"INSERT INTO plan_fact ({','.join(cols)}) VALUES ({ph})", vals)
         self.conn.commit()
+        return cur.lastrowid
 
     def update_plan_fact(self, project_id, number, data):
-        c = self.conn.cursor()
-        c.execute('''UPDATE plan_fact SET name=?, work_type=?, status=?, note=?
-                     WHERE project_id=? AND number=?''',
-                  (data.get('name', ''), data.get('work_type', ''), data.get('status', ''),
-                   data.get('note', ''), project_id, number))
+        cur = self.conn.execute("SELECT * FROM plan_fact WHERE project_id=? AND number=?",
+                                (project_id, number)).fetchone()
+        if not cur:
+            return
+        d = {}
+        for k in self.PF_FIELDS:
+            d[k] = data.get(k, cur[k] if k in cur.keys() else "")
+        d["end_plan"] = data.get("end_plan") or self.pf_end_plan(
+            d["start_plan"], d["duration_qty"], d["duration_unit"])
+        sets = ",".join(f"{k}=?" for k in self.PF_FIELDS)
+        self.conn.execute(f"UPDATE plan_fact SET {sets} WHERE project_id=? AND number=?",
+                          [d[k] for k in self.PF_FIELDS] + [project_id, number])
         self.conn.commit()
 
     def delete_plan_fact(self, project_id, number):
@@ -2186,6 +2204,331 @@ class DatabaseManager:
     def set_batch_item_status(self, batch_id, status):
         self.conn.execute("UPDATE orders SET item_status=? WHERE order_batch_id=?", (status, batch_id))
         self.conn.commit()
+
+    # ================= План-Факт v2 =================
+    PF_UNITS = ["Календарные дни", "Рабочие дни", "Недели"]
+    PF_LINK_TYPES = ["FS", "SS", "FF", "SF", "NONE"]
+
+    def _ensure_plan_fact_v2(self):
+        c = self.conn.cursor()
+        c.execute("PRAGMA table_info(plan_fact)")
+        cols = [r[1] for r in c.fetchall()]
+        for col, typ in (("subproject", "TEXT DEFAULT ''"),
+                         ("responsible", "TEXT DEFAULT ''"),
+                         ("start_plan", "TEXT DEFAULT ''"),
+                         ("start_fact", "TEXT DEFAULT ''"),
+                         ("duration_qty", "REAL DEFAULT 0"),
+                         ("duration_unit", "TEXT DEFAULT 'Календарные дни'"),
+                         ("end_plan", "TEXT DEFAULT ''"),
+                         ("end_fact", "TEXT DEFAULT ''"),
+                         ("comment", "TEXT DEFAULT ''"),
+                         ("progress", "INTEGER DEFAULT 0"),
+                         ("is_milestone", "INTEGER DEFAULT 0"),
+                         ("parent_id", "INTEGER DEFAULT 0"),
+                         ("baseline_start", "TEXT DEFAULT ''"),
+                         ("baseline_end", "TEXT DEFAULT ''")):
+            if col not in cols:
+                c.execute(f"ALTER TABLE plan_fact ADD COLUMN {col} {typ}")
+        c.execute('''CREATE TABLE IF NOT EXISTS responsibles (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT UNIQUE NOT NULL,
+            position TEXT DEFAULT '',
+            email TEXT DEFAULT '',
+            phone TEXT DEFAULT '',
+            note TEXT DEFAULT '')''')
+        c.execute('''CREATE TABLE IF NOT EXISTS plan_fact_links (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_id INTEGER NOT NULL,
+            work_id INTEGER NOT NULL,
+            depends_on INTEGER NOT NULL,
+            link_type TEXT DEFAULT 'FS',
+            lag_days INTEGER DEFAULT 0,
+            UNIQUE(work_id, depends_on))''')
+        c.execute("CREATE INDEX IF NOT EXISTS idx_pf_links ON plan_fact_links(project_id, work_id)")
+        self.conn.commit()
+
+    # --- Ответственные ---
+    def get_responsibles(self):
+        return self.conn.execute("SELECT * FROM responsibles ORDER BY name").fetchall()
+
+    def add_responsible(self, name, position="", email="", phone="", note=""):
+        name = (name or "").strip()
+        if not name:
+            return False
+        try:
+            self.conn.execute("""INSERT INTO responsibles (name, position, email, phone, note)
+                                 VALUES (?,?,?,?,?)""", (name, position, email, phone, note))
+            self.conn.commit()
+            return True
+        except sqlite3.IntegrityError:
+            return False
+
+    def update_responsible(self, rid, name, position="", email="", phone="", note=""):
+        try:
+            self.conn.execute("""UPDATE responsibles SET name=?, position=?, email=?, phone=?, note=?
+                                 WHERE id=?""", (name, position, email, phone, note, rid))
+            self.conn.commit()
+            return True
+        except sqlite3.IntegrityError:
+            return False
+
+    def rename_responsible(self, old, new):
+        new = (new or "").strip()
+        if not new or old == new:
+            return False
+        try:
+            with self.conn:
+                self.conn.execute("UPDATE responsibles SET name=? WHERE name=?", (new, old))
+                self.conn.execute("UPDATE plan_fact SET responsible=? WHERE responsible=?", (new, old))
+            return True
+        except sqlite3.IntegrityError:
+            return False
+
+    def delete_responsible(self, rid):
+        self.conn.execute("DELETE FROM responsibles WHERE id=?", (rid,))
+        self.conn.commit()
+
+    # --- Даты и длительности ---
+    @staticmethod
+    def pf_parse(s):
+        s = (s or "").strip()
+        if not s:
+            return None
+        for fmt in ("%d.%m.%Y", "%d.%m.%y", "%Y-%m-%d"):
+            try:
+                return datetime.strptime(s, fmt)
+            except ValueError:
+                continue
+        return None
+
+    def pf_shift(self, start, qty, unit):
+        """Дата окончания = начало + длительность."""
+        if start is None:
+            return None
+        try:
+            n = int(float(qty or 0))
+        except (TypeError, ValueError):
+            n = 0
+        if n <= 0:
+            return start
+        if unit == "Недели":
+            return start + timedelta(days=n * 7)
+        if unit == "Рабочие дни":
+            try:
+                import holidays as _h
+                from utils import add_working_days_with_holidays
+                return add_working_days_with_holidays(start, n, _h.Russia())
+            except Exception:
+                d, added = start, 0
+                while added < n:
+                    d += timedelta(days=1)
+                    if d.weekday() < 5:
+                        added += 1
+                return d
+        return start + timedelta(days=n)
+
+    def pf_end_plan(self, start_plan, qty, unit):
+        d = self.pf_shift(self.pf_parse(start_plan), qty, unit)
+        return d.strftime("%d.%m.%Y") if d else ""
+
+    # --- Зависимости ---
+    def get_pf_links(self, project_id, work_id=None):
+        if work_id is None:
+            return self.conn.execute(
+                "SELECT * FROM plan_fact_links WHERE project_id=? ORDER BY work_id", (project_id,)).fetchall()
+        return self.conn.execute(
+            "SELECT * FROM plan_fact_links WHERE project_id=? AND work_id=?",
+            (project_id, work_id)).fetchall()
+
+    def add_pf_link(self, project_id, work_id, depends_on, link_type="FS", lag_days=0):
+        if int(work_id) == int(depends_on):
+            return False, "Работа не может зависеть от самой себя"
+        if link_type not in self.PF_LINK_TYPES:
+            link_type = "FS"
+        # проверка обратного цикла
+        if self._pf_creates_cycle(project_id, work_id, depends_on):
+            return False, "Такая связь создаёт цикл зависимостей"
+        try:
+            self.conn.execute("""INSERT OR REPLACE INTO plan_fact_links
+                (project_id, work_id, depends_on, link_type, lag_days) VALUES (?,?,?,?,?)""",
+                (project_id, work_id, depends_on, link_type, int(lag_days or 0)))
+            self.conn.commit()
+            return True, ""
+        except sqlite3.Error as e:
+            return False, str(e)
+
+    def delete_pf_link(self, link_id):
+        self.conn.execute("DELETE FROM plan_fact_links WHERE id=?", (link_id,))
+        self.conn.commit()
+
+    def _pf_creates_cycle(self, project_id, work_id, depends_on):
+        """Есть ли путь depends_on → ... → work_id (тогда новая связь замкнёт цикл)."""
+        links = {}
+        for r in self.get_pf_links(project_id):
+            links.setdefault(r["work_id"], []).append(r["depends_on"])
+        stack, seen = [depends_on], set()
+        while stack:
+            cur = stack.pop()
+            if cur == work_id:
+                return True
+            if cur in seen:
+                continue
+            seen.add(cur)
+            stack.extend(links.get(cur, []))
+        return False
+
+    def pf_recalc_schedule(self, project_id):
+        """Каскадный пересчёт дат по зависимостям (топологический порядок)."""
+        rows = {r["id"]: dict(r) for r in self.get_plan_fact(project_id)}
+        if not rows:
+            return 0
+        preds = {}
+        for l in self.get_pf_links(project_id):
+            preds.setdefault(l["work_id"], []).append(dict(l))
+        order, seen, temp = [], set(), set()
+
+        def visit(wid):
+            if wid in seen or wid not in rows:
+                return
+            if wid in temp:
+                return                      # цикл — пропускаем
+            temp.add(wid)
+            for l in preds.get(wid, []):
+                visit(l["depends_on"])
+            temp.discard(wid)
+            seen.add(wid)
+            order.append(wid)
+
+        for wid in rows:
+            visit(wid)
+
+        changed = 0
+        for wid in order:
+            w = rows[wid]
+            links = [l for l in preds.get(wid, []) if l["link_type"] != "NONE"]
+            if links:
+                starts, ends = [], []
+                for l in links:
+                    p = rows.get(l["depends_on"])
+                    if not p:
+                        continue
+                    ps, pe = self.pf_parse(p.get("start_plan")), self.pf_parse(p.get("end_plan"))
+                    lag = timedelta(days=int(l["lag_days"] or 0))
+                    t = l["link_type"]
+                    if t == "FS" and pe:
+                        starts.append(pe + lag + timedelta(days=1))
+                    elif t == "SS" and ps:
+                        starts.append(ps + lag)
+                    elif t == "FF" and pe:
+                        ends.append(pe + lag)
+                    elif t == "SF" and ps:
+                        ends.append(ps + lag)
+                new_start = w.get("start_plan") or ""
+                if starts:
+                    new_start = max(starts).strftime("%d.%m.%Y")
+                new_end = self.pf_end_plan(new_start, w.get("duration_qty"), w.get("duration_unit"))
+                if ends:
+                    e = max(ends)
+                    new_end = e.strftime("%d.%m.%Y")
+                    back = self.pf_shift(e, -(w.get("duration_qty") or 0), w.get("duration_unit")) \
+                        if False else None
+                    # для FF/SF начало считаем обратным сдвигом только для календарных/недель
+                    unit = w.get("duration_unit")
+                    n = int(float(w.get("duration_qty") or 0))
+                    days = n * 7 if unit == "Недели" else n
+                    new_start = (e - timedelta(days=days)).strftime("%d.%m.%Y")
+                if new_start != (w.get("start_plan") or "") or new_end != (w.get("end_plan") or ""):
+                    self.conn.execute("UPDATE plan_fact SET start_plan=?, end_plan=? WHERE id=?",
+                                      (new_start, new_end, wid))
+                    w["start_plan"], w["end_plan"] = new_start, new_end
+                    changed += 1
+            else:
+                end = self.pf_end_plan(w.get("start_plan"), w.get("duration_qty"), w.get("duration_unit"))
+                if end != (w.get("end_plan") or ""):
+                    self.conn.execute("UPDATE plan_fact SET end_plan=? WHERE id=?", (end, wid))
+                    w["end_plan"] = end
+                    changed += 1
+        self.conn.commit()
+        return changed
+
+    # --- Контроль: метрики по работам и сводка ---
+    def pf_metrics(self, project_id):
+        rows = [dict(r) for r in self.get_plan_fact(project_id)]
+        today = datetime.now().date()
+        links = {}
+        succ = {}
+        for l in self.get_pf_links(project_id):
+            links.setdefault(l["work_id"], []).append(dict(l))
+            succ.setdefault(l["depends_on"], []).append(l["work_id"])
+        by_id = {r["id"]: r for r in rows}
+        ends = [self.pf_parse(r.get("end_plan")) for r in rows]
+        ends = [e for e in ends if e]
+        project_end = max(ends) if ends else None
+
+        out, total_w, done_w = {}, 0.0, 0.0
+        summary = {"total": len(rows), "done": 0, "in_work": 0, "overdue": 0,
+                   "late_start": 0, "critical": 0, "progress": 0}
+        for r in rows:
+            wid = r["id"]
+            sp, sf = self.pf_parse(r.get("start_plan")), self.pf_parse(r.get("start_fact"))
+            ep, ef = self.pf_parse(r.get("end_plan")), self.pf_parse(r.get("end_fact"))
+            dur = float(r.get("duration_qty") or 0)
+            weight = dur if dur > 0 else 1.0
+            done = (r.get("status") or "") in ("Выполнено", "Завершено")
+            prog = int(r.get("progress") or 0)
+            if done:
+                prog = 100
+            total_w += weight
+            done_w += weight * prog / 100.0
+
+            delta = None
+            if ef and ep:
+                delta = (ef.date() - ep.date()).days
+            elif ep and not done:
+                delta = (today - ep.date()).days
+            elif done:
+                delta = 0
+
+            forecast = ""
+            if sf and not done:
+                f = self.pf_shift(sf, dur, r.get("duration_unit"))
+                forecast = f.strftime("%d.%m.%Y") if f else ""
+
+            late_start = bool(sp and not sf and sp.date() < today and not done)
+
+            slack = None
+            if ep:
+                if succ.get(wid):
+                    s_starts = [self.pf_parse(by_id[s].get("start_plan")) for s in succ[wid] if s in by_id]
+                    s_starts = [x for x in s_starts if x]
+                    if s_starts:
+                        slack = (min(s_starts).date() - ep.date()).days - 1
+                elif project_end:
+                    slack = (project_end.date() - ep.date()).days
+            critical = (slack is not None and slack <= 0 and not done)
+
+            if done:
+                light = "done"
+            elif delta is not None and delta > 0:
+                light = "overdue"
+            elif ep and 0 <= (ep.date() - today).days <= 3:
+                light = "soon"
+            else:
+                light = "ok"
+
+            out[wid] = {"delta": delta, "forecast": forecast, "late_start": late_start,
+                        "slack": slack, "critical": critical, "light": light,
+                        "progress": prog,
+                        "depends": ", ".join(f'№{by_id[l["depends_on"]]["number"]}({l["link_type"]})'
+                                             for l in links.get(wid, [])
+                                             if l["depends_on"] in by_id) or "—"}
+            summary["done"] += 1 if done else 0
+            summary["in_work"] += 1 if (not done and sf) else 0
+            summary["overdue"] += 1 if light == "overdue" else 0
+            summary["late_start"] += 1 if late_start else 0
+            summary["critical"] += 1 if critical else 0
+        summary["progress"] = round(done_w / total_w * 100, 1) if total_w else 0.0
+        return {"rows": out, "summary": summary}    
 
     def close(self):
         if self.conn:
