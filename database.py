@@ -213,28 +213,31 @@ class DatabaseManager:
     def pf_sync_from_orders(self, project_id):
         n = 0
         for r in self.get_plan_fact(project_id):
-            batch = int(r["link_order_batch"] or 0) if "link_order_batch" in r.keys() else 0
-            auto = int(r["auto_dates"] or 0) if "auto_dates" in r.keys() else 0
+            keys = r.keys()
+            batch = int(r["link_order_batch"] or 0) if "link_order_batch" in keys else 0
+            auto = int(r["auto_dates"] or 0) if "auto_dates" in keys else 0
             if not batch or not auto:
                 continue
             st = self.get_order_status(batch) or {}
             end = st.get("eta_date") or ""
-            if not end:
+            if end:
+                start = st.get("confirm_date") or ""
+            else:
                 row = self.conn.execute("""SELECT MAX(max_delivery_date) d, MAX(order_date) od,
                                                   MAX(payment_date) pd
                                            FROM orders WHERE order_batch_id=?""", (batch,)).fetchone()
                 end = (row["d"] or "") if row else ""
                 start = (row["pd"] or row["od"] or "") if row else ""
-            else:
-                start = st.get("confirm_date") or ""
             changes = {}
             if end and end != (r["end_plan"] or ""):
                 changes["end_plan"] = (r["end_plan"], end)
             if start and start != (r["start_plan"] or ""):
                 changes["start_plan"] = (r["start_plan"], start)
             if changes:
-                self.conn.execute("UPDATE plan_fact SET start_plan=COALESCE(NULLIF(?,''),start_plan),
-                                   end_plan=COALESCE(NULLIF(?,''),end_plan) WHERE id=?",
+                self.conn.execute("""UPDATE plan_fact
+                                     SET start_plan = COALESCE(NULLIF(?,''), start_plan),
+                                         end_plan   = COALESCE(NULLIF(?,''), end_plan)
+                                     WHERE id=?""",
                                   (start, end, r["id"]))
                 self._pf_audit_write(project_id, r["id"], r["number"], changes)
                 n += 1
