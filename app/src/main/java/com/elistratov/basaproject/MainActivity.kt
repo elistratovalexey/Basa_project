@@ -21,6 +21,8 @@ import java.io.File
 class MainActivity : AppCompatActivity() {
     private lateinit var binding: ActivityMainBinding
 
+    companion object { @Volatile private var syncing = false }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         binding = ActivityMainBinding.inflate(layoutInflater)
@@ -62,15 +64,36 @@ class MainActivity : AppCompatActivity() {
 
         binding.btnOrders.setOnClickListener { startActivity(Intent(this, OrdersActivity::class.java)) }
         binding.btnSettings.setOnClickListener { startActivity(Intent(this, SettingsActivity::class.java)) }
-        binding.btnSync.setOnClickListener {
-            binding.btnSync.isEnabled = false
-            binding.btnSync.text = "Синхронизация..."
-            DatabaseSyncManager(this).syncDatabase { _, message ->
-                runOnUiThread {
-                    binding.btnSync.isEnabled = true
-                    binding.btnSync.text = "Синхронизировать"
-                    Toast.makeText(this, message, Toast.LENGTH_LONG).show()
-                }
+        binding.btnSync.setOnClickListener { startSync(false) }
+
+        startSync(true)
+    }
+
+    override fun onResume() {
+        super.onResume()
+        val prefs = getSharedPreferences("app_settings", MODE_PRIVATE)
+        if (prefs.getLong("last_sync", 0L) == 0L) startSync(true)
+    }
+
+    private fun startSync(auto: Boolean) {
+        val prefs = getSharedPreferences("app_settings", MODE_PRIVATE)
+        val login = prefs.getString("webdav_login", "") ?: ""
+        val password = prefs.getString("webdav_password", "") ?: ""
+        if (login.isEmpty() || password.isEmpty()) {
+            if (!auto) Toast.makeText(this, "Сначала настройте облако Mail.ru в ⚙️", Toast.LENGTH_LONG).show()
+            return
+        }
+        if (syncing) return
+        syncing = true
+        binding.btnSync.isEnabled = false
+        binding.btnSync.text = "Синхронизация..."
+        DatabaseSyncManager(this).syncDatabase { success, message ->
+            runOnUiThread {
+                syncing = false
+                binding.btnSync.isEnabled = true
+                binding.btnSync.text = "Синхронизировать"
+                if (success) prefs.edit().putLong("last_sync", System.currentTimeMillis()).apply()
+                Toast.makeText(this, message, if (auto && success) Toast.LENGTH_SHORT else Toast.LENGTH_LONG).show()
             }
         }
     }
