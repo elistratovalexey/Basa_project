@@ -86,6 +86,7 @@ class DatabaseManager:
         self._ensure_plan_fact_tables()
         self._ensure_plan_fact_v2()
         self._ensure_plan_fact_v3()
+        self._ensure_work_names()
         self._ensure_v19()
         self._ensure_delivery_addresses_table()
         self._ensure_purchase_payments_ext_columns()
@@ -101,6 +102,47 @@ class DatabaseManager:
     PF_AUDIT_FIELDS = ("start_plan", "end_plan", "start_fact", "end_fact",
                        "duration_qty", "duration_unit", "status", "responsible",
                        "progress", "is_blocked", "delay_reason", "cost_weight")
+        # === База наименований работ ===
+    def _ensure_work_names(self):
+        self.conn.execute('''CREATE TABLE IF NOT EXISTS work_names (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT UNIQUE NOT NULL,
+            work_type TEXT DEFAULT '',
+            duration_qty REAL DEFAULT 0,
+            duration_unit TEXT DEFAULT 'Календарные дни')''')
+        self.conn.commit()
+
+    def get_work_names(self):
+        return self.conn.execute("SELECT * FROM work_names ORDER BY name").fetchall()
+
+    def add_work_name(self, name, work_type="", duration_qty=0, duration_unit="Календарные дни"):
+        name = (name or "").strip()
+        if not name:
+            return False
+        try:
+            self.conn.execute("""INSERT INTO work_names (name, work_type, duration_qty, duration_unit)
+                                 VALUES (?,?,?,?)""",
+                              (name, work_type or "", float(duration_qty or 0),
+                               duration_unit or "Календарные дни"))
+            self.conn.commit()
+            return True
+        except sqlite3.IntegrityError:
+            return False
+
+    def update_work_name(self, wid, name, work_type="", duration_qty=0, duration_unit="Календарные дни"):
+        try:
+            self.conn.execute("""UPDATE work_names SET name=?, work_type=?, duration_qty=?, duration_unit=?
+                                 WHERE id=?""",
+                              ((name or "").strip(), work_type or "", float(duration_qty or 0),
+                               duration_unit or "Календарные дни", wid))
+            self.conn.commit()
+            return True
+        except sqlite3.IntegrityError:
+            return False
+
+    def delete_work_name(self, wid):
+        self.conn.execute("DELETE FROM work_names WHERE id=?", (wid,))
+        self.conn.commit()
 
     def _ensure_plan_fact_v3(self):
         if hasattr(self, "_ensure_plan_fact_v2"):
