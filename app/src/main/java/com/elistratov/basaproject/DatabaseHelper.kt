@@ -335,14 +335,27 @@ class DatabaseHelper(private val context: Context) : SQLiteOpenHelper(context, "
         return out
     }
 
-    // ================= ПЛАН-ФАКТ v2 =================
+    // ================= ПЛАН-ФАКТ v3 =================
     private data class PfWork(
         val id: Int, val number: Int, val name: String, val workType: String, val status: String, val note: String,
         val subproject: String, val responsible: String, val startPlan: String, val startFact: String,
         val dur: Double, val unit: String, val endPlan: String, val endFact: String, val comment: String,
         val progress: Int, val milestone: Boolean, val baseStart: String, val baseEnd: String,
-        val blocked: Boolean, val reason: String, val cost: Double, val linkBatch: Int
+        val blocked: Boolean, val reason: String, val blockedNote: String, val cost: Double,
+        val linkBatch: Int, val autoDates: Boolean, val notifyDays: Int
     )
+
+    private fun pfOrderDates(batchId: Int): String {
+        var eta = ""; var confirm = ""; var maxd = ""; var pay = ""; var od = ""
+        val opt = listOf("eta_date" to "eta", "confirm_date" to "cd").filter { columnExists("orders", it.first) }
+            .joinToString("") { ", MAX(${it.first}) AS ${it.second}" }
+        rows("SELECT MAX(max_delivery_date) AS maxd, MAX(payment_date) AS pd, MAX(order_date) AS od$opt FROM orders WHERE order_batch_id=?", arrayOf(batchId.toString())) { c ->
+            eta = c.s("eta"); confirm = c.s("cd"); maxd = c.s("maxd"); pay = c.s("pd"); od = c.s("od")
+        }
+        val end = eta.ifEmpty { maxd }
+        val start = confirm.ifEmpty { pay.ifEmpty { od } }
+        return "начало ${start.ifEmpty { "—" }} → окончание ${end.ifEmpty { "—" }}"
+    }
 
     private fun planFact(project: String?): List<TabRecord> {
         if (!tableExists("plan_fact")) return listOf(TabRecord("Нет данных", "Таблица «План-Факт» отсутствует в базе"))
@@ -363,23 +376,32 @@ class DatabaseHelper(private val context: Context) : SQLiteOpenHelper(context, "
             }
             if (cnt > 0) out.add(TabRecord("👥 База ответственных ($cnt)", sb.toString()))
         }
+        if (tableExists("delay_reasons")) {
+            val sb = StringBuilder("Справочник причин задержек:")
+            var cnt = 0
+            rows("SELECT name FROM delay_reasons ORDER BY name") { c -> cnt++; sb.append("\n• ${c.s("name")}") }
+            if (cnt > 0) out.add(TabRecord("📋 Причины задержек ($cnt)", sb.toString()))
+        }
 
         val pfCols = listOf("subproject", "responsible", "start_plan", "start_fact", "duration_qty",
             "duration_unit", "end_plan", "end_fact", "comment", "progress", "is_milestone",
-            "baseline_start", "baseline_end", "is_blocked", "delay_reason", "cost_weight", "link_order_batch")
+            "baseline_start", "baseline_end", "is_blocked", "delay_reason", "blocked_note",
+            "cost_weight", "link_order_batch", "auto_dates", "notify_days")
         val projects = if (project != null) listOf(project) else getProjectNames()
         for (name in projects) {
             val pid = projectId(name) ?: continue
             val extra = pfCols.filter { columnExists("plan_fact", it) }.joinToString("") { ", $it" }
             val works = mutableListOf<PfWork>()
             rows("SELECT id, number, name, work_type, status, note$extra FROM plan_fact WHERE project_id=? ORDER BY number", arrayOf(pid.toString())) { c ->
+                val nd = c.i("notify_days")
                 works.add(PfWork(
                     c.i("id"), c.i("number"), c.s("name"), c.s("work_type"), c.s("status"), c.s("note"),
                     c.s("subproject"), c.s("responsible"), c.s("start_plan"), c.s("start_fact"),
                     c.d("duration_qty"), c.s("duration_unit").ifEmpty { "Календарные дни" },
                     c.s("end_plan"), c.s("end_fact"), c.s("comment"), c.i("progress"), c.i("is_milestone") == 1,
                     c.s("baseline_start"), c.s("baseline_end"), c.i("is_blocked") == 1, c.s("delay_reason"),
-                    c.d("cost_weight"), c.i("link_order_batch")
+                    c.s("blocked_note"), c.d("cost_weight"), c.i("link_order_batch"), c.i("auto_dates") == 1,
+                    if (nd > 0) nd else 3
                 ))
             }
             if (works.isEmpty()) continue
@@ -394,24 +416,32 @@ class DatabaseHelper(private val context: Context) : SQLiteOpenHelper(context, "
                 }
             }
             val projEnd = works.mapNotNull { parseDate(it.endPlan) }.maxOrNull()
-            var totalW = 0.0; var doneW = 0.0
+            var totalW = 0.0; var doneW = 0.0; var costW = 0.0; var doneCostW = 0.0
             var nDone = 0; var nInWork = 0; var nOverdue = 0; var nLate = 0; var nCrit = 0; var nBlocked = 0
-            val workload = HashMap<String, IntArray>()
+            var maxBaseShift = 0
+            class Acc { var works = 0; var days = 0.0; var overdue = 0; var blocked = 0; val iv = mutableListOf<Pair<Long, Long>>() }
+            val workload = HashMap<String, Acc>()
             val delays = HashMap<String, IntArray>()
+            val delayNums = HashMap<String, MutableList<String>>()
+            val notes = mutableListOf<Triple<Int, Int, String>>()
             val recs = mutableListOf<TabRecord>()
             for (w in works) {
                 val sp = parseDate(w.startPlan); val sf = parseDate(w.startFact)
                 val ep = parseDate(w.endPlan); val ef = parseDate(w.endFact)
+                val be = parseDate(w.baseEnd)
                 val done = w.status in listOf("Выполнено", "Завершено")
                 var prog = w.progress; if (done) prog = 100
                 val weight = if (w.dur > 0) w.dur else 1.0
                 totalW += weight; doneW += weight * prog / 100.0
+                if (w.cost > 0) { costW += w.cost; doneCostW += w.cost * prog / 100.0 }
                 val delta = when {
                     ef != null && ep != null -> daysBetween(ef, ep)
                     ep != null && !done -> daysBetween(today, ep)
                     done -> 0
                     else -> null
                 }
+                val baseShift = if (ep != null && be != null) daysBetween(ep, be) else null
+                if (baseShift != null && baseShift > maxBaseShift) maxBaseShift = baseShift
                 val forecast = if (sf != null && !done) calcDeadline(w.startFact, w.dur.toInt().toString(), w.unit) else ""
                 val lateStart = sp != null && sf == null && sp.before(today) && !done
                 var slack: Int? = null
@@ -422,14 +452,14 @@ class DatabaseHelper(private val context: Context) : SQLiteOpenHelper(context, "
                 }
                 val critical = slack != null && slack <= 0 && !done
                 val light = when {
-                    w.blocked -> "blocked"
                     done -> "done"
+                    w.blocked -> "blocked"
                     delta != null && delta > 0 -> "overdue"
                     ep != null && daysBetween(ep, today) in 0..3 -> "soon"
                     else -> "ok"
                 }
                 val color = when (light) {
-                    "blocked" -> 0xFFD9D2E9L; "done" -> 0xFFD9EAD3L
+                    "done" -> 0xFFD9EAD3L; "blocked" -> 0xFFD9D2E9L
                     "overdue" -> 0xFFF4CCCCL; "soon" -> 0xFFFFF2CCL; else -> 0L
                 }
                 val depends = preds[w.id]?.mapNotNull { l -> byId[l.first]?.let { "№${it.number}(${l.second})" } }
@@ -437,12 +467,31 @@ class DatabaseHelper(private val context: Context) : SQLiteOpenHelper(context, "
                 if (done) nDone++; if (!done && sf != null) nInWork++
                 if (light == "overdue") nOverdue++; if (lateStart) nLate++
                 if (critical) nCrit++; if (w.blocked) nBlocked++
-                val rk = w.responsible.ifEmpty { "—" }
-                val wl = workload.getOrPut(rk) { IntArray(3) }
-                wl[0]++; if (light == "overdue") wl[1]++; if (w.blocked) wl[2]++
-                if (w.blocked || light == "overdue") {
-                    val dl = delays.getOrPut(w.reason.ifEmpty { "Без причины" }) { IntArray(2) }
+                val rk = w.responsible.ifEmpty { "— не назначен —" }
+                if (!done) {
+                    val a = workload.getOrPut(rk) { Acc() }
+                    a.works++; a.days += if (w.unit == "Недели") w.dur * 7 else w.dur
+                    if (light == "overdue") a.overdue++; if (w.blocked) a.blocked++
+                    if (sp != null && ep != null) a.iv.add(sp.time to ep.time)
+                }
+                if (w.blocked || light == "overdue" || lateStart) {
+                    val rs = w.reason.ifEmpty { "— причина не указана —" }
+                    val dl = delays.getOrPut(rs) { IntArray(2) }
                     dl[0]++; dl[1] += (delta ?: 0).coerceAtLeast(0)
+                    delayNums.getOrPut(rs) { mutableListOf() }.add(w.number.toString())
+                }
+                if (!done) {
+                    if (w.blocked) notes.add(Triple(2, 0, "🔒 №${w.number} ${w.name}: заблокирована — ${w.reason.ifEmpty { "причина не указана" }}"))
+                    if (sp != null && w.startFact.isEmpty()) {
+                        val d = daysBetween(sp, today)
+                        if (d < 0) notes.add(Triple(1, -d, "№${w.number} ${w.name}: старт просрочен на ${-d} дн (план ${w.startPlan})"))
+                        else if (d <= 1) notes.add(Triple(4, d, "№${w.number} ${w.name}: старт ${if (d == 0) "сегодня" else "завтра"}"))
+                    }
+                    if (ep != null) {
+                        val d = daysBetween(ep, today)
+                        if (d < 0) notes.add(Triple(0, -d, "🔴 №${w.number} ${w.name}: ПРОСРОЧКА ${-d} дн (дедлайн ${w.endPlan})"))
+                        else if (d <= w.notifyDays) notes.add(Triple(3, d, "№${w.number} ${w.name}: дедлайн через $d дн (${w.endPlan})"))
+                    }
                 }
                 val marks = (if (w.blocked) "🔒 " else "") + (if (critical) "★ " else "") + (if (w.milestone) "⚑ " else "")
                 val det = buildString {
@@ -454,13 +503,21 @@ class DatabaseHelper(private val context: Context) : SQLiteOpenHelper(context, "
                     append("Окончание план: ${w.endPlan.ifEmpty { "—" }}\nОкончание факт: ${w.endFact.ifEmpty { "—" }}\n")
                     append("Готовность: $prog%\n")
                     if (delta != null) append("Отклонение: $delta дн.\n")
+                    if (baseShift != null) append("Сдвиг базового плана: $baseShift дн.\n")
                     if (forecast.isNotEmpty()) append("Прогноз окончания: $forecast\n")
                     if (slack != null) append("Резерв: $slack дн.${if (critical) " ★ критическая" else ""}\n")
                     if (lateStart) append("⚠ Начало просрочено\n")
                     append("Зависит от: $depends\n")
                     if (w.baseStart.isNotEmpty()) append("Базовый план: ${w.baseStart} → ${w.baseEnd}\n")
-                    if (w.blocked) append("🔒 Заблокирована: ${w.reason.ifEmpty { "причина не указана" }}\n")
-                    if (w.linkBatch > 0) append("Связан заказ: №${w.linkBatch}\n")
+                    if (w.blocked) {
+                        append("🔒 Заблокирована: ${w.reason.ifEmpty { "причина не указана" }}\n")
+                        if (w.blockedNote.isNotEmpty()) append("Примечание к блокировке: ${w.blockedNote}\n")
+                    }
+                    if (w.linkBatch > 0) {
+                        append("Связан заказ: №${w.linkBatch} (${pfOrderDates(w.linkBatch)})\n")
+                        if (w.autoDates) append("Автодаты из заказа: включены\n")
+                    }
+                    append("Уведомлять за: ${w.notifyDays} дн.\n")
                     if (w.cost > 0) append("Стоимость: ${fmtMoney(w.cost)} ₽\n")
                     if (w.comment.isNotEmpty()) append("Комментарии: ${w.comment}\n")
                     if (w.note.isNotEmpty()) append("Примечание: ${w.note}\n")
@@ -468,24 +525,53 @@ class DatabaseHelper(private val context: Context) : SQLiteOpenHelper(context, "
                 recs.add(TabRecord("$marks№${w.number} · ${short(w.name, 30)} · ${w.status} · $prog%", det, color))
             }
             val progress = if (totalW > 0) Math.round(doneW / totalW * 1000) / 10.0 else 0.0
+            val progressCost = if (costW > 0) Math.round(doneCostW / costW * 1000) / 10.0 else progress
             out.add(TabRecord("📊 $name · готовность $progress%",
-                "Проект: $name\nВсего работ: ${works.size}\nВыполнено: $nDone\nВ работе: $nInWork\nПросрочено: $nOverdue\nПросрочено начало: $nLate\nКритических: $nCrit\nЗаблокировано: $nBlocked\nГотовность (взвеш.): $progress%",
+                "Проект: $name\nВсего работ: ${works.size}\nВыполнено: $nDone\nВ работе: $nInWork\nПросрочено: $nOverdue\nПросрочено начало: $nLate\nКритических: $nCrit\nЗаблокировано: $nBlocked\nГотовность (по длительности): $progress%\nГотовность (по стоимости): $progressCost%\nМакс. сдвиг базового плана: $maxBaseShift дн.",
                 if (nOverdue > 0 || nBlocked > 0) 0xFFF4CCCCL else 0xFFD9EAD3L))
             out.addAll(recs)
+            if (notes.isNotEmpty()) {
+                val sb = StringBuilder("Уведомления · $name:")
+                for (n in notes.sortedWith(compareBy({ it.first }, { -it.second }))) sb.append("\n\n${n.third}")
+                out.add(TabRecord("🔔 Уведомления · $name (${notes.size})", sb.toString(), 0xFFF4CCCCL))
+            }
             if (workload.isNotEmpty()) {
                 val sb = StringBuilder("Загрузка ответственных · $name:")
-                for ((rn, v) in workload.toSortedMap()) sb.append("\n\n• $rn\n  работ ${v[0]} · просрочено ${v[1]} · блокировано ${v[2]}")
+                val items = workload.map { (rn, a) ->
+                    val events = mutableListOf<Pair<Long, Int>>()
+                    for ((s, e) in a.iv) { events.add(s to 1); events.add(e to -1) }
+                    events.sortBy { it.first }
+                    var cur = 0; var peak = 0
+                    for ((_, d) in events) { cur += d; if (cur > peak) peak = cur }
+                    val overload = peak > 3 || a.days > 60
+                    Triple(rn, a, peak to overload)
+                }.sortedWith(compareByDescending { it.third.second })
+                for ((rn, a, po) in items) {
+                    sb.append("\n\n• $rn${if (po.second) " ⚠ ПЕРЕГРУЗ" else ""}\n  работ ${a.works} · дней ${fmtMoney(a.days)} · просрочено ${a.overdue} · блокировано ${a.blocked} · пик параллельных ${po.first}")
+                }
                 out.add(TabRecord("👷 Загрузка · $name", sb.toString()))
             }
             if (delays.isNotEmpty()) {
                 val sb = StringBuilder("Аналитика задержек · $name:")
-                for ((rn, v) in delays.toSortedMap()) sb.append("\n\n• $rn\n  работ ${v[0]} · дней просрочки ${v[1]}")
+                for ((rs, v) in delays.entries.sortedByDescending { it.value[1] }) {
+                    sb.append("\n\n• $rs\n  работ ${v[0]} · дней просрочки ${v[1]} · № ${delayNums[rs]?.joinToString(", ") ?: ""}")
+                }
                 out.add(TabRecord("⏱ Задержки · $name", sb.toString()))
+            }
+            if (tableExists("plan_fact_audit")) {
+                val sb = StringBuilder("История изменений · $name:")
+                var cnt = 0
+                rows("SELECT ts, number, field, old_value, new_value, author, device FROM plan_fact_audit WHERE project_id=? ORDER BY id DESC LIMIT 60", arrayOf(pid.toString())) { c ->
+                    cnt++
+                    sb.append("\n\n${c.s("ts")} · №${c.i("number")} · ${c.s("field")}\n  ${c.s("old_value").ifEmpty { "—" }} → ${c.s("new_value").ifEmpty { "—" }}\n  кто: ${c.s("author").ifEmpty { c.s("device") }}")
+                }
+                if (cnt > 0) out.add(TabRecord("📜 История изменений · $name ($cnt)", sb.toString()))
             }
         }
         if (out.isEmpty()) out.add(TabRecord("Нет данных", "В проектах нет работ План-Факт"))
         return out
     }
+
 
     private fun getOrdersCostCoef(project: String): Double {
         if (!columnExists("projects", "orders_cost_coef")) return 1.8
