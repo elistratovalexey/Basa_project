@@ -41,6 +41,9 @@ class MainActivity : AppCompatActivity() {
         val btnUpdate = Button(this).apply { text = "⬆" }
         btnUpdate.setOnClickListener { checkUpdate() }
         btnRow.addView(btnUpdate, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT))
+        val btnGantt = Button(this).apply { text = "📊" }
+        btnGantt.setOnClickListener { startActivity(Intent(this, GanttActivity::class.java)) }
+        btnRow.addView(btnGantt, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT))
 
         val tabs = listOf(
             "Сегодня" to "dashboard",
