@@ -712,11 +712,10 @@ class PlanFactTab(BaseTab):
         values = list(tree.item(row)["values"])
         old = values[idx] if idx < len(values) else ""
         combo_kinds = ("workname", "worktype", "workstatus", "responsible", "subproject")
-        is_combo = kind in combo_kinds
 
         if kind == "duration":
             frame = ttk.Frame(tree)
-            frame.place(x=x, y=y, width=max(w, 215), height=h)
+            frame.place(x=x, y=y, width=max(w, 210), height=h)
             parts = str(old).split(None, 1)
             eq = ttk.Entry(frame, width=6)
             eq.pack(side=tk.LEFT)
@@ -724,13 +723,15 @@ class PlanFactTab(BaseTab):
             cu = ttk.Combobox(frame, values=UNITS, width=17, state="readonly")
             cu.pack(side=tk.LEFT)
             cu.set(parts[1] if len(parts) > 1 else UNITS[0])
-            eq.focus_set(); eq.select_range(0, tk.END)
-            widget, entry = frame, eq
+            eq.focus_set()
+            eq.select_range(0, tk.END)
+            widget = entry = eq
+            widget = frame
             getter = lambda: (eq.get(), cu.get())
             new_sig = lambda v: f"{_num(v[0]):g} {v[1]}"
         elif kind == "blocked":
             frame = ttk.Frame(tree)
-            frame.place(x=x, y=y, width=max(w, 270), height=h)
+            frame.place(x=x, y=y, width=max(w, 260), height=h)
             var = tk.BooleanVar(value=bool(str(old).strip()))
             ttk.Checkbutton(frame, text="🔒", variable=var).pack(side=tk.LEFT)
             cr = ttk.Combobox(frame, values=self._pf_editor_values("reason"), width=24)
@@ -746,10 +747,12 @@ class PlanFactTab(BaseTab):
             new_sig = lambda v: "🔒" if v[0] else ""
         elif kind == "date":
             frame = ttk.Frame(tree)
-            frame.place(x=x, y=y, width=max(w, 135), height=h)
+            frame.place(x=x, y=y, width=max(w, 130), height=h)
             ed = ttk.Entry(frame)
             ed.pack(side=tk.LEFT, fill="both", expand=True)
-            ed.insert(0, str(old)); ed.select_range(0, tk.END); ed.focus_set()
+            ed.insert(0, str(old))
+            ed.select_range(0, tk.END)
+            ed.focus_set()
 
             def pick():
                 self._pick(ed)
@@ -758,11 +761,11 @@ class PlanFactTab(BaseTab):
             widget, entry = frame, ed
             getter = lambda: ed.get().strip()
             new_sig = lambda v: str(v)
-        elif is_combo:
+        elif kind in combo_kinds:
             ed = ttk.Combobox(tree, values=self._pf_editor_values(kind),
                               state="normal" if kind == "workname" else "readonly")
             ed.set(old)
-            ed.place(x=x, y=y, width=max(w, 180), height=h)
+            ed.place(x=x, y=y, width=max(w, 170), height=h)
             ed.focus_set()
             ed.bind("<<ComboboxSelected>>", lambda e: self._pf_inline_commit())
             widget = entry = ed
@@ -771,13 +774,13 @@ class PlanFactTab(BaseTab):
             self.root.after(30, lambda w=ed: self._pf_post(w))
         else:
             ed = ttk.Entry(tree)
-            ed.insert(0, str(old).replace("%", ""))
+            ed.insert(0, str(old))
             ed.select_range(0, tk.END)
-            ed.place(x=x, y=y, width=max(w, 85), height=h)
+            ed.place(x=x, y=y, width=max(w, 80), height=h)
             ed.focus_set()
             widget = entry = ed
             getter = lambda: ed.get().strip()
-            new_sig = (lambda v: f"{int(_num(v, 0))}%") if kind == "percent" else (lambda v: str(v))
+            new_sig = lambda v: str(v)
 
         entry.bind("<Return>", lambda e: self._pf_inline_commit())
         entry.bind("<Escape>", lambda e: self._pf_inline_cancel())
@@ -785,7 +788,8 @@ class PlanFactTab(BaseTab):
         entry.bind("<Tab>", lambda e: self._pf_tab(row, idx))
         self._pf_inline = {"widget": widget, "entry": entry, "row": row, "idx": idx,
                            "field": field, "kind": kind, "get": getter,
-                           "sig": str(old), "new_sig": new_sig, "combo": is_combo}
+                           "sig": str(old), "new_sig": new_sig,
+                           "combo": kind in combo_kinds}
 
     def _pf_post(self, ed):
         info = getattr(self, "_pf_inline", None)
