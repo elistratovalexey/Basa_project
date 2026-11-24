@@ -897,7 +897,7 @@ class GanttDialog(tk.Toplevel):
         span = max((d1 - d0).days + 1, 1)
         cv = tk.Canvas(self, bg="white")
         sb = ttk.Scrollbar(self, orient=tk.VERTICAL, command=cv.yview)
-        cv.configure(yscroll=sb.set, scrollregion=(0, 0, 280 + span * 14, len(rows) * 30 + 60))
+        cv.configure(yscrollcommand=sb.set, scrollregion=(0, 0, 280 + span * 14, len(rows) * 30 + 60)) 
         cv.pack(side=tk.LEFT, fill="both", expand=True)
         sb.pack(side=tk.RIGHT, fill="y")
         left, top, scale = 270, 40, 14
