@@ -112,7 +112,8 @@ class PlanFactTab(BaseTab):
         self.c_unit.set(UNITS[0])
         self.c_unit.grid(row=2, column=8, sticky="w")
         ttk.Label(card, text="Окончание план:").grid(row=2, column=9, sticky="w")
-        self.lbl_end_plan = ttk.Label(card, text="—", foreground="#0a58ca", font=("Arial", 9, "bold"))
+        self.lbl_end_plan = ttk.Label(card, text="—", foreground="#0a58ca",
+                                      font=("Arial", 9, "bold"))
         self.lbl_end_plan.grid(row=2, column=10, sticky="w")
 
         ttk.Label(card, text="Окончание факт:").grid(row=3, column=0, sticky="w", pady=3)
@@ -176,9 +177,8 @@ class PlanFactTab(BaseTab):
         self.c_f_sub.bind("<<ComboboxSelected>>", lambda e: self.load_records())
         ttk.Button(flt, text="Сброс", command=self.reset_filters).pack(side=tk.LEFT, padx=6)
 
-        tf = ttk.LabelFrame(self.parent,
-                            text="Работы по проекту  ·  двойной клик по ячейке — правка, "
-                                 "Enter — сохранить, Tab — дальше, Esc — отмена", padding=6)
+        tf = ttk.LabelFrame(self.parent, text="Работы по проекту  ·  двойной клик по ячейке — правка, "
+                                              "Enter — сохранить, Tab — дальше, Esc — отмена", padding=6)
         tf.pack(fill="both", expand=True, padx=6, pady=4)
         cols = ("num", "name", "sub", "type", "resp", "status", "sp", "sf", "dur",
                 "ep", "ef", "delta", "prog", "forecast", "slack", "depends", "base", "lock", "cost")
@@ -210,7 +210,7 @@ class PlanFactTab(BaseTab):
         self.tree.bind("<Double-1>", self.on_tree_double_click)
 
     # ==================================================================
-    # Служебное
+    # Вспомогательное
     # ==================================================================
     def _pick(self, entry):
         try:
@@ -274,70 +274,6 @@ class PlanFactTab(BaseTab):
         self.c_f_resp.set("")
         self.c_f_sub.set("")
         self.load_records()
-
-    # ==================================================================
-    # База наименований работ
-    # ==================================================================
-    def _has_work_names(self):
-        return hasattr(self.db_manager, "get_work_names")
-
-    def _refresh_work_names(self):
-        self._work_names = {}
-        if not self._has_work_names():
-            try:
-                self.c_name["values"] = []
-            except Exception:
-                pass
-            return
-        try:
-            for r in self.db_manager.get_work_names():
-                self._work_names[r["name"]] = dict(r)
-            self.c_name["values"] = sorted(self._work_names.keys())
-        except Exception as e:
-            print(f"[plan_fact] work_names: {e}")
-
-    def add_work_name_inline(self):
-        if not self._has_work_names():
-            messagebox.showerror("Нет справочника",
-                                 "В database.py нет методов базы наименований работ.\n"
-                                 "Добавьте блок _ensure_work_names / get_work_names / add_work_name.",
-                                 parent=self.root)
-            return
-        name = self.e_name.get().strip()
-        if not name:
-            messagebox.showwarning("Внимание", "Введите наименование работ!", parent=self.root)
-            return
-        ok = self.db_manager.add_work_name(name, self.c_type.get().strip(),
-                                           _num(self.e_dur.get()), self.c_unit.get())
-        self._refresh_work_names()
-        if ok:
-            self.app.log_action(f"База наименований работ: добавлено «{name}»")
-            messagebox.showinfo("Готово", f"«{name}» сохранено в базу наименований работ.",
-                                parent=self.root)
-        else:
-            messagebox.showinfo("Информация", "Такое наименование уже есть в базе.", parent=self.root)
-
-    def on_work_name_selected(self, event=None):
-        rec = self._work_names.get(self.e_name.get())
-        if not rec:
-            return
-        if rec.get("work_type") and not self.c_type.get().strip():
-            self.c_type.set(rec["work_type"])
-        if _num(rec.get("duration_qty")) > 0 and not _num(self.e_dur.get()):
-            self.e_dur.delete(0, tk.END)
-            self.e_dur.insert(0, f'{_num(rec["duration_qty"]):g}')
-            self.c_unit.set(rec.get("duration_unit") or UNITS[0])
-        self._recalc_label()
-
-    def open_work_names(self):
-        if not self._has_work_names():
-            messagebox.showerror("Нет справочника",
-                                 "В database.py нет методов базы наименований работ.\n"
-                                 "Добавьте блок _ensure_work_names / get_work_names / add_work_name "
-                                 "/ update_work_name / delete_work_name.", parent=self.root)
-            return
-        WorkNamesDialog(self.root, self.db_manager)
-        self._refresh_work_names()
 
     # ==================================================================
     # Загрузка таблицы
@@ -431,21 +367,6 @@ class PlanFactTab(BaseTab):
         for iid in iids.values():
             self.tree.item(iid, open=True)
 
-    def _reselect(self, number):
-        for iid in self.tree.get_children():
-            if self._row_num.get(iid) == number:
-                self.tree.selection_set(iid)
-                self.tree.see(iid)
-                self.on_select()
-                return
-        for parent in self.tree.get_children():
-            for iid in self.tree.get_children(parent):
-                if self._row_num.get(iid) == number:
-                    self.tree.selection_set(iid)
-                    self.tree.see(iid)
-                    self.on_select()
-                    return
-
     # ==================================================================
     # Карточка
     # ==================================================================
@@ -459,8 +380,10 @@ class PlanFactTab(BaseTab):
         if not row:
             return
         self._current_number = num
-        self.e_num.delete(0, tk.END); self.e_num.insert(0, str(num))
-        self.e_name.delete(0, tk.END); self.e_name.insert(0, row.get("name") or "")
+        self.e_num.delete(0, tk.END)
+        self.e_num.insert(0, str(num))
+        self.e_name.delete(0, tk.END)
+        self.e_name.insert(0, row.get("name") or "")
         self.c_subproject.set(row.get("subproject") or "")
         self.c_type.set(row.get("work_type") or "")
         self.c_resp.set(row.get("responsible") or "")
@@ -471,15 +394,20 @@ class PlanFactTab(BaseTab):
         self.v_auto.set(bool(row.get("auto_dates")))
         for e, k in ((self.e_start_plan, "start_plan"), (self.e_start_fact, "start_fact"),
                      (self.e_end_fact, "end_fact")):
-            e.delete(0, tk.END); e.insert(0, row.get(k) or "")
-        self.e_dur.delete(0, tk.END); self.e_dur.insert(0, f'{_num(row.get("duration_qty")):g}')
+            e.delete(0, tk.END)
+            e.insert(0, row.get(k) or "")
+        self.e_dur.delete(0, tk.END)
+        self.e_dur.insert(0, f'{_num(row.get("duration_qty")):g}')
         self.c_unit.set(row.get("duration_unit") or UNITS[0])
-        self.e_progress.delete(0, tk.END); self.e_progress.insert(0, str(row.get("progress") or 0))
+        self.e_progress.delete(0, tk.END)
+        self.e_progress.insert(0, str(row.get("progress") or 0))
         self.e_cost.delete(0, tk.END)
         if _num(row.get("cost_weight")):
             self.e_cost.insert(0, f'{_num(row.get("cost_weight")):.2f}')
-        self.e_notify.delete(0, tk.END); self.e_notify.insert(0, str(row.get("notify_days") or 3))
-        self.e_comment.delete("1.0", tk.END); self.e_comment.insert("1.0", row.get("comment") or "")
+        self.e_notify.delete(0, tk.END)
+        self.e_notify.insert(0, str(row.get("notify_days") or 3))
+        self.e_comment.delete("1.0", tk.END)
+        self.e_comment.insert("1.0", row.get("comment") or "")
         par = int(row.get("parent_id") or 0)
         self.c_parent.set(next((k for k, v in self._parents.items() if v == par), "— нет —"))
         ob = int(row.get("link_order_batch") or 0)
@@ -495,14 +423,21 @@ class PlanFactTab(BaseTab):
         for e in (self.e_num, self.e_name, self.e_start_plan, self.e_start_fact,
                   self.e_end_fact, self.e_dur, self.e_cost):
             e.delete(0, tk.END)
-        self.e_progress.delete(0, tk.END); self.e_progress.insert(0, "0")
-        self.e_notify.delete(0, tk.END); self.e_notify.insert(0, "3")
+        self.e_progress.delete(0, tk.END)
+        self.e_progress.insert(0, "0")
+        self.e_notify.delete(0, tk.END)
+        self.e_notify.insert(0, "3")
         self.e_comment.delete("1.0", tk.END)
         for c in (self.c_subproject, self.c_type, self.c_resp, self.c_status, self.c_reason):
             c.set("")
-        self.c_unit.set(UNITS[0]); self.c_parent.set("— нет —"); self.c_order.set("— нет —")
-        self.v_milestone.set(False); self.v_blocked.set(False); self.v_auto.set(False)
-        self.lbl_end_plan.config(text="—"); self.lbl_forecast.config(text="—")
+        self.c_unit.set(UNITS[0])
+        self.c_parent.set("— нет —")
+        self.c_order.set("— нет —")
+        self.v_milestone.set(False)
+        self.v_blocked.set(False)
+        self.v_auto.set(False)
+        self.lbl_end_plan.config(text="—")
+        self.lbl_forecast.config(text="—")
 
     def _collect(self):
         comment = self.e_comment.get("1.0", tk.END).strip()
@@ -568,7 +503,6 @@ class PlanFactTab(BaseTab):
         self._current_number = num
         self.app.log_action(f"План-Факт: работа №{num} {action} ({data['name']})")
         self.load_records()
-        self._reselect(num)
 
     def delete_record(self):
         num = self._current_number
@@ -583,7 +517,8 @@ class PlanFactTab(BaseTab):
             for l in self.db_manager.get_pf_links(pid):
                 if l["work_id"] == row["id"] or l["depends_on"] == row["id"]:
                     self.db_manager.delete_pf_link(l["id"])
-            self.db_manager.conn.execute("UPDATE plan_fact SET parent_id=0 WHERE parent_id=?", (row["id"],))
+            self.db_manager.conn.execute("UPDATE plan_fact SET parent_id=0 WHERE parent_id=?",
+                                         (row["id"],))
             self.db_manager.conn.commit()
         self.db_manager.delete_plan_fact(pid, num)
         self.app.log_action(f"План-Факт: работа №{num} удалена")
@@ -625,6 +560,219 @@ class PlanFactTab(BaseTab):
         messagebox.showinfo("Базовый план", f"Зафиксировано работ: {n}")
 
     # ==================================================================
+    # Окна и отчёты
+    # ==================================================================
+    def _pid_row(self):
+        if self._current_number is None:
+            return None, None
+        pid = self.db_manager.get_project_id(self.app.current_project)
+        row = next((dict(r) for r in self.db_manager.get_plan_fact(pid)
+                    if r["number"] == self._current_number), None)
+        return pid, row
+
+    def open_links(self):
+        pid, row = self._pid_row()
+        if not row:
+            messagebox.showwarning("Внимание", "Выберите работу!")
+            return
+        WorkLinksDialog(self.root, self.db_manager, pid, row)
+        self.db_manager.pf_recalc_schedule(pid)
+        self.load_records()
+
+    def open_responsibles(self):
+        ResponsiblesDialog(self.root, self.db_manager)
+        self._refresh_dicts()
+
+    def open_work_types(self):
+        DirectoryDialog(self.root, "Типы работ", self.db_manager.get_work_types,
+                        self.db_manager.add_work_type, self.db_manager.rename_work_type,
+                        self.db_manager.delete_work_type)
+        self._refresh_dicts()
+
+    def open_work_statuses(self):
+        DirectoryDialog(self.root, "Статусы работ", self.db_manager.get_work_statuses,
+                        self.db_manager.add_work_status, self.db_manager.rename_work_status,
+                        self.db_manager.delete_work_status)
+        self._refresh_dicts()
+
+    def open_delay_reasons(self):
+        DirectoryDialog(self.root, "Причины задержек", self.db_manager.get_delay_reasons,
+                        self.db_manager.add_delay_reason, self.db_manager.rename_delay_reason,
+                        self.db_manager.delete_delay_reason)
+        self._refresh_dicts()
+
+    def _need_pid(self):
+        pid = self.db_manager.get_project_id(self.app.current_project or "")
+        if not pid:
+            messagebox.showwarning("Внимание", "Выберите проект!")
+        return pid
+
+    def open_workload(self):
+        pid = self._need_pid()
+        if pid:
+            TableReportDialog(self.root, "Загрузка ответственных",
+                              [("Ответственный", 180), ("Работ", 60), ("Дней", 70),
+                               ("Просроч.", 70), ("🔒", 50), ("Пик парал.", 80), ("Статус", 110)],
+                              [[w["name"], w["works"], w["days"], w["overdue"], w["blocked"],
+                                w["peak"], "ПЕРЕГРУЗ" if w["overload"] else "норма"]
+                               for w in self.db_manager.pf_workload(pid)],
+                              highlight=lambda row: row[6] == "ПЕРЕГРУЗ")
+
+    def open_delays(self):
+        pid = self._need_pid()
+        if pid:
+            TableReportDialog(self.root, "Аналитика задержек",
+                              [("Причина", 200), ("Работ", 70), ("Дней просрочки", 110),
+                               ("🔒", 60), ("№ работ", 220)],
+                              [[d["reason"], d["count"], d["days"], d["blocked"], d["numbers"]]
+                               for d in self.db_manager.pf_delay_analytics(pid)])
+
+    def open_audit(self):
+        pid = self._need_pid()
+        if not pid:
+            return
+        _, row = self._pid_row()
+        rows = self.db_manager.pf_audit(pid, row["id"] if row else None)
+        TableReportDialog(self.root,
+                          "История изменений" + (f' · №{row["number"]}' if row else " · все работы"),
+                          [("Когда", 130), ("№", 50), ("Поле", 120),
+                           ("Было", 130), ("Стало", 130), ("Кто", 110)],
+                          [[r["ts"], r["number"], r["field"], r["old_value"],
+                            r["new_value"], r["author"] or r["device"]] for r in rows])
+
+    def open_notifications(self):
+        pid = self._need_pid()
+        if not pid:
+            return
+        notes = self.db_manager.pf_notifications(pid)
+        TableReportDialog(self.root, "Уведомления по работам",
+                          [("№", 50), ("Работа", 230), ("Ответственный", 140), ("Событие", 300)],
+                          [[n["number"], n["name"], n["responsible"], n["text"]] for n in notes],
+                          highlight=lambda row: "ПРОСРОЧКА" in str(row[3]) or "🔒" in str(row[3]))
+
+    def open_gantt(self):
+        pid = self._need_pid()
+        if pid:
+            GanttDialog(self.root, self.db_manager, pid, self.app.current_project)
+
+    def export(self):
+        try:
+            import openpyxl
+            from openpyxl.styles import Font
+        except ImportError:
+            messagebox.showerror("Нет библиотеки", "pip install openpyxl")
+            return
+        pid = self._need_pid()
+        if not pid:
+            return
+        path = filedialog.asksaveasfilename(
+            defaultextension=".xlsx",
+            initialfile=f"План-Факт_{self.app.current_project}.xlsx")
+        if not path:
+            return
+        met = self.db_manager.pf_metrics(pid)["rows"]
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "План-Факт"
+        ws.append([self.app.current_project])
+        ws.append(["№", "Наименование", "Подпроект", "Тип", "Ответственный", "Статус",
+                   "Начало план", "Начало факт", "Выполнение", "Окончание план", "Окончание факт",
+                   "Δ дней", "%", "Прогноз", "Резерв", "Зависит от", "Сдвиг базы",
+                   "Заблокирована", "Причина", "Стоимость ₽", "Комментарии"])
+        for c in ws[2]:
+            c.font = Font(bold=True)
+        for r in self.db_manager.get_plan_fact(pid):
+            mm = met.get(r["id"], {})
+            ws.append([r["number"], r["name"], r["subproject"], r["work_type"], r["responsible"],
+                       r["status"], r["start_plan"], r["start_fact"],
+                       f'{_num(r["duration_qty"]):g} {r["duration_unit"] or ""}',
+                       r["end_plan"], r["end_fact"], mm.get("delta"), mm.get("progress"),
+                       mm.get("forecast"), mm.get("slack"), mm.get("depends"), mm.get("base_shift"),
+                       "да" if r["is_blocked"] else "", r["delay_reason"],
+                       round(_num(r["cost_weight"]), 2), r["comment"]])
+        ws2 = wb.create_sheet("Загрузка")
+        ws2.append(["Ответственный", "Работ", "Дней", "Просрочено", "Блокировано", "Пик", "Перегруз"])
+        for w in self.db_manager.pf_workload(pid):
+            ws2.append([w["name"], w["works"], w["days"], w["overdue"], w["blocked"],
+                        w["peak"], "да" if w["overload"] else ""])
+        ws3 = wb.create_sheet("Задержки")
+        ws3.append(["Причина", "Работ", "Дней просрочки", "Блокировано", "№"])
+        for d in self.db_manager.pf_delay_analytics(pid):
+            ws3.append([d["reason"], d["count"], d["days"], d["blocked"], d["numbers"]])
+        ws4 = wb.create_sheet("История")
+        ws4.append(["Когда", "№", "Поле", "Было", "Стало", "Кто"])
+        for a in self.db_manager.pf_audit(pid, limit=2000):
+            ws4.append([a["ts"], a["number"], a["field"], a["old_value"], a["new_value"], a["author"]])
+        ws.freeze_panes = "C3"
+        try:
+            wb.save(path)
+            messagebox.showinfo("Успех", f"Сохранено (4 листа):\n{path}")
+        except Exception as e:
+            messagebox.showerror("Ошибка", str(e))
+
+    # ==================================================================
+    # База наименований работ
+    # ==================================================================
+    def _has_work_names(self):
+        return hasattr(self.db_manager, "get_work_names")
+
+    def _refresh_work_names(self):
+        self._work_names = {}
+        if not self._has_work_names():
+            return
+        try:
+            for r in self.db_manager.get_work_names():
+                self._work_names[r["name"]] = dict(r)
+            self.c_name["values"] = sorted(self._work_names.keys())
+        except Exception as e:
+            print(f"[plan_fact] work_names: {e}")
+
+    def add_work_name_inline(self):
+        if not self._has_work_names():
+            messagebox.showerror(
+                "Нет справочника",
+                "В database.py нет методов work_names.\n"
+                "Добавьте блок «База наименований работ» и вызов "
+                "self._ensure_work_names() в __init__.", parent=self.root)
+            return
+        name = self.e_name.get().strip()
+        if not name:
+            messagebox.showwarning("Внимание", "Введите наименование работ!", parent=self.root)
+            return
+        ok = self.db_manager.add_work_name(name, self.c_type.get().strip(),
+                                           _num(self.e_dur.get()), self.c_unit.get())
+        self._refresh_work_names()
+        if ok:
+            self.app.log_action(f"База наименований работ: добавлено «{name}»")
+            messagebox.showinfo("Готово", f"«{name}» сохранено в базу наименований работ.",
+                                parent=self.root)
+        else:
+            messagebox.showinfo("Информация", "Такое наименование уже есть в базе.", parent=self.root)
+
+    def on_work_name_selected(self, event=None):
+        rec = self._work_names.get(self.e_name.get())
+        if not rec:
+            return
+        if rec.get("work_type") and not self.c_type.get().strip():
+            self.c_type.set(rec["work_type"])
+        if _num(rec.get("duration_qty")) > 0 and not _num(self.e_dur.get()):
+            self.e_dur.delete(0, tk.END)
+            self.e_dur.insert(0, f'{_num(rec["duration_qty"]):g}')
+            self.c_unit.set(rec.get("duration_unit") or UNITS[0])
+        self._recalc_label()
+
+    def open_work_names(self):
+        if not self._has_work_names():
+            messagebox.showerror(
+                "Нет справочника",
+                "В database.py нет методов work_names.\n"
+                "Добавьте блок «База наименований работ» и вызов "
+                "self._ensure_work_names() в __init__.", parent=self.root)
+            return
+        WorkNamesDialog(self.root, self.db_manager)
+        self._refresh_work_names()
+
+    # ==================================================================
     # ИНЛАЙН-РЕДАКТИРОВАНИЕ таблицы работ
     # ==================================================================
     _PF_EDIT_COLS = {
@@ -638,16 +786,16 @@ class PlanFactTab(BaseTab):
         7: ("start_fact", "date"),
         8: ("duration", "duration"),
         10: ("end_fact", "date"),
-        12: ("progress", "percent"),
+        12: ("progress", "int"),
         17: ("is_blocked", "blocked"),
         18: ("cost_weight", "float"),
     }
     _PF_READONLY = {
-        9: "Окончание план = Начало план + Выполнение.\nМеняйте «Начало план» или «Выполнение».",
-        11: "Δ дней считается автоматически: факт (или сегодня) − план.",
+        9: "Окончание план = Начало план + Выполнение. Меняйте их.",
+        11: "Δ дней считается автоматически: факт/сегодня − план.",
         13: "Прогноз = Начало факт + Выполнение.",
         14: "Резерв считается по зависимостям и концу проекта.",
-        16: "Сдвиг базы = Окончание план − базовый план.\nБаза фиксируется кнопкой «Зафиксировать базу».",
+        16: "Сдвиг базы = Окончание план − базовый план.",
     }
 
     def on_tree_double_click(self, event):
@@ -658,7 +806,7 @@ class PlanFactTab(BaseTab):
         if not row or not col or row not in self._row_num:
             return
         idx = int(col.replace("#", "")) - 1
-        if idx == 15:                       # «Зависит от» → окно связей
+        if idx == 15:
             self.on_select()
             self.open_links()
             return "break"
@@ -677,14 +825,14 @@ class PlanFactTab(BaseTab):
             return self.db_manager.get_work_statuses()
         if kind == "responsible":
             return [r["name"] for r in self.db_manager.get_responsibles()]
+        if kind == "reason":
+            return self.db_manager.get_delay_reasons()
         if kind == "subproject":
             try:
                 return [""] + [r["name"] for r in
                                self.db_manager.get_subprojects(self.app.current_project)]
             except Exception:
                 return [""]
-        if kind == "reason":
-            return self.db_manager.get_delay_reasons()
         return []
 
     def _pf_inline_begin(self, row, col, idx, _retry=False):
@@ -725,8 +873,7 @@ class PlanFactTab(BaseTab):
             cu.set(parts[1] if len(parts) > 1 else UNITS[0])
             eq.focus_set()
             eq.select_range(0, tk.END)
-            widget = entry = eq
-            widget = frame
+            widget, entry = frame, eq
             getter = lambda: (eq.get(), cu.get())
             new_sig = lambda v: f"{_num(v[0]):g} {v[1]}"
         elif kind == "blocked":
@@ -792,7 +939,7 @@ class PlanFactTab(BaseTab):
                            "combo": kind in combo_kinds}
 
     def _pf_post(self, ed):
-        info = getattr(self, "_pf_inline", None)
+        info = self._pf_inline
         if not info or info["entry"] is not ed:
             return
         try:
@@ -822,12 +969,12 @@ class PlanFactTab(BaseTab):
         return False
 
     def _pf_focus_out(self, ed):
-        info = getattr(self, "_pf_inline", None)
+        info = self._pf_inline
         if not info or info["entry"] is not ed:
             return
 
         def check():
-            cur = getattr(self, "_pf_inline", None)
+            cur = self._pf_inline
             if not cur or cur["entry"] is not ed:
                 return
             if cur.get("combo") and self._pf_combo_busy(ed):
@@ -841,7 +988,7 @@ class PlanFactTab(BaseTab):
         self.root.after(180, check)
 
     def _pf_inline_cancel(self):
-        info = getattr(self, "_pf_inline", None)
+        info = self._pf_inline
         self._pf_inline = None
         if info:
             try:
@@ -864,7 +1011,7 @@ class PlanFactTab(BaseTab):
         return "break"
 
     def _pf_inline_commit(self):
-        info = getattr(self, "_pf_inline", None)
+        info = self._pf_inline
         if not info:
             return "break"
         self._pf_inline = None
@@ -891,7 +1038,8 @@ class PlanFactTab(BaseTab):
             if field == "number":
                 new_num = int(_num(raw, 0))
                 if new_num <= 0:
-                    messagebox.showwarning("Внимание", "Номер должен быть положительным", parent=self.root)
+                    messagebox.showwarning("Внимание", "Номер должен быть положительным!",
+                                           parent=self.root)
                     return "break"
                 if any(r["number"] == new_num for r in self.db_manager.get_plan_fact(pid)):
                     messagebox.showwarning("Внимание", f"Номер {new_num} уже занят!", parent=self.root)
@@ -901,4 +1049,451 @@ class PlanFactTab(BaseTab):
                     (new_num, pid, number))
                 self.db_manager.conn.commit()
                 self._current_number = new_num
-                self
+                self.app.log_action(f"План-Факт: работа №{number} → №{new_num}")
+                self.load_records()
+                return "break"
+
+            if field == "duration":
+                qty, unit = raw
+                data = {"duration_qty": _num(qty), "duration_unit": unit or UNITS[0]}
+            elif field == "is_blocked":
+                flag, reason = raw
+                if flag and not reason:
+                    messagebox.showwarning("Внимание", "Укажите причину задержки!", parent=self.root)
+                    return "break"
+                data = {"is_blocked": flag, "delay_reason": reason}
+            elif kind == "date":
+                v = str(raw).strip()
+                if v:
+                    d = self.db_manager.pf_parse(v)
+                    if d is None:
+                        messagebox.showwarning("Ошибка", "Дата в формате ДД.ММ.ГГГГ", parent=self.root)
+                        return "break"
+                    v = d.strftime("%d.%m.%Y")
+                data = {field: v}
+            elif kind == "int":
+                data = {field: int(_num(raw, 0))}
+            elif kind == "float":
+                data = {field: max(0.0, _num(raw, 0))}
+            else:
+                data = {field: str(raw).strip()}
+
+            self.db_manager.update_plan_fact(pid, number, data)
+            self.db_manager.pf_recalc_schedule(pid)
+            self._current_number = number
+            self.app.log_action(f"План-Факт: работа №{number} · {field} изменён")
+            self.load_records()
+            for iid in self.tree.get_children():
+                if self._row_num.get(iid) == number:
+                    self.tree.selection_set(iid)
+                    self.tree.see(iid)
+                    self.on_select()
+                    break
+        except Exception as e:
+            messagebox.showerror("Ошибка", f"Не удалось сохранить:\n{e}", parent=self.root)
+        return "break"
+
+
+# ======================================================================
+class TableReportDialog(tk.Toplevel):
+    """Универсальное окно отчёта."""
+    def __init__(self, parent, title, columns, rows, highlight=None):
+        super().__init__(parent)
+        self.title(title)
+        self.geometry("980x520")
+        self.transient(parent)
+        cols = tuple(f"c{i}" for i in range(len(columns)))
+        tv = ttk.Treeview(self, columns=cols, show="headings", height=18)
+        for i, (t, w) in enumerate(columns):
+            tv.heading(cols[i], text=t)
+            tv.column(cols[i], width=w, anchor="w" if i in (0, 1) else "center")
+        vs = ttk.Scrollbar(self, orient=tk.VERTICAL, command=tv.yview)
+        hs = ttk.Scrollbar(self, orient=tk.HORIZONTAL, command=tv.xview)
+        tv.configure(yscroll=vs.set, xscroll=hs.set)
+        tv.pack(side=tk.LEFT, fill="both", expand=True, padx=(8, 0), pady=8)
+        vs.pack(side=tk.RIGHT, fill="y")
+        hs.pack(side=tk.BOTTOM, fill="x")
+        tv.tag_configure("bad", background="#f8d7da")
+        for row in rows:
+            tags = ("bad",) if highlight and highlight(row) else ()
+            tv.insert("", tk.END, values=row, tags=tags)
+        if not rows:
+            tv.insert("", tk.END, values=["— нет данных —"] + [""] * (len(columns) - 1))
+        ttk.Button(self, text="Закрыть", command=self.destroy).pack(side=tk.BOTTOM, pady=4)
+        self.bind("<Escape>", lambda e: self.destroy())
+        self.update_idletasks()
+        try:
+            self.grab_set()
+        except tk.TclError:
+            pass
+
+
+class ResponsiblesDialog(tk.Toplevel):
+    """База ответственных."""
+    def __init__(self, parent, db):
+        super().__init__(parent)
+        self.db = db
+        self.title("База ответственных")
+        self.geometry("720x460")
+        self.transient(parent)
+        self.tree = ttk.Treeview(self, columns=("name", "pos", "email", "phone"),
+                                 show="headings", height=12)
+        for c, t, w in (("name", "ФИО", 200), ("pos", "Должность", 160),
+                        ("email", "E-mail", 160), ("phone", "Телефон", 120)):
+            self.tree.heading(c, text=t)
+            self.tree.column(c, width=w)
+        self.tree.pack(fill="both", expand=True, padx=8, pady=8)
+        f = ttk.Frame(self)
+        f.pack(fill="x", padx=8)
+        self.e = {}
+        for i, (k, t) in enumerate((("name", "ФИО"), ("pos", "Должность"),
+                                    ("email", "E-mail"), ("phone", "Телефон"))):
+            ttk.Label(f, text=t + ":").grid(row=i, column=0, sticky="w", pady=2)
+            self.e[k] = ttk.Entry(f, width=40)
+            self.e[k].grid(row=i, column=1, sticky="w", pady=2)
+        bf = ttk.Frame(self)
+        bf.pack(pady=8)
+        for t, c in (("Добавить", self.add), ("Сохранить изменения", self.save),
+                     ("Удалить", self.delete), ("Закрыть", self.destroy)):
+            ttk.Button(bf, text=t, command=c).pack(side=tk.LEFT, padx=4)
+        self.tree.bind("<<TreeviewSelect>>", self.pick)
+        self.bind("<Escape>", lambda e: self.destroy())
+        self.reload()
+        self.update_idletasks()
+        try:
+            self.grab_set()
+        except tk.TclError:
+            pass
+
+    def reload(self):
+        for i in self.tree.get_children():
+            self.tree.delete(i)
+        for r in self.db.get_responsibles():
+            self.tree.insert("", tk.END, iid=str(r["id"]),
+                             values=(r["name"], r["position"], r["email"], r["phone"]))
+
+    def pick(self, e=None):
+        s = self.tree.selection()
+        if not s:
+            return
+        for k, val in zip(("name", "pos", "email", "phone"), self.tree.item(s[0])["values"]):
+            self.e[k].delete(0, tk.END)
+            self.e[k].insert(0, val or "")
+
+    def add(self):
+        if self.db.add_responsible(self.e["name"].get(), self.e["pos"].get(),
+                                   self.e["email"].get(), self.e["phone"].get()):
+            self.reload()
+        else:
+            messagebox.showwarning("Внимание", "Пустое или уже существующее ФИО", parent=self)
+
+    def save(self):
+        s = self.tree.selection()
+        if not s:
+            messagebox.showwarning("Внимание", "Выберите запись!", parent=self)
+            return
+        if self.db.update_responsible(int(s[0]), self.e["name"].get(), self.e["pos"].get(),
+                                      self.e["email"].get(), self.e["phone"].get()):
+            self.reload()
+        else:
+            messagebox.showwarning("Внимание", "ФИО занято", parent=self)
+
+    def delete(self):
+        s = self.tree.selection()
+        if s and messagebox.askyesno("Подтверждение", "Удалить ответственного?", parent=self):
+            self.db.delete_responsible(int(s[0]))
+            self.reload()
+
+
+class WorkLinksDialog(tk.Toplevel):
+    """Зависимости работы по срокам."""
+    def __init__(self, parent, db, pid, row):
+        super().__init__(parent)
+        self.db, self.pid, self.row = db, pid, row
+        self.title(f'Зависимости · №{row["number"]} {row.get("name") or ""}')
+        self.geometry("760x420")
+        self.transient(parent)
+        self.rows = {r["id"]: dict(r) for r in db.get_plan_fact(pid)}
+        ttk.Label(self, text="Эта работа зависит по срокам от:",
+                  font=("Arial", 9, "bold")).pack(anchor="w", padx=10, pady=(10, 4))
+        self.tree = ttk.Treeview(self, columns=("dep", "type", "lag"), show="headings", height=8)
+        for c, t, w in (("dep", "Зависит от работы", 380), ("type", "Тип связи", 220),
+                        ("lag", "Лаг, дней", 90)):
+            self.tree.heading(c, text=t)
+            self.tree.column(c, width=w)
+        self.tree.pack(fill="both", expand=True, padx=10)
+        f = ttk.Frame(self)
+        f.pack(fill="x", padx=10, pady=8)
+        ttk.Label(f, text="Работа:").grid(row=0, column=0, sticky="w")
+        self.c_dep = ttk.Combobox(f, width=44, state="readonly")
+        self.c_dep.grid(row=0, column=1, sticky="w", padx=4)
+        ttk.Label(f, text="Тип:").grid(row=0, column=2, sticky="w")
+        self.c_type = ttk.Combobox(f, width=24, state="readonly",
+                                   values=[LINK_LABELS[k] for k in ("FS", "SS", "FF", "SF", "NONE")])
+        self.c_type.set(LINK_LABELS["FS"])
+        self.c_type.grid(row=0, column=3, sticky="w", padx=4)
+        ttk.Label(f, text="Лаг:").grid(row=1, column=0, sticky="w", pady=4)
+        self.e_lag = ttk.Entry(f, width=6)
+        self.e_lag.grid(row=1, column=1, sticky="w", padx=4)
+        self.e_lag.insert(0, "0")
+        bf = ttk.Frame(self)
+        bf.pack(pady=6)
+        for t, c in (("Добавить связь", self.add), ("Удалить связь", self.remove),
+                     ("Закрыть", self.destroy)):
+            ttk.Button(bf, text=t, command=c).pack(side=tk.LEFT, padx=4)
+        self._map = {f'№{r["number"]} · {r.get("name") or ""}': wid
+                     for wid, r in self.rows.items() if wid != row["id"]}
+        self.c_dep["values"] = list(self._map.keys())
+        self.bind("<Escape>", lambda e: self.destroy())
+        self.reload()
+        self.update_idletasks()
+        try:
+            self.grab_set()
+        except tk.TclError:
+            pass
+
+    def reload(self):
+        for i in self.tree.get_children():
+            self.tree.delete(i)
+        for l in self.db.get_pf_links(self.pid, self.row["id"]):
+            p = self.rows.get(l["depends_on"])
+            label = f'№{p["number"]} · {p.get("name") or ""}' if p else f'id {l["depends_on"]}'
+            self.tree.insert("", tk.END, iid=str(l["id"]),
+                             values=(label, LINK_LABELS.get(l["link_type"], l["link_type"]),
+                                     l["lag_days"]))
+
+    def add(self):
+        wid = self._map.get(self.c_dep.get())
+        if not wid:
+            messagebox.showwarning("Внимание", "Выберите работу", parent=self)
+            return
+        t = next((k for k, v in LINK_LABELS.items() if v == self.c_type.get()), "FS")
+        ok, err = self.db.add_pf_link(self.pid, self.row["id"], wid, t, _num(self.e_lag.get()))
+        if not ok:
+            messagebox.showerror("Ошибка", err, parent=self)
+            return
+        self.db.pf_recalc_schedule(self.pid)
+        self.reload()
+
+    def remove(self):
+        s = self.tree.selection()
+        if s:
+            self.db.delete_pf_link(int(s[0]))
+            self.reload()
+
+
+class DirectoryDialog(tk.Toplevel):
+    """Универсальный справочник (типы работ / статусы / причины)."""
+    def __init__(self, parent, title, getter, adder, renamer, deleter):
+        super().__init__(parent)
+        self.getter, self.adder, self.renamer, self.deleter = getter, adder, renamer, deleter
+        self.title(title)
+        self.geometry("440x430")
+        self.transient(parent)
+        self.tree = ttk.Treeview(self, columns=("n",), show="headings", height=14)
+        self.tree.heading("n", text=title)
+        self.tree.column("n", width=380)
+        self.tree.pack(fill="both", expand=True, padx=8, pady=8)
+        f = ttk.Frame(self)
+        f.pack(fill="x", padx=8, pady=(0, 8))
+        self.e = ttk.Entry(f, width=28)
+        self.e.pack(side=tk.LEFT, padx=4)
+        for t, c in (("Добавить", self.add), ("Переименовать", self.rename), ("Удалить", self.delete)):
+            ttk.Button(f, text=t, command=c).pack(side=tk.LEFT, padx=2)
+        self.tree.bind("<<TreeviewSelect>>", lambda e: self._fill())
+        self.bind("<Escape>", lambda e: self.destroy())
+        self.reload()
+        self.update_idletasks()
+        try:
+            self.grab_set()
+        except tk.TclError:
+            pass
+
+    def _fill(self):
+        s = self.tree.selection()
+        if s:
+            self.e.delete(0, tk.END)
+            self.e.insert(0, self.tree.item(s[0])["values"][0])
+
+    def reload(self):
+        for i in self.tree.get_children():
+            self.tree.delete(i)
+        for n in self.getter():
+            self.tree.insert("", tk.END, values=(n,))
+
+    def add(self):
+        if self.adder(self.e.get()):
+            self.reload()
+        else:
+            messagebox.showwarning("Внимание", "Пустое или уже существующее значение", parent=self)
+
+    def rename(self):
+        s = self.tree.selection()
+        if s and self.renamer(self.tree.item(s[0])["values"][0], self.e.get()):
+            self.reload()
+
+    def delete(self):
+        s = self.tree.selection()
+        if s and messagebox.askyesno("Подтверждение", "Удалить?", parent=self):
+            self.deleter(self.tree.item(s[0])["values"][0])
+            self.reload()
+
+
+class WorkNamesDialog(tk.Toplevel):
+    """База наименований работ: наименование + тип + длительность по умолчанию."""
+    def __init__(self, parent, db):
+        super().__init__(parent)
+        self.db = db
+        self.title("База наименований работ")
+        self.geometry("880x520")
+        self.transient(parent)
+        self.tree = ttk.Treeview(self, columns=("name", "type", "qty", "unit"),
+                                 show="headings", height=14)
+        for c, t, w in (("name", "Наименование работ", 380), ("type", "Тип работ", 160),
+                        ("qty", "Длительность", 100), ("unit", "Единица", 160)):
+            self.tree.heading(c, text=t)
+            self.tree.column(c, width=w, anchor="w" if c in ("name", "type") else "center")
+        self.tree.pack(fill="both", expand=True, padx=8, pady=8)
+
+        f = ttk.Frame(self)
+        f.pack(fill="x", padx=8)
+        ttk.Label(f, text="Наименование:").grid(row=0, column=0, sticky="w", pady=3)
+        self.e_name = ttk.Entry(f, width=52)
+        self.e_name.grid(row=0, column=1, columnspan=4, sticky="ew", pady=3)
+        ttk.Label(f, text="Тип работ:").grid(row=1, column=0, sticky="w", pady=3)
+        self.c_type = ttk.Combobox(f, width=24, values=db.get_work_types())
+        self.c_type.grid(row=1, column=1, sticky="w", pady=3)
+        ttk.Label(f, text="Длительность:").grid(row=1, column=2, sticky="e", padx=(12, 4))
+        self.e_qty = ttk.Entry(f, width=8)
+        self.e_qty.grid(row=1, column=3, sticky="w")
+        self.e_qty.insert(0, "0")
+        self.c_unit = ttk.Combobox(f, width=18, state="readonly", values=UNITS)
+        self.c_unit.set(UNITS[0])
+        self.c_unit.grid(row=1, column=4, sticky="w", padx=6)
+        f.grid_columnconfigure(1, weight=1)
+
+        bf = ttk.Frame(self)
+        bf.pack(pady=10)
+        for t, c in (("Добавить", self.add), ("Сохранить изменения", self.save),
+                     ("Удалить", self.delete), ("Закрыть", self.destroy)):
+            ttk.Button(bf, text=t, command=c).pack(side=tk.LEFT, padx=4)
+        ttk.Label(self, foreground="gray",
+                  text="Тип и длительность подставляются при выборе наименования в карточке работы."
+                  ).pack(pady=(0, 8))
+        self.tree.bind("<<TreeviewSelect>>", self.pick)
+        self.bind("<Escape>", lambda e: self.destroy())
+        self.reload()
+        self.update_idletasks()
+        try:
+            self.grab_set()
+        except tk.TclError:
+            pass
+
+    def reload(self):
+        for i in self.tree.get_children():
+            self.tree.delete(i)
+        for r in self.db.get_work_names():
+            self.tree.insert("", tk.END, iid=str(r["id"]), values=(
+                r["name"], r["work_type"] or "", f'{_num(r["duration_qty"]):g}',
+                r["duration_unit"] or ""))
+
+    def pick(self, e=None):
+        s = self.tree.selection()
+        if not s:
+            return
+        v = self.tree.item(s[0])["values"]
+        self.e_name.delete(0, tk.END)
+        self.e_name.insert(0, v[0])
+        self.c_type.set(v[1] or "")
+        self.e_qty.delete(0, tk.END)
+        self.e_qty.insert(0, str(v[2] or 0))
+        self.c_unit.set(v[3] or UNITS[0])
+
+    def add(self):
+        if self.db.add_work_name(self.e_name.get(), self.c_type.get(),
+                                 _num(self.e_qty.get()), self.c_unit.get()):
+            self.reload()
+        else:
+            messagebox.showwarning("Внимание", "Пустое или уже существующее наименование", parent=self)
+
+    def save(self):
+        s = self.tree.selection()
+        if not s:
+            messagebox.showwarning("Внимание", "Выберите запись!", parent=self)
+            return
+        if self.db.update_work_name(int(s[0]), self.e_name.get(), self.c_type.get(),
+                                    _num(self.e_qty.get()), self.c_unit.get()):
+            self.reload()
+        else:
+            messagebox.showwarning("Внимание", "Наименование занято", parent=self)
+
+    def delete(self):
+        s = self.tree.selection()
+        if s and messagebox.askyesno("Подтверждение",
+                                     "Удалить наименование из базы?\nСуществующие работы не изменятся.",
+                                     parent=self):
+            self.db.delete_work_name(int(s[0]))
+            self.reload()
+
+
+class GanttDialog(tk.Toplevel):
+    """Диаграмма Ганта: базовый план / текущий план / факт / сегодня."""
+    def __init__(self, parent, db, pid, project):
+        super().__init__(parent)
+        self.title(f"Диаграмма Ганта · {project}")
+        self.geometry("1150x620")
+        rows = [dict(r) for r in db.get_plan_fact(pid)]
+        met = db.pf_metrics(pid)["rows"]
+        dates = []
+        for r in rows:
+            for k in ("start_plan", "end_plan", "start_fact", "end_fact",
+                      "baseline_start", "baseline_end"):
+                d = db.pf_parse(r.get(k))
+                if d:
+                    dates.append(d)
+        if not dates:
+            ttk.Label(self, text="Нет дат для отображения").pack(padx=20, pady=20)
+            return
+        from datetime import timedelta
+        d0, d1 = min(dates), max(dates)
+        span = max((d1 - d0).days + 1, 1)
+        cv = tk.Canvas(self, bg="white")
+        sb = ttk.Scrollbar(self, orient=tk.VERTICAL, command=cv.yview)
+        cv.configure(yscroll=sb.set, scrollregion=(0, 0, 280 + span * 14, len(rows) * 30 + 60))
+        cv.pack(side=tk.LEFT, fill="both", expand=True)
+        sb.pack(side=tk.RIGHT, fill="y")
+        left, top, scale = 270, 40, 14
+        for i in range(0, span, 7):
+            x = left + i * scale
+            cv.create_line(x, top - 10, x, top + len(rows) * 30, fill="#eee")
+            cv.create_text(x, top - 20, text=(d0 + timedelta(days=i)).strftime("%d.%m"),
+                           font=("Arial", 7), anchor="w")
+        tx = left + (datetime.now() - d0).days * scale
+        cv.create_line(tx, top - 10, tx, top + len(rows) * 30, fill="red", dash=(4, 2))
+        for i, r in enumerate(rows):
+            y = top + i * 30
+            mark = "🔒 " if r.get("is_blocked") else ""
+            cv.create_text(5, y + 10, anchor="w", font=("Arial", 8),
+                           text=f'{mark}№{r["number"]} {(r.get("name") or "")[:32]}')
+            bs, be = db.pf_parse(r.get("baseline_start")), db.pf_parse(r.get("baseline_end"))
+            sp, ep = db.pf_parse(r.get("start_plan")), db.pf_parse(r.get("end_plan"))
+            sf, ef = db.pf_parse(r.get("start_fact")), db.pf_parse(r.get("end_fact"))
+            if bs and be:
+                cv.create_rectangle(left + (bs - d0).days * scale, y,
+                                    left + ((be - d0).days + 1) * scale, y + 4,
+                                    fill="#cccccc", outline="")
+            if sp and ep:
+                cv.create_rectangle(left + (sp - d0).days * scale, y + 6,
+                                    left + ((ep - d0).days + 1) * scale, y + 15,
+                                    fill="#cfe2f3", outline="#3d85c6")
+            if sf:
+                e = ef or datetime.now()
+                light = met.get(r["id"], {}).get("light")
+                color = {"done": "#b6d7a8", "overdue": "#ea9999",
+                         "blocked": "#d9d2e9"}.get(light, "#ffd966")
+                cv.create_rectangle(left + (sf - d0).days * scale, y + 17,
+                                    left + ((e - d0).days + 1) * scale, y + 25,
+                                    fill=color, outline="#999")
+        cv.create_text(left, 10, anchor="w", font=("Arial", 8, "bold"),
+                       text="серая — базовый план, синяя — текущий план, цветная — факт; "
+                            "красная линия — сегодня")
