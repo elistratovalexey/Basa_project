@@ -19,6 +19,7 @@
         </activity>
         <activity android:name=".SettingsActivity" android:label="Настройки" android:parentActivityName=".MainActivity"/>
         <activity android:name=".OrdersActivity" android:label="База заказов" android:parentActivityName=".MainActivity"/>
+        <activity android:name=".GanttActivity" android:label="Диаграмма Ганта" android:parentActivityName=".MainActivity"/>
 
         <provider
             android:name="androidx.core.content.FileProvider"
