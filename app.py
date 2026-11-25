@@ -69,6 +69,11 @@ except Exception as _e:
 
 if terminal_log is not None:
     terminal_log.install(getattr(cfg, "LOG_DIR", os.path.join(cfg.APP_DIR, "logs")))
+try:
+    from tabs.correspondence import CorrespondenceTab
+except Exception as _e:
+    CorrespondenceTab = None
+    print(f"[app] вкладка «Переписка» недоступна: {_e}")
 
 # === Глобальная защита от "grab failed: window not viewable" ===
 _original_toplevel_grab_set = tk.Toplevel.grab_set
@@ -470,6 +475,10 @@ class ProjectManagerApp:
             f = ttk.Frame(self.notebook, padding=10)
             self.notebook.add(f, text="  Бюджет  ")
             self.budget_tab = BudgetTab(self, f)
+        if CorrespondenceTab is not None:
+            f = ttk.Frame(self.notebook, padding=10)
+            self.notebook.add(f, text="  Переписка  ")
+            self.correspondence_tab = CorrespondenceTab(self, f)
 
         for cls in ("TEntry", "Entry", "TCombobox"):
             for seq in ("<Control-v>", "<Control-V>"):
@@ -839,7 +848,8 @@ class ProjectManagerApp:
 
         for attr, meth in (("plan_fact_tab", "load_records"),
                            ("dashboard_tab", "refresh"),
-                           ("budget_tab", "load_budget")):
+                           ("budget_tab", "load_budget"),
+                           ("correspondence_tab", "load_messages")):
             tab = getattr(self, attr, None)
             if tab is not None:
                 try:
