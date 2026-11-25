@@ -66,6 +66,12 @@ try:
 except Exception as _e:
     PlanFactTab = None
     print(f"[app] вкладка «План-Факт» недоступна: {_e}")
+try:
+    from tabs.correspondence import CorrespondenceTab
+except Exception as _e:
+    CorrespondenceTab = None
+    print(f"[app] вкладка «Переписка» недоступна: {_e}")
+    
 
 if terminal_log is not None:
     terminal_log.install(getattr(cfg, "LOG_DIR", os.path.join(cfg.APP_DIR, "logs")))
@@ -110,6 +116,14 @@ class ProjectManagerApp:
         self.config_manager = ConfigManager(cfg.LOCAL_CONFIG_FILE)
         self.db_manager = self._open_database(self.config_manager.get("db_path", DEFAULT_DB_NAME))
         self.setup_logging()
+        # Вторая база — переписка (синхронизируется с облаком отдельно)
+        self.mail_db = None
+        try:
+            from mail_db import MailDatabase
+            self.mail_db = MailDatabase(log=print)
+            self.log_action(f"Переписка: база {self.mail_db.db_path}")
+        except Exception as e:
+            print(f"[app] база переписки недоступна: {e}")
         self.root.report_callback_exception = self.on_tk_exception
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
 
@@ -169,6 +183,10 @@ class ProjectManagerApp:
             self.restart_sync_timer()
         except Exception as e:
             print(f"Облачная синхронизация недоступна: {e}")
+        # --- Почта: автопроверка и автосинхронизация переписки ---
+        if getattr(self, "mail_db", None) is not None:
+            self.root.after(15000, self._start_mail_timers)
+        
                 # --- Проверка обновлений программы (в фоне, не блокирует запуск) ---
         self.root.after(8000, self.check_updates_silent)    
 
@@ -319,6 +337,11 @@ class ProjectManagerApp:
             print(f"[sync] при выходе: {e}")
         try:
             self.db_manager.close()
+        except Exception:
+            pass
+        try:
+            if getattr(self, "mail_db", None) is not None:
+                self.mail_db.close()
         except Exception:
             pass
         try:
@@ -475,6 +498,10 @@ class ProjectManagerApp:
             f = ttk.Frame(self.notebook, padding=10)
             self.notebook.add(f, text="  Бюджет  ")
             self.budget_tab = BudgetTab(self, f)
+        if CorrespondenceTab is not None and getattr(self, "mail_db", None) is not None:
+            f = ttk.Frame(self.notebook, padding=10)
+            self.notebook.add(f, text="  Переписка  ")
+            self.correspondence_tab = CorrespondenceTab(self, f)
         if CorrespondenceTab is not None:
             f = ttk.Frame(self.notebook, padding=10)
             self.notebook.add(f, text="  Переписка  ")
@@ -527,7 +554,76 @@ class ProjectManagerApp:
             return "break"
         self._search_dialog = GlobalSearchDialog(self.root, self.db_manager, app=self)
         return "break"
+        # ================= Почта: фоновые таймеры =================
+    def _start_mail_timers(self):
+        mdb = getattr(self, "mail_db", None)
+        if mdb is None:
+            return
+        try:
+            st = mdb.get_settings()
+        except Exception:
+            st = {}
+        if int(st.get("auto_check", 0)) and st.get("email") and st.get("password"):
+            self.root.after(3000, self._mail_check_tick)
+        if int(st.get("sync_auto", 1)):
+            self.root.after(12000, self._mail_sync_tick)
 
+    def _mail_check_tick(self):
+        mdb = getattr(self, "mail_db", None)
+        tab = getattr(self, "correspondence_tab", None)
+        interval = 30
+        try:
+            if mdb is not None:
+                st = mdb.get_settings()
+                interval = max(5, int(st.get("interval_min", 30)))
+                if tab is not None and not getattr(tab, "_busy", False):
+                    tab.check_mail()
+        except Exception as e:
+            print(f"[mail] автопроверка: {e}")
+        try:
+            self.root.after(interval * 60 * 1000, self._mail_check_tick)
+        except Exception:
+            pass
+
+    def _mail_sync_tick(self):
+        mdb = getattr(self, "mail_db", None)
+        interval = 60
+        if mdb is not None:
+            try:
+                interval = max(10, int(mdb.get_settings().get("sync_interval_min", 60)))
+            except Exception:
+                pass
+            self._mail_sync_silent()
+        try:
+            self.root.after(interval * 60 * 1000, self._mail_sync_tick)
+        except Exception:
+            pass
+
+    def _mail_sync_silent(self):
+        mdb = getattr(self, "mail_db", None)
+        if mdb is None:
+            return
+        def work():
+            try:
+                from mail_sync import MailSync
+                s = MailSync(mdb, log=lambda m: None)
+                if s.busy:
+                    return
+                added, updated, size = s.sync()
+                self.root.after(0, lambda: self._mail_sync_done(added, updated))
+            except Exception as e:
+                print(f"[mail] автосинхронизация: {e}")
+        threading.Thread(target=work, daemon=True).start()
+
+    def _mail_sync_done(self, added, updated):
+        try:
+            if added or updated:
+                self.log_action(f"Переписка: облако +{added}, обновлено {updated}")
+            tab = getattr(self, "correspondence_tab", None)
+            if tab is not None:
+                tab.load_messages()
+        except Exception:
+            pass
     # ================= Облако =================
     def open_cloud_sync(self):
         if getattr(self, "sync_manager", None) is None:
