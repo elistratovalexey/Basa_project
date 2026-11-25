@@ -157,7 +157,38 @@ def _notify(title, body, urgency="normal"):
 
     return False
 
-
+def _collect_mail(app):
+    """Письма без ответа дольше SLA (из второй базы mail.db)."""
+    mdb = getattr(app, "mail_db", None)
+    db = getattr(app, "db_manager", None)
+    if mdb is None:
+        return []
+    try:
+        sla = int(mdb.get_settings().get("reply_sla_days", 2))
+    except Exception:
+        sla = 2
+    names = {}
+    if db is not None:
+        try:
+            names = {p["id"]: p["name"] for p in db.get_all_projects()}
+        except Exception:
+            names = {}
+    out = []
+    try:
+        for r in mdb.unanswered_ids(sla_days=sla):
+            proj = names.get(r["project_id"], "")
+            days = ""
+            try:
+                d0 = datetime.strptime((r["date_iso"] or "")[:10], "%Y-%m-%d")
+                days = f" · {(datetime.now() - d0).days} дн"
+            except Exception:
+                pass
+            out.append(("normal",
+                        f"Письмо без ответа: [{proj}] «{r['subject'] or ''}» "
+                        f"от {r['sender'] or '—'}{days}"))
+    except Exception as e:
+        print(f"[reminders] почта: {e}")
+    return out
 # ======================================================================
 def run_once(app, force=False):
     """Один проход: собрать → отфильтровать уже показанные сегодня → уведомить."""
@@ -170,6 +201,10 @@ def run_once(app, force=False):
 
     try:
         items = collect(db)
+    try:
+        items += _collect_mail(app)
+    except Exception as e:
+        print(f"[reminders] mail collect: {e}")
     except Exception as e:
         print(f"[reminders] collect: {e}")
         return 0
