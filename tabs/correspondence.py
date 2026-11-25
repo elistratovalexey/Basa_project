@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """Вкладка «Переписка»: письма проекта из Mail.ru, треды, статусы, риски,
-привязка к заказам, извлечённые данные, вложения → импорт КП, обмен с облаком.
+привязка к заказам, извлечённые данные, вложения → импорт КП, обмен с облаком,
+аналитика (надёжность поставщиков, инвойсы без заказа, цены из писем).
 """
 import os
 import threading
@@ -8,7 +9,11 @@ import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 
 from tabs.base import BaseTab
-from mail_db import MAIL_STATUSES
+
+try:
+    from mail_db import MAIL_STATUSES
+except Exception:
+    MAIL_STATUSES = ["Новое", "В работе", "Ждём ответа", "Закрыто"]
 
 
 class CorrespondenceTab(BaseTab):
@@ -38,6 +43,7 @@ class CorrespondenceTab(BaseTab):
         top2.pack(fill="x", pady=2)
         ttk.Button(top2, text="Правила разбора", command=self.open_rules).pack(side=tk.LEFT, padx=2)
         ttk.Button(top2, text="Сохранить текст", command=self.save_body).pack(side=tk.LEFT, padx=2)
+        ttk.Button(top2, text="Аналитика", command=self.open_analytics).pack(side=tk.LEFT, padx=2)
         self.lbl_summary = ttk.Label(top2, text="", font=("Arial", 9, "bold"), foreground="#0a58ca")
         self.lbl_summary.pack(side=tk.LEFT, padx=12)
 
@@ -161,13 +167,15 @@ class CorrespondenceTab(BaseTab):
 
         self.ext_tree = ttk.Treeview(t_ext, columns=("kind", "value", "extra"),
                                      show="headings", height=8)
-        for c, t, w in (("kind", "Что найдено", 130), ("value", "Значение", 260), ("extra", "Пояснение", 220)):
+        for c, t, w in (("kind", "Что найдено", 130), ("value", "Значение", 260),
+                        ("extra", "Пояснение", 220)):
             self.ext_tree.heading(c, text=t)
             self.ext_tree.column(c, width=w, anchor="w")
         self.ext_tree.pack(fill="both", expand=True)
         eb = ttk.Frame(t_ext)
         eb.pack(fill="x", pady=4)
-        ttk.Button(eb, text="Обещанную дату → ETA заказа", command=self.apply_promise).pack(side=tk.LEFT, padx=3)
+        ttk.Button(eb, text="Обещанную дату → ETA заказа",
+                   command=self.apply_promise).pack(side=tk.LEFT, padx=3)
         ttk.Button(eb, text="Трек → в заказ", command=self.apply_tracking).pack(side=tk.LEFT, padx=3)
 
         self.th_tree = ttk.Treeview(t_thread, columns=("date", "sender", "subject", "dir"),
@@ -233,7 +241,8 @@ class CorrespondenceTab(BaseTab):
             only_risk=self.v_risk.get(),
             threads=self.v_threads.get())
         for r in rows:
-            flags = ("⚠" if r["risk_flag"] else "") + ("✉" if r["needs_reply"] and not r["replied_at"] else "")
+            flags = ("⚠" if r["risk_flag"] else "") + \
+                    ("✉" if r["needs_reply"] and not r["replied_at"] else "")
             tags = []
             if r["status"] == "Новое":
                 tags.append("new")
@@ -328,9 +337,10 @@ class CorrespondenceTab(BaseTab):
         if not mid or not t:
             messagebox.showwarning("Внимание", "Выберите письмо и направление!")
             return
-        for iid in self.tree.selection():
+        sel = self.tree.selection()
+        for iid in sel:
             self.mail_db.set_field(self._row_id[iid], "work_type", t)
-        self.app.log_action(f"Переписка: направление «{t}» присвоено {len(self.tree.selection())} письмам")
+        self.app.log_action(f"Переписка: направление «{t}» присвоено {len(sel)} письмам")
         self.load_messages()
 
     def apply_status(self):
@@ -379,8 +389,9 @@ class CorrespondenceTab(BaseTab):
         if not mid:
             return
         m = self.mail_db.get_message(mid)
-        path = filedialog.asksaveasfilename(defaultextension=".txt",
-                                            initialfile=(m.get("subject") or "письмо")[:50] + ".txt")
+        path = filedialog.asksaveasfilename(
+            defaultextension=".txt",
+            initialfile=(m.get("subject") or "письмо")[:50] + ".txt")
         if not path:
             return
         try:
@@ -422,7 +433,6 @@ class CorrespondenceTab(BaseTab):
         if not mid:
             messagebox.showwarning("Внимание", "Выберите письмо!")
             return
-        pid = self._pid()
         batches = [b for b in self.db_manager.get_order_batches()
                    if (b["project_name"] or "") == (self.app.current_project or "")]
         if not batches:
@@ -445,7 +455,8 @@ class CorrespondenceTab(BaseTab):
         def do():
             b = mapping.get(combo.get())
             if b:
-                inv = next((x["invoice_number"] or "" for x in batches if x["order_batch_id"] == b), "")
+                inv = next((x["invoice_number"] or "" for x in batches
+                            if x["order_batch_id"] == b), "")
                 self.mail_db.link_order(mid, b, inv)
                 self.app.log_action(f"Переписка: письмо привязано к заказу №{b}")
             win.destroy()
@@ -590,6 +601,18 @@ class CorrespondenceTab(BaseTab):
             return
         MailSettingsDialog(self.root, self.mail_db, self._types())
 
+    def open_analytics(self):
+        """Аналитика: надёжность поставщиков, инвойсы без заказа, заказы без писем, цены."""
+        if self.mail_db is None:
+            return
+        try:
+            from mail_analytics import MailAnalyticsDialog
+        except ImportError as e:
+            messagebox.showerror("Ошибка", f"Модуль аналитики недоступен:\n{e}")
+            return
+        MailAnalyticsDialog(self.root, self.mail_db, self.db_manager,
+                            self.app.current_project)
+
     def open_rules(self):
         if self.mail_db is None:
             return
@@ -696,8 +719,9 @@ class CorrespondenceTab(BaseTab):
 
     def _sync_done(self, added, updated, size):
         self._busy = False
-        self.lbl_state.config(foreground="#198754",
-                              text=f"✓ Облако: +{added}, обновлено {updated}, {size / 1048576:.1f} МБ")
+        self.lbl_state.config(
+            foreground="#198754",
+            text=f"✓ Облако: +{added}, обновлено {updated}, {size / 1048576:.1f} МБ")
         self.app.log_action(f"Переписка: синхронизация (+{added}, обновлено {updated})")
         self.load_messages()
 
