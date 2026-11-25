@@ -5,6 +5,8 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
+import android.text.TextUtils
+import android.view.Gravity
 import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.TextView
@@ -30,20 +32,57 @@ class MainActivity : AppCompatActivity() {
 
         val ver = try { packageManager.getPackageInfo(packageName, 0).versionName } catch (e: Exception) { "?" }
         val dp = { v: Int -> (resources.displayMetrics.density * v).toInt() }
+        val wrap = LinearLayout.LayoutParams.WRAP_CONTENT
+        val root = binding.root as LinearLayout
+
+        // Ряд иконок: убираем из него текстовые кнопки, добавляем ⬆ и 
+        val iconRow = root.getChildAt(0) as LinearLayout
+        iconRow.removeView(binding.btnSync)
+        iconRow.removeView(binding.btnOrders)
+        iconRow.setPadding(0, 0, 0, 0)
+        val btnUpdate = Button(this).apply { text = "⬆" }
+        btnUpdate.setOnClickListener { checkUpdate() }
+        iconRow.addView(btnUpdate, LinearLayout.LayoutParams(wrap, wrap))
+        val btnGantt = Button(this).apply { text = "📊" }
+        btnGantt.setOnClickListener { startActivity(Intent(this, GanttActivity::class.java)) }
+        iconRow.addView(btnGantt, LinearLayout.LayoutParams(wrap, wrap))
+        for (b in listOf(binding.btnSettings, btnUpdate, btnGantt)) {
+            b.minWidth = 0
+            b.minimumWidth = 0
+            b.setPadding(dp(10), 0, dp(10), 0)
+            b.textSize = 16f
+            b.maxLines = 1
+        }
+        root.removeView(iconRow)
+
+        // Шапка: версия слева, иконки справа
         val tvVersion = TextView(this).apply {
             text = "Управление проектами v$ver"
             textSize = 12f
-            setPadding(dp(12), dp(6), dp(12), 0)
+            maxLines = 1
+            ellipsize = TextUtils.TruncateAt.END
         }
-        (binding.root as LinearLayout).addView(tvVersion, 0)
+        val header = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(12), dp(6), dp(4), 0)
+        }
+        header.addView(tvVersion, LinearLayout.LayoutParams(0, wrap, 1f))
+        header.addView(iconRow, LinearLayout.LayoutParams(wrap, wrap))
+        root.addView(header, 0)
 
-        val btnRow = (binding.root as LinearLayout).getChildAt(1) as LinearLayout
-        val btnUpdate = Button(this).apply { text = "⬆" }
-        btnUpdate.setOnClickListener { checkUpdate() }
-        btnRow.addView(btnUpdate, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT))
-        val btnGantt = Button(this).apply { text = "📊" }
-        btnGantt.setOnClickListener { startActivity(Intent(this, GanttActivity::class.java)) }
-        btnRow.addView(btnGantt, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT))
+        // Отдельный ряд: Синхронизировать + Заказы (по половине ширины)
+        binding.btnSync.maxLines = 1
+        binding.btnSync.ellipsize = TextUtils.TruncateAt.END
+        binding.btnOrders.maxLines = 1
+        binding.btnOrders.ellipsize = TextUtils.TruncateAt.END
+        val actions = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(dp(8), 0, dp(8), dp(4))
+        }
+        actions.addView(binding.btnSync, LinearLayout.LayoutParams(0, wrap, 1f))
+        actions.addView(binding.btnOrders, LinearLayout.LayoutParams(0, wrap, 1f))
+        root.addView(actions, 1)
 
         val tabs = listOf(
             "Сегодня" to "dashboard",
