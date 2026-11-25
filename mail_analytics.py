@@ -3,6 +3,7 @@
 заказы без переписки, цены из писем → история цен.
 
 Ничего не меняет в схеме БД — читает mail.db и projects.db.
+Проверка без GUI: python mail_analytics.py
 """
 import re
 import statistics
@@ -118,7 +119,7 @@ def unlinked_invoices(mail_db, db_manager):
         state = "есть в заказах — привяжите" if _norm_inv(r["inv"]) in known else "НЕ ЗАВЕДЁН"
         rows.append([r["project_name"] or "", r["date_sent"] or "", r["inv"],
                      state, r["sender"] or "", (r["subject"] or "")[:70], r["id"]])
-    rows.sort(key=lambda x: (x[3] != "НЕ ЗАВЕДЁН", x[1]), reverse=False)
+    rows.sort(key=lambda x: (x[3] != "НЕ ЗАВЕДЁН", x[1]))
     return rows
 
 
@@ -236,7 +237,8 @@ class MailAnalyticsDialog(tk.Toplevel):
         super().__init__(parent)
         self.db, self.pdb = mail_db, db_manager
         self.project = project_name
-        self.title("Аналитика переписки" + (f" · {project_name}" if project_name else " · все проекты"))
+        self.title("Аналитика переписки" +
+                   (f" · {project_name}" if project_name else " · все проекты"))
         self.geometry("1180x640")
         self.transient(parent)
 
@@ -280,4 +282,102 @@ class MailAnalyticsDialog(tk.Toplevel):
             tv.column(cols[i], width=w, anchor="w" if i in (0, 1) else "center")
         vs = ttk.Scrollbar(frame, orient=tk.VERTICAL, command=tv.yview)
         hs = ttk.Scrollbar(frame, orient=tk.HORIZONTAL, command=tv.xview)
-        tv.configure(yscroll=vs.set, x
+        tv.configure(yscroll=vs.set, xscroll=hs.set)
+        tv.pack(side=tk.LEFT, fill="both", expand=True)
+        vs.pack(side=tk.RIGHT, fill="y")
+        hs.pack(side=tk.BOTTOM, fill="x")
+        tv.tag_configure("bad", background="#f8d7da")
+        tv.tag_configure("warn", background="#fff3cd")
+        return tv
+
+    def _fill(self, tv, rows, bad=None, warn=None, skip_last=0):
+        for i in tv.get_children():
+            tv.delete(i)
+        for r in rows:
+            shown = r[:len(r) - skip_last] if skip_last else r
+            tags = ()
+            if bad and bad(r):
+                tags = ("bad",)
+            elif warn and warn(r):
+                tags = ("warn",)
+            tv.insert("", tk.END, values=shown, tags=tags)
+        if not rows:
+            n = len(tv["columns"])
+            tv.insert("", tk.END, values=["— нет данных —"] + [""] * (n - 1))
+
+    def reload(self):
+        proj = self.project if self.v_project.get() else None
+        try:
+            sup = supplier_rating(self.db, self.pdb)
+            inv = unlinked_invoices(self.db, self.pdb)
+            nom = orders_without_mail(self.db, self.pdb, proj)
+            ok, manual = price_candidates(self.db, self.pdb, proj)
+        except Exception as e:
+            messagebox.showerror("Аналитика", str(e), parent=self)
+            return
+        self._prices = ok
+        self._fill(self.t_sup, sup,
+                   bad=lambda r: (r[7] or 0) >= 3,
+                   warn=lambda r: r[5] != "—" and float(r[5]) > 3)
+        self._fill(self.t_inv, inv, bad=lambda r: r[3] == "НЕ ЗАВЕДЁН", skip_last=1)
+        self._fill(self.t_nom, nom, warn=lambda r: r[5] >= 30)
+        self._fill(self.t_prc, [[c["project"], c["batch"], c["article"], c["name"],
+                                 f'{c["price"]:.2f}', c["currency"], c["date"]] for c in ok])
+        self.lbl.config(
+            text=(f"Поставщиков {len(sup)} · инвойсов без привязки {len(inv)} · "
+                  f"заказов без писем {len(nom)} · цен к записи {len(ok)} "
+                  f"(требуют сопоставления {len(manual)})"))
+
+    def commit_prices(self):
+        if not self._prices:
+            messagebox.showinfo("Цены", "Нет однозначных цен для записи.\n"
+                                        "Сопоставьте письма с заказами вручную.", parent=self)
+            return
+        if not messagebox.askyesno(
+                "История цен",
+                f"Записать {len(self._prices)} цен в историю с источником «Переписка»?\n\n"
+                "Берутся только случаи: одна позиция в заказе и одна сумма в письме.",
+                parent=self):
+            return
+        try:
+            n = commit_prices(self.pdb, self._prices)
+            messagebox.showinfo("Готово", f"Записано цен: {n}", parent=self)
+            self.reload()
+        except Exception as e:
+            messagebox.showerror("Ошибка", str(e), parent=self)
+
+
+# ======================================================================
+if __name__ == "__main__":
+    # Проверка без GUI: python mail_analytics.py [имя_проекта]
+    import sys
+    from mail_db import MailDatabase
+    from database import DatabaseManager
+
+    mdb = MailDatabase()
+    try:
+        from config import get_db_path
+        path = get_db_path()
+    except Exception:
+        path = "projects.db"
+    pdb = DatabaseManager(path)
+    proj = sys.argv[1] if len(sys.argv) > 1 else None
+
+    sup = supplier_rating(mdb, pdb)
+    inv = unlinked_invoices(mdb, pdb)
+    nom = orders_without_mail(mdb, pdb, proj)
+    ok, manual = price_candidates(mdb, pdb, proj)
+    print(f"mail.db: {mdb.db_path} ({mdb.db_size_mb():.1f} МБ)")
+    print(f"Поставщиков: {len(sup)}")
+    for r in sup[:10]:
+        print(f"  {r[0]:28} писем {r[2]:4} отвечено {r[3]:4} "
+              f"медиана {r[5]:>6} дн  риски {r[7]}")
+    print(f"Инвойсов без привязки: {len(inv)}")
+    for r in inv[:10]:
+        print(f"  [{r[0]}] {r[2]} — {r[3]}")
+    print(f"Заказов без переписки: {len(nom)}")
+    for r in nom[:10]:
+        print(f"  [{r[0]}] №{r[1]} {r[2]} — {r[5]} дн")
+    print(f"Цен к записи: {len(ok)} | требуют сопоставления: {len(manual)}")
+    mdb.close()
+    pdb.close()
