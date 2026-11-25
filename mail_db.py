@@ -31,9 +31,8 @@ def trim_quotes(body):
     if not body:
         return "", 0
     full = len(body)
-    lines = body.split("\n")
     out, quoted = [], 0
-    for ln in lines:
+    for ln in body.split("\n"):
         if _RE_QUOTE.match(ln):
             break
         if ln.lstrip().startswith(">"):
@@ -44,7 +43,7 @@ def trim_quotes(body):
         quoted = 0
         out.append(ln)
     text = re.sub(r"\n{3,}", "\n\n", "\n".join(out)).strip()
-    if len(text) < 40 and full > 200:      # обрезали слишком много — оставляем как есть
+    if len(text) < 40 and full > 200:
         text = body.strip()
     return text[:100000], full
 
@@ -69,11 +68,16 @@ class MailDatabase:
         self.db_path = db_path or os.path.join(data_dir, "mail.db")
         self.local_cfg_path = os.path.join(local_dir, "mail_local.json")
         os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
-        self.conn = sqlite3.connect(self.db_path, timeout=20)
+        # check_same_thread=False: автопроверка и синхронизация работают в потоках
+        self.conn = sqlite3.connect(self.db_path, timeout=20, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA busy_timeout = 20000")
-        self.conn.execute("PRAGMA journal_mode = WAL")
+        try:
+            self.conn.execute("PRAGMA journal_mode = WAL")
+        except sqlite3.Error:
+            pass
         self.device = uuid.uuid4().hex[:8]
+        self.fts = False
         self._create()
 
     # ==================================================================
@@ -252,12 +256,15 @@ class MailDatabase:
         return d
 
     def save_settings(self, data):
+        data = dict(data)
         pwd = data.pop("password", None)
-        cur = dict(self.conn.execute("SELECT * FROM mail_settings WHERE id=1").fetchone() or {})
+        row = self.conn.execute("SELECT * FROM mail_settings WHERE id=1").fetchone()
+        cur = dict(row) if row else {}
         cur.update({k: v for k, v in data.items() if k in cur and k != "id"})
         cols = [k for k in cur if k != "id"]
-        self.conn.execute(f"UPDATE mail_settings SET {','.join(k+'=?' for k in cols)} WHERE id=1",
-                          [cur[k] for k in cols])
+        self.conn.execute(
+            f"UPDATE mail_settings SET {','.join(k + '=?' for k in cols)} WHERE id=1",
+            [cur[k] for k in cols])
         self.conn.commit()
         if pwd is not None:
             loc = {}
@@ -280,13 +287,13 @@ class MailDatabase:
     # Письма
     # ==================================================================
     def exists(self, project_id, folder, uid):
-        return self.conn.execute("SELECT id FROM messages WHERE project_id=? AND folder=? AND uid=?",
-                                 (project_id, folder, str(uid))).fetchone()
+        return self.conn.execute(
+            "SELECT id FROM messages WHERE project_id=? AND folder=? AND uid=?",
+            (project_id, folder, str(uid))).fetchone()
 
     def add_message(self, m, body=""):
         """Дедуп по (проект, папка, UID). Возвращает id или None если уже есть."""
-        old = self.exists(m["project_id"], m["folder"], m["uid"])
-        if old:
+        if self.exists(m["project_id"], m["folder"], m["uid"]):
             return None
         text, full_len = trim_quotes(body)
         subj = m.get("subject", "")
@@ -311,8 +318,9 @@ class MailDatabase:
              m.get("order_batch_id", 0), m.get("invoice_number", ""), m.get("spec_id", 0),
              m.get("att_count", 0), m.get("size", 0), len(text), "", now, now, self.device))
         mid = cur.lastrowid
-        self.conn.execute("INSERT OR REPLACE INTO bodies (msg_id, body, full_len, updated_at) VALUES (?,?,?,?)",
-                          (mid, text, full_len, now))
+        self.conn.execute(
+            "INSERT OR REPLACE INTO bodies (msg_id, body, full_len, updated_at) VALUES (?,?,?,?)",
+            (mid, text, full_len, now))
         self.conn.commit()
         return mid
 
@@ -338,23 +346,24 @@ class MailDatabase:
             q += " AND m.risk_flag=1"
         if search:
             if self.fts:
-                q += " AND (m.id IN (SELECT rowid FROM messages_fts WHERE messages_fts MATCH ?) " \
-                     "OR m.id IN (SELECT msg_id FROM bodies WHERE body LIKE ?))"
+                q += (" AND (m.id IN (SELECT rowid FROM messages_fts WHERE messages_fts MATCH ?)"
+                      " OR m.id IN (SELECT msg_id FROM bodies WHERE body LIKE ?))")
                 p += [f'"{search}"', f"%{search}%"]
             else:
-                q += " AND (m.subject LIKE ? OR m.sender LIKE ? OR m.recipients LIKE ? " \
-                     "OR m.id IN (SELECT msg_id FROM bodies WHERE body LIKE ?))"
+                q += (" AND (m.subject LIKE ? OR m.sender LIKE ? OR m.recipients LIKE ?"
+                      " OR m.id IN (SELECT msg_id FROM bodies WHERE body LIKE ?))")
                 p += [f"%{search}%"] * 4
         if threads:
-            q += " AND m.id=(SELECT x.id FROM messages x WHERE x.project_id=m.project_id " \
-                 "AND x.thread_id=m.thread_id ORDER BY x.date_iso DESC, x.id DESC LIMIT 1)"
+            q += (" AND m.id=(SELECT x.id FROM messages x WHERE x.project_id=m.project_id"
+                  " AND x.thread_id=m.thread_id ORDER BY x.date_iso DESC, x.id DESC LIMIT 1)")
         q += " ORDER BY m.date_iso DESC, m.id DESC LIMIT ?"
         p.append(limit)
         return self.conn.execute(q, p).fetchall()
 
     def get_thread(self, project_id, thread_id):
-        return self.conn.execute("""SELECT * FROM messages WHERE project_id=? AND thread_id=?
-                                    ORDER BY date_iso, id""", (project_id, thread_id)).fetchall()
+        return self.conn.execute(
+            """SELECT * FROM messages WHERE project_id=? AND thread_id=?
+               ORDER BY date_iso, id""", (project_id, thread_id)).fetchall()
 
     def get_message(self, msg_id):
         r = self.conn.execute("SELECT * FROM messages WHERE id=?", (msg_id,)).fetchone()
@@ -408,8 +417,9 @@ class MailDatabase:
             self.conn.execute("""INSERT OR IGNORE INTO attachments
                 (msg_id, name, sha256, size, mime, remote_path) VALUES (?,?,?,?,?,?)""",
                 (msg_id, name, sha256, size, mime, remote_path))
-            self.conn.execute("UPDATE messages SET att_count=(SELECT COUNT(*) FROM attachments "
-                              "WHERE msg_id=?) WHERE id=?", (msg_id, msg_id))
+            self.conn.execute(
+                "UPDATE messages SET att_count=(SELECT COUNT(*) FROM attachments WHERE msg_id=?) "
+                "WHERE id=?", (msg_id, msg_id))
             self.conn.commit()
         except sqlite3.Error as e:
             self.log(f"[mail_db] attachment: {e}")
@@ -427,8 +437,9 @@ class MailDatabase:
         if not value:
             return
         try:
-            self.conn.execute("INSERT OR IGNORE INTO extracted (msg_id, kind, value, extra) VALUES (?,?,?,?)",
-                              (msg_id, kind, str(value)[:200], extra))
+            self.conn.execute(
+                "INSERT OR IGNORE INTO extracted (msg_id, kind, value, extra) VALUES (?,?,?,?)",
+                (msg_id, kind, str(value)[:200], extra))
             self.conn.commit()
         except sqlite3.Error:
             pass
@@ -441,12 +452,17 @@ class MailDatabase:
     # Правила классификации
     # ==================================================================
     def get_rules(self):
-        return self.conn.execute("SELECT * FROM mail_rules WHERE enabled=1 ORDER BY priority DESC").fetchall()
+        return self.conn.execute(
+            "SELECT * FROM mail_rules WHERE enabled=1 ORDER BY priority DESC").fetchall()
 
     def add_rule(self, keyword, work_type="", action="", priority=10):
+        kw = (keyword or "").lower().strip()
+        if not kw:
+            return False
         try:
-            self.conn.execute("INSERT OR REPLACE INTO mail_rules (keyword, work_type, action, priority) "
-                              "VALUES (?,?,?,?)", (keyword.lower().strip(), work_type, action, priority))
+            self.conn.execute(
+                "INSERT OR REPLACE INTO mail_rules (keyword, work_type, action, priority) "
+                "VALUES (?,?,?,?)", (kw, work_type, action, priority))
             self.conn.commit()
             return True
         except sqlite3.Error:
@@ -480,22 +496,28 @@ class MailDatabase:
                 if t and t.lower() in text:
                     wt = t
                     break
-        return wt or default or (types[0] if types else ""), (1 if risks else 0), ", ".join(risks), actions
+        return (wt or default or (types[0] if types else ""),
+                1 if risks else 0, ", ".join(risks), actions)
 
     # ==================================================================
     # Контроль и сводки
     # ==================================================================
-    def unanswered(self, project_id=None, sla_days=2):
-        q = """SELECT m.*, p.name AS proj FROM messages m
-               LEFT JOIN projects p ON p.id=m.project_id
-               WHERE m.direction='Входящее' AND m.needs_reply=1 AND m.replied_at=''
-                 AND m.status!='Закрыто'
-                 AND julianday('now') - julianday(substr(m.date_iso,1,10)) >= ?"""
+    def unanswered_ids(self, project_id=None, sla_days=2):
+        """Письма без ответа дольше SLA. Без JOIN — имя проекта подставляет вызывающий."""
+        q = """SELECT * FROM messages
+               WHERE direction='Входящее' AND needs_reply=1 AND replied_at=''
+                 AND status!='Закрыто'
+                 AND date_iso!='' 
+                 AND julianday('now') - julianday(substr(date_iso,1,10)) >= ?"""
         p = [sla_days]
         if project_id:
-            q += " AND m.project_id=?"
+            q += " AND project_id=?"
             p.append(project_id)
-        return self.conn.execute(q + " ORDER BY m.date_iso", p).fetchall()
+        return self.conn.execute(q + " ORDER BY date_iso", p).fetchall()
+
+    def unanswered(self, project_id=None, sla_days=2):
+        """Совместимость: то же, что unanswered_ids."""
+        return self.unanswered_ids(project_id, sla_days)
 
     def stats(self, project_id):
         r = self.conn.execute("""SELECT COUNT(*) n,
@@ -531,37 +553,47 @@ class MailDatabase:
         try:
             for r in src.execute("SELECT * FROM messages").fetchall():
                 mine = self.exists(r["project_id"], r["folder"], r["uid"])
-                b = src.execute("SELECT body, full_len FROM bodies WHERE msg_id=?", (r["id"],)).fetchone()
+                b = src.execute("SELECT body, full_len FROM bodies WHERE msg_id=?",
+                                (r["id"],)).fetchone()
                 if mine is None:
                     data = dict(r)
                     data.pop("id", None)
                     cols = list(data.keys())
                     cur = self.conn.execute(
-                        f"INSERT INTO messages ({','.join(cols)}) VALUES ({','.join('?' for _ in cols)})",
+                        f"INSERT INTO messages ({','.join(cols)}) "
+                        f"VALUES ({','.join('?' for _ in cols)})",
                         [data[c] for c in cols])
                     mid = cur.lastrowid
                     if b:
-                        self.conn.execute("INSERT OR REPLACE INTO bodies VALUES (?,?,?,?)",
-                                          (mid, b["body"], b["full_len"], _now()))
+                        self.conn.execute(
+                            "INSERT OR REPLACE INTO bodies VALUES (?,?,?,?)",
+                            (mid, b["body"], b["full_len"], _now()))
                     for a in src.execute("SELECT * FROM attachments WHERE msg_id=?", (r["id"],)):
-                        self.add_attachment(mid, a["name"], a["sha256"], a["size"], a["mime"], a["remote_path"])
+                        self.add_attachment(mid, a["name"], a["sha256"], a["size"],
+                                            a["mime"], a["remote_path"])
                     for e in src.execute("SELECT * FROM extracted WHERE msg_id=?", (r["id"],)):
                         self.add_extracted(mid, e["kind"], e["value"], e["extra"])
                     added += 1
                 else:
                     mid = mine["id"]
-                    if (r["updated_at"] or "") > (self.conn.execute(
-                            "SELECT updated_at FROM messages WHERE id=?", (mid,)).fetchone()["updated_at"] or ""):
+                    row = self.conn.execute("SELECT updated_at FROM messages WHERE id=?",
+                                            (mid,)).fetchone()
+                    mine_ts = (row["updated_at"] or "") if row else ""
+                    if (r["updated_at"] or "") > mine_ts:
                         sets = ",".join(f"{f}=?" for f in self.MERGE_FIELDS)
-                        self.conn.execute(f"UPDATE messages SET {sets}, updated_at=?, device=? WHERE id=?",
-                                          [r[f] for f in self.MERGE_FIELDS] + [r["updated_at"], r["device"], mid])
+                        self.conn.execute(
+                            f"UPDATE messages SET {sets}, updated_at=?, device=? WHERE id=?",
+                            [r[f] for f in self.MERGE_FIELDS] +
+                            [r["updated_at"], r["device"], mid])
                         updated += 1
                     if b and not self.get_body(mid):
                         self.conn.execute("INSERT OR REPLACE INTO bodies VALUES (?,?,?,?)",
                                           (mid, b["body"], b["full_len"], _now()))
             for r in src.execute("SELECT * FROM mail_rules").fetchall():
-                self.conn.execute("INSERT OR IGNORE INTO mail_rules (keyword, work_type, action, priority) "
-                                  "VALUES (?,?,?,?)", (r["keyword"], r["work_type"], r["action"], r["priority"]))
+                self.conn.execute(
+                    "INSERT OR IGNORE INTO mail_rules (keyword, work_type, action, priority) "
+                    "VALUES (?,?,?,?)",
+                    (r["keyword"], r["work_type"], r["action"], r["priority"]))
             self.conn.commit()
         finally:
             src.close()
