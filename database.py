@@ -94,11 +94,126 @@ class DatabaseManager:
         self._ensure_purchase_spec_delivery_address()
         self._ensure_suppliers_columns()
         self._ensure_kd_columns()          # ← добавить
-        self._ensure_indexes()        
+        self._ensure_indexes()  
+        self._ensure_mail_tables()
         self.ensure_column("projects", "orders_cost_coef", "REAL DEFAULT 1.8")        
         self._ensure_indexes()
 
-        # ================= План-Факт v3 =================
+        # ================= Переписка (IMAP) =================
+    def _ensure_mail_tables(self):
+        c = self.conn.cursor()
+        c.execute('''CREATE TABLE IF NOT EXISTS mail_settings (
+            id INTEGER PRIMARY KEY CHECK (id=1),
+            host TEXT DEFAULT 'imap.mail.ru',
+            port INTEGER DEFAULT 993,
+            use_ssl INTEGER DEFAULT 1,
+            email TEXT DEFAULT '',
+            password TEXT DEFAULT '',
+            inbox TEXT DEFAULT 'INBOX',
+            sent TEXT DEFAULT '',
+            check_sent INTEGER DEFAULT 1,
+            limit_msgs INTEGER DEFAULT 200,
+            all_projects INTEGER DEFAULT 1,
+            default_type TEXT DEFAULT '',
+            auto_check INTEGER DEFAULT 0,
+            interval_min INTEGER DEFAULT 30)''')
+        c.execute('''CREATE TABLE IF NOT EXISTS mail_messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_id INTEGER NOT NULL,
+            folder TEXT NOT NULL,
+            uid TEXT NOT NULL,
+            message_id TEXT DEFAULT '',
+            subject TEXT DEFAULT '',
+            sender TEXT DEFAULT '',
+            recipients TEXT DEFAULT '',
+            cc TEXT DEFAULT '',
+            date_sent TEXT DEFAULT '',
+            date_iso TEXT DEFAULT '',
+            direction TEXT DEFAULT 'Входящее',
+            work_type TEXT DEFAULT '',
+            body TEXT DEFAULT '',
+            attachments TEXT DEFAULT '',
+            size INTEGER DEFAULT 0,
+            fetched_at TEXT DEFAULT '',
+            note TEXT DEFAULT '',
+            UNIQUE(project_id, folder, uid))''')
+        c.execute("CREATE INDEX IF NOT EXISTS idx_mail_proj ON mail_messages(project_id, date_iso)")
+        c.execute("INSERT OR IGNORE INTO mail_settings (id) VALUES (1)")
+        self.conn.commit()
+
+    def get_mail_settings(self):
+        r = self.conn.execute("SELECT * FROM mail_settings WHERE id=1").fetchone()
+        return dict(r) if r else {}
+
+    def save_mail_settings(self, data):
+        cur = self.get_mail_settings()
+        cur.update({k: v for k, v in data.items() if k != "id"})
+        cols = [k for k in cur if k != "id"]
+        sets = ",".join(f"{k}=?" for k in cols)
+        self.conn.execute(f"UPDATE mail_settings SET {sets} WHERE id=1", [cur[k] for k in cols])
+        self.conn.commit()
+
+    def get_mail_messages(self, project_id, work_type=None, direction=None, search=None):
+        q = """SELECT id, project_id, folder, uid, subject, sender, recipients, cc,
+                      date_sent, date_iso, direction, work_type, attachments, size, note
+               FROM mail_messages WHERE project_id=?"""
+        p = [project_id]
+        if work_type:
+            q += " AND work_type=?"
+            p.append(work_type)
+        if direction:
+            q += " AND direction=?"
+            p.append(direction)
+        if search:
+            q += " AND (subject LIKE ? OR sender LIKE ? OR recipients LIKE ? OR body LIKE ?)"
+            p += [f"%{search}%"] * 4
+        q += " ORDER BY date_iso DESC, id DESC"
+        return self.conn.execute(q, p).fetchall()
+
+    def get_mail_body(self, msg_id):
+        r = self.conn.execute("SELECT * FROM mail_messages WHERE id=?", (msg_id,)).fetchone()
+        return dict(r) if r else {}
+
+    def mail_exists(self, project_id, folder, uid):
+        return self.conn.execute("SELECT 1 FROM mail_messages WHERE project_id=? AND folder=? AND uid=?",
+                                 (project_id, folder, str(uid))).fetchone() is not None
+
+    def add_mail_message(self, data):
+        try:
+            cur = self.conn.execute('''INSERT INTO mail_messages
+                (project_id, folder, uid, message_id, subject, sender, recipients, cc,
+                 date_sent, date_iso, direction, work_type, body, attachments, size, fetched_at, note)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+                (data["project_id"], data["folder"], str(data["uid"]), data.get("message_id", ""),
+                 data.get("subject", ""), data.get("sender", ""), data.get("recipients", ""),
+                 data.get("cc", ""), data.get("date_sent", ""), data.get("date_iso", ""),
+                 data.get("direction", "Входящее"), data.get("work_type", ""),
+                 data.get("body", ""), data.get("attachments", ""), data.get("size", 0),
+                 datetime.now().strftime("%d.%m.%Y %H:%M:%S"), data.get("note", "")))
+            self.conn.commit()
+            return cur.lastrowid
+        except sqlite3.IntegrityError:
+            return None
+
+    def set_mail_work_type(self, msg_id, work_type):
+        self.conn.execute("UPDATE mail_messages SET work_type=? WHERE id=?", (work_type, msg_id))
+        self.conn.commit()
+
+    def set_mail_note(self, msg_id, note):
+        self.conn.execute("UPDATE mail_messages SET note=? WHERE id=?", (note, msg_id))
+        self.conn.commit()
+
+    def delete_mail_message(self, msg_id):
+        self.conn.execute("DELETE FROM mail_messages WHERE id=?", (msg_id,))
+        self.conn.commit()
+
+    def mail_stats(self, project_id):
+        r = self.conn.execute("""SELECT COUNT(*) n, SUM(CASE WHEN direction='Входящее' THEN 1 ELSE 0 END) inc,
+                                        SUM(CASE WHEN direction='Исходящее' THEN 1 ELSE 0 END) out
+                                 FROM mail_messages WHERE project_id=?""", (project_id,)).fetchone()
+        return {"total": r["n"] or 0, "in": r["inc"] or 0, "out": r["out"] or 0} 
+    
+    # ================= План-Факт v3 =================
     PF_AUDIT_FIELDS = ("start_plan", "end_plan", "start_fact", "end_fact",
                        "duration_qty", "duration_unit", "status", "responsible",
                        "progress", "is_blocked", "delay_reason", "cost_weight")
