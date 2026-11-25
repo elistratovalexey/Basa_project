@@ -201,13 +201,14 @@ def run_once(app, force=False):
 
     try:
         items = collect(db)
+    except Exception as e:
+        print(f"[reminders] collect: {e}")
+        return 0
+
     try:
         items += _collect_mail(app)
     except Exception as e:
         print(f"[reminders] mail collect: {e}")
-    except Exception as e:
-        print(f"[reminders] collect: {e}")
-        return 0
 
     fresh = [(u, t) for u, t in items if state.get(t) != today]
     if not fresh and not force:
