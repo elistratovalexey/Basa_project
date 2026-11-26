@@ -106,10 +106,10 @@ class OrderDialog(tk.Toplevel):
         self.combo_filter_project.bind("<<ComboboxSelected>>", lambda e: self.load_batches())
 
         ttk.Label(ff, text="№ поставки:").pack(side=tk.LEFT, padx=(8, 0))
-        self.entry_filter_delivery = ttk.Entry(ff, width=13)
-        self.entry_filter_delivery.pack(side=tk.LEFT, padx=4)
-        self.entry_filter_delivery.bind("<Return>", lambda e: self.load_batches())
-        self.entry_filter_delivery.bind("<KeyRelease>", lambda e: self._filter_debounce())
+        self.combo_filter_delivery = ttk.Combobox(ff, width=16, state="readonly")
+        self.combo_filter_delivery.pack(side=tk.LEFT, padx=4)
+        self.combo_filter_delivery.bind("<<ComboboxSelected>>", lambda e: self.load_batches())
+        self.entry_filter_delivery = self.combo_filter_delivery
 
         ttk.Label(ff, text="Оплата:").pack(side=tk.LEFT, padx=(8, 0))
         self.combo_filter_payment = ttk.Combobox(ff, width=10, state="readonly",
@@ -467,6 +467,20 @@ class OrderDialog(tk.Toplevel):
         except Exception:
             pass
 
+    def load_delivery_filter(self):
+        """Все имеющиеся номера поставки — в выпадающий список фильтра."""
+        try:
+            c = self.db_manager.conn.cursor()
+            c.execute("SELECT DISTINCT delivery_number FROM orders "
+                      "WHERE delivery_number IS NOT NULL AND delivery_number != '' "
+                      "ORDER BY delivery_number")
+            vals = ["Все"] + [r[0] for r in c.fetchall()]
+            cur = self.combo_filter_delivery.get()
+            self.combo_filter_delivery["values"] = vals
+            self.combo_filter_delivery.set(cur if cur in vals else "Все")
+        except Exception:
+            pass
+
     def _filter_debounce(self):
         if self._filter_job:
             try:
@@ -479,7 +493,7 @@ class OrderDialog(tk.Toplevel):
         try:
             self.combo_filter_manufacturer.set('')
             self.combo_filter_project.set('')
-            self.entry_filter_delivery.delete(0, tk.END)
+            self.combo_filter_delivery.set("Все")
             self.combo_filter_payment.set("Все")
             self.combo_filter_received.set("Все")
             self.partial_only_var.set(False)
@@ -513,6 +527,7 @@ class OrderDialog(tk.Toplevel):
         self.load_suppliers()
         self.load_manufacturers_filter()
         self.load_project_filter()
+        self.load_delivery_filter()
 
     def load_subprojects_for_combo(self):
         c = self.db_manager.conn.cursor()
@@ -649,6 +664,8 @@ class OrderDialog(tk.Toplevel):
             self.load_subprojects_for_combo()
             self.load_kd_for_combo()
             self.load_project_filter()
+        elif col == "delivery_number":
+            self.load_delivery_filter()
 
         self.lbl_autosave.config(foreground="#198754",
                                  text=f"✓ сохранено {datetime.now():%H:%M:%S}")
@@ -1164,6 +1181,8 @@ class OrderDialog(tk.Toplevel):
             self.project_name = value
             self.load_subprojects_for_combo()
             self.load_kd_for_combo()
+        elif field == "delivery_number":
+            self.load_delivery_filter()
         self._log(f"Заказ {batch_id}: {field} = {value}")
         self.current_batch_id = batch_id
         self._refresh_batches_keep_selection()
@@ -1376,11 +1395,13 @@ class OrderDialog(tk.Toplevel):
         f_rec = self.combo_filter_received.get()
         try:
             f_proj = self.combo_filter_project.get().strip()
-            f_dn = self.entry_filter_delivery.get().strip()
+            f_dn = self.combo_filter_delivery.get().strip()
+            f_dn = "" if f_dn == "Все" else f_dn
             f_partial = self.partial_only_var.get()
         except Exception:
             f_proj, f_dn, f_partial = "", "", False
         self.load_project_filter()
+        self.load_delivery_filter()
 
         if self.sort_column == "order_date":
             order_clause = ("ORDER BY CASE WHEN MAX(order_date)='' OR MAX(order_date) IS NULL "
@@ -1421,8 +1442,8 @@ class OrderDialog(tk.Toplevel):
             where += (" AND" if where else " WHERE") + " project_name = ?"
             params.append(f_proj)
         if f_dn:
-            where += (" AND" if where else " WHERE") + " delivery_number LIKE ?"
-            params.append(f"%{f_dn}%")
+            where += (" AND" if where else " WHERE") + " delivery_number = ?"
+            params.append(f_dn)
         if f_pay == "Есть дата":
             where += (" AND" if where else " WHERE") + " payment_date IS NOT NULL AND payment_date != ''"
         elif f_pay == "Нет даты":
