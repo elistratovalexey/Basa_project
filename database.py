@@ -86,6 +86,7 @@ class DatabaseManager:
         self._ensure_plan_fact_tables()
         self._ensure_plan_fact_v2()
         self._ensure_plan_fact_v3()
+        self._ensure_plan_fact_v4()
         self._ensure_work_names()
         self._ensure_v19()
         self._ensure_delivery_addresses_table()
@@ -177,6 +178,22 @@ class DatabaseManager:
     def mail_exists(self, project_id, folder, uid):
         return self.conn.execute("SELECT 1 FROM mail_messages WHERE project_id=? AND folder=? AND uid=?",
                                  (project_id, folder, str(uid))).fetchone() is not None
+    def _ensure_plan_fact_v4(self):
+        """Дата напоминания + связь со счётом поставщика (ЗАКУПКИ РОССИЯ)."""
+        if hasattr(self, "_ensure_plan_fact_v3"):
+            self._ensure_plan_fact_v3()
+        c = self.conn.cursor()
+        c.execute("PRAGMA table_info(plan_fact)")
+        cols = [r[1] for r in c.fetchall()]
+        for col, typ in (("remind_date", "TEXT DEFAULT ''"),
+                         ("link_spec_id", "INTEGER DEFAULT 0"),
+                         ("link_order_batch", "INTEGER DEFAULT 0"),
+                         ("auto_dates", "INTEGER DEFAULT 0"),
+                         ("cost_weight", "REAL DEFAULT 0"),
+                         ("notify_days", "INTEGER DEFAULT 3")):
+            if col not in cols:
+                c.execute(f"ALTER TABLE plan_fact ADD COLUMN {col} {typ}")
+        self.conn.commit()
 
     def add_mail_message(self, data):
         try:
@@ -502,6 +519,16 @@ class DatabaseManager:
                 sp, ep = self.pf_parse(r.get("start_plan")), self.pf_parse(r.get("end_plan"))
                 base = {"project": p["name"], "number": r["number"], "name": r.get("name") or "",
                         "responsible": r.get("responsible") or "—", "work_id": r["id"]}
+                rd = self.pf_parse(r.get("remind_date"))
+                if rd:
+                    dd = (rd.date() - today).days
+                    if dd < 0:
+                        out.append({**base, "kind": "remind", "days": -dd,
+                                    "text": f"напоминание просрочено на {-dd} дн ({r.get('remind_date')})"})
+                    elif dd <= 3:
+                        out.append({**base, "kind": "remind", "days": dd,
+                                    "text": ("напоминание сегодня" if dd == 0
+                                             else f"напоминание через {dd} дн ({r.get('remind_date')})")})
                 if r.get("is_blocked"):
                     out.append({**base, "kind": "blocked", "days": 0,
                                 "text": f'🔒 заблокирована: {r.get("delay_reason") or "причина не указана"}'})
@@ -521,7 +548,8 @@ class DatabaseManager:
                     elif d <= ahead:
                         out.append({**base, "kind": "deadline_soon", "days": d,
                                     "text": f"дедлайн через {d} дн ({r.get('end_plan')})"})
-        rank = {"overdue": 0, "late_start": 1, "blocked": 2, "deadline_soon": 3, "start_soon": 4}
+        rank = {"overdue": 0, "remind": 1, "late_start": 2, "blocked": 3,
+                "deadline_soon": 4, "start_soon": 5}
         out.sort(key=lambda x: (rank.get(x["kind"], 9), -x["days"]))
         return out
 
@@ -2237,7 +2265,9 @@ class DatabaseManager:
 
     PF_FIELDS = ("name", "work_type", "status", "note", "subproject", "responsible",
                  "start_plan", "start_fact", "duration_qty", "duration_unit",
-                 "end_plan", "end_fact", "comment", "progress", "is_milestone", "parent_id")
+                 "end_plan", "end_fact", "comment", "progress", "is_milestone", "parent_id",
+                 "is_blocked", "delay_reason", "blocked_note", "link_order_batch",
+                 "link_spec_id", "auto_dates", "cost_weight", "notify_days", "remind_date")
 
     def add_plan_fact(self, project_id, data):
         d = {k: data.get(k, "") for k in self.PF_FIELDS}
