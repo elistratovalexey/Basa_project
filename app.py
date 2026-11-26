@@ -654,6 +654,16 @@ class ProjectManagerApp:
         ms = max(1, int(sm.cfg.get("interval_min", 15))) * 60 * 1000
         self._sync_job = self.root.after(ms, self._auto_sync_tick)
 
+    def open_warehouse(self):
+        """СКЛАД — остатки по ячейкам (не зависит от проекта)."""
+        try:
+            from dialogs.warehouse_dialog import WarehouseDialog
+        except ImportError as e:
+            messagebox.showerror("Склад", f"Модуль склада недоступен:\\n{e}")
+            return
+        dlg = WarehouseDialog(self.root, self.db_manager)
+        
+
     def _auto_sync_tick(self):
         self.sync_now_silent()
         self.restart_sync_timer()
