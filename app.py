@@ -396,7 +396,7 @@ class ProjectManagerApp:
         style.configure('Orders.TButton', background='#FF6B00', foreground='black',
                         font=('Arial', 10, 'bold'))
         style.map('Orders.TButton',
-                  background=[('active', '#FF8533'), ('pressed', '#CC5500')],
+                  background=[('active', '#0FF8533'), ('pressed', '#CC5500')],
                   foreground=[('active', 'black'), ('pressed', 'black')])
 
         frame_top = ttk.Frame(self.root)
@@ -438,7 +438,7 @@ class ProjectManagerApp:
         ttk.Button(nav, text="СКЛАД", command=self.open_warehouse).pack(side=tk.LEFT, padx=5)
         # === Кнопка ЗАКАЗЫ перенесена сюда из вкладки «Закупки» ===
         ttk.Button(nav, text="ЗАКАЗЫ", style='Orders.TButton',
-                   command=self.show_orders.pack(side=tk.LEFT, padx=10)
+                   command=self.show_orders).pack(side=tk.LEFT, padx=10)
 
         ttk.Label(frame_project, text="Проект:").grid(row=1, column=0, sticky="w", pady=5)
         self.combo_projects = ttk.Combobox(frame_project, state="readonly", width=40)
