@@ -477,7 +477,7 @@ class ProjectManagerApp:
         self.purchases_tab = PurchasesTab(self, f)
 
         f = ttk.Frame(self.notebook, padding=10)
-        self.notebook.add(f, text="  Спецификация Закупок  ")
+        self.notebook.add(f, text="  ЗАКУПКИ РОССИЯ  ")
         self.purchase_spec_tab = PurchaseSpecTab(self, f)
 
         f = ttk.Frame(self.notebook, padding=10)
