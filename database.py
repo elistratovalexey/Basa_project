@@ -97,6 +97,7 @@ class DatabaseManager:
         self._ensure_kd_columns()          # ← добавить
         self._ensure_indexes()  
         self._ensure_mail_tables()
+        self._ensure_warehouse_tables()
         self.ensure_column("projects", "orders_cost_coef", "REAL DEFAULT 1.8")        
         self._ensure_indexes()
 
@@ -223,6 +224,179 @@ class DatabaseManager:
     def delete_mail_message(self, msg_id):
         self.conn.execute("DELETE FROM mail_messages WHERE id=?", (msg_id,))
         self.conn.commit()
+
+        # ================= СКЛАД =================
+    @staticmethod
+    def _ean13(body12):
+        """Контрольная цифра EAN-13 для 12 цифр."""
+        s = sum(int(d) * (1 if i % 2 == 0 else 3) for i, d in enumerate(body12))
+        return body12 + str((10 - s % 10) % 10)
+
+    def _ensure_warehouse_tables(self):
+        c = self.conn.cursor()
+        c.execute('''CREATE TABLE IF NOT EXISTS storage_cells (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            code TEXT UNIQUE NOT NULL,
+            barcode TEXT UNIQUE,
+            note TEXT DEFAULT '')''')
+        c.execute('''CREATE TABLE IF NOT EXISTS warehouse_names (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT UNIQUE NOT NULL,
+            article TEXT DEFAULT '',
+            unit TEXT DEFAULT 'шт',
+            note TEXT DEFAULT '')''')
+        c.execute('''CREATE TABLE IF NOT EXISTS warehouse_items (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            cell_id INTEGER DEFAULT 0,
+            name TEXT DEFAULT '',
+            qty REAL DEFAULT 0,
+            description TEXT DEFAULT '',
+            updated_at TEXT DEFAULT '')''')
+        c.execute("CREATE INDEX IF NOT EXISTS idx_wh_cell ON warehouse_items(cell_id)")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_wh_name ON warehouse_items(name)")
+        self.conn.commit()
+
+    # --- База ячеек ---
+    def get_storage_cells(self):
+        return self.conn.execute("SELECT * FROM storage_cells ORDER BY code").fetchall()
+
+    def add_storage_cell(self, code, note=""):
+        code = (code or "").strip()
+        if not code:
+            return False, "Пустой номер ячейки"
+        try:
+            cur = self.conn.execute("INSERT INTO storage_cells (code, note) VALUES (?,?)",
+                                    (code, note))
+            cid = cur.lastrowid
+            # EAN-13: префикс 200 (внутренние коды) + 9 цифр id + контрольная
+            barcode = self._ean13("200" + str(cid).zfill(9))
+            self.conn.execute("UPDATE storage_cells SET barcode=? WHERE id=?", (barcode, cid))
+            self.conn.commit()
+            return True, barcode
+        except sqlite3.IntegrityError:
+            return False, "Такой номер ячейки уже есть"
+
+    def update_storage_cell(self, cid, code, note=""):
+        try:
+            self.conn.execute("UPDATE storage_cells SET code=?, note=? WHERE id=?",
+                              ((code or "").strip(), note, cid))
+            self.conn.commit()
+            return True
+        except sqlite3.IntegrityError:
+            return False
+
+    def regenerate_barcode(self, cid):
+        barcode = self._ean13("200" + str(cid).zfill(9))
+        self.conn.execute("UPDATE storage_cells SET barcode=? WHERE id=?", (barcode, cid))
+        self.conn.commit()
+        return barcode
+
+    def delete_storage_cell(self, cid):
+        n = self.conn.execute("SELECT COUNT(*) c FROM warehouse_items WHERE cell_id=?",
+                              (cid,)).fetchone()["c"]
+        if n:
+            return False, f"В ячейке {n} позиций — сначала переместите или удалите их"
+        self.conn.execute("DELETE FROM storage_cells WHERE id=?", (cid,))
+        self.conn.commit()
+        return True, ""
+
+    def find_cell_by_barcode(self, code):
+        code = (code or "").strip()
+        return self.conn.execute(
+            "SELECT * FROM storage_cells WHERE barcode=? OR code=?", (code, code)).fetchone()
+
+    # --- База наименований (наполняется из заказов) ---
+    def get_warehouse_names(self):
+        return self.conn.execute("SELECT * FROM warehouse_names ORDER BY name").fetchall()
+
+    def add_warehouse_name(self, name, article="", unit="шт", note=""):
+        name = (name or "").strip()
+        if not name:
+            return False
+        try:
+            self.conn.execute("""INSERT INTO warehouse_names (name, article, unit, note)
+                                 VALUES (?,?,?,?)""", (name, article, unit or "шт", note))
+            self.conn.commit()
+            return True
+        except sqlite3.IntegrityError:
+            return False
+
+    def update_warehouse_name(self, nid, name, article="", unit="шт", note=""):
+        new = (name or "").strip()
+        if not new:
+            return False
+        old = self.conn.execute("SELECT name FROM warehouse_names WHERE id=?", (nid,)).fetchone()
+        try:
+            with self.conn:
+                self.conn.execute("""UPDATE warehouse_names SET name=?, article=?, unit=?, note=?
+                                     WHERE id=?""", (new, article, unit or "шт", note, nid))
+                if old and old["name"] != new:
+                    self.conn.execute("UPDATE warehouse_items SET name=? WHERE name=?",
+                                      (new, old["name"]))
+            return True
+        except sqlite3.IntegrityError:
+            return False
+
+    def delete_warehouse_name(self, nid):
+        self.conn.execute("DELETE FROM warehouse_names WHERE id=?", (nid,))
+        self.conn.commit()
+
+    def sync_warehouse_names_from_orders(self):
+        """Подтягивает наименования позиций из заказов (без дублей)."""
+        added = 0
+        for r in self.conn.execute("""SELECT DISTINCT name, article FROM orders
+                                      WHERE name IS NOT NULL AND name!=''""").fetchall():
+            try:
+                self.conn.execute("""INSERT INTO warehouse_names (name, article, unit, note)
+                                     VALUES (?,?,?,?)""",
+                                  (r["name"].strip(), r["article"] or "", "шт", "из заказов"))
+                added += 1
+            except sqlite3.IntegrityError:
+                pass
+        self.conn.commit()
+        return added
+
+    # --- Позиции склада ---
+    def get_warehouse_items(self, cell_id=None, name=None, search=None):
+        q = """SELECT w.*, c.code AS cell_code, c.barcode AS cell_barcode
+               FROM warehouse_items w LEFT JOIN storage_cells c ON c.id=w.cell_id WHERE 1=1"""
+        p = []
+        if cell_id:
+            q += " AND w.cell_id=?"
+            p.append(cell_id)
+        if name:
+            q += " AND w.name=?"
+            p.append(name)
+        if search:
+            q += " AND (w.name LIKE ? OR w.description LIKE ? OR c.code LIKE ? OR c.barcode LIKE ?)"
+            p += [f"%{search}%"] * 4
+        q += " ORDER BY c.code, w.name"
+        return self.conn.execute(q, p).fetchall()
+
+    def add_warehouse_item(self, cell_id, name, qty, description=""):
+        cur = self.conn.execute("""INSERT INTO warehouse_items
+            (cell_id, name, qty, description, updated_at) VALUES (?,?,?,?,?)""",
+            (int(cell_id or 0), (name or "").strip(), float(qty or 0), description,
+             datetime.now().strftime("%d.%m.%Y %H:%M:%S")))
+        self.conn.commit()
+        return cur.lastrowid
+
+    def update_warehouse_item(self, wid, cell_id, name, qty, description=""):
+        self.conn.execute("""UPDATE warehouse_items
+            SET cell_id=?, name=?, qty=?, description=?, updated_at=? WHERE id=?""",
+            (int(cell_id or 0), (name or "").strip(), float(qty or 0), description,
+             datetime.now().strftime("%d.%m.%Y %H:%M:%S"), wid))
+        self.conn.commit()
+
+    def delete_warehouse_item(self, wid):
+        self.conn.execute("DELETE FROM warehouse_items WHERE id=?", (wid,))
+        self.conn.commit()
+
+    def warehouse_stats(self):
+        r = self.conn.execute("""SELECT COUNT(*) n, IFNULL(SUM(qty),0) q,
+                                        COUNT(DISTINCT cell_id) cells
+                                 FROM warehouse_items""").fetchone()
+        return {"n": r["n"] or 0, "qty": r["q"] or 0, "cells": r["cells"] or 0}
 
     def mail_stats(self, project_id):
         r = self.conn.execute("""SELECT COUNT(*) n, SUM(CASE WHEN direction='Входящее' THEN 1 ELSE 0 END) inc,
