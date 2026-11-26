@@ -114,9 +114,17 @@ class DataTabFragment : Fragment() {
 
     private fun refresh() {
         val proj = spinner.selectedItem?.toString()?.takeIf { it != ALL }
-        records = if (!db.isDatabaseReady())
-            listOf(DatabaseHelper.TabRecord("База не загружена", "Нажмите ⚙️, настройте облако Mail.ru и нажмите «Синхронизировать» на главном экране."))
-        else db.tabData(tab, proj, search.text.toString())
+        val q = search.text.toString()
+        records = when {
+            tab == "correspondence" -> MailHelper.records(requireContext(), proj, q)
+            !db.isDatabaseReady() -> listOf(DatabaseHelper.TabRecord("База не загружена", "Нажмите ⚙️, настройте облако Mail.ru и нажмите «Синхронизировать» на главном экране."))
+            tab == "plan_fact" -> {
+                val base = db.tabData(tab, proj, q)
+                val wn = MailHelper.workNames(requireContext())
+                if (wn != null) listOf(wn) + base else base
+            }
+            else -> db.tabData(tab, proj, q)
+        }
         listAdapter.clear()
         listAdapter.addAll(if (records.isEmpty()) listOf("Ничего не найдено") else records.map { it.title })
         listAdapter.notifyDataSetChanged()
