@@ -66,11 +66,6 @@ try:
 except Exception as _e:
     PlanFactTab = None
     print(f"[app] вкладка «План-Факт» недоступна: {_e}")
-try:
-    from tabs.correspondence import CorrespondenceTab
-except Exception as _e:
-    CorrespondenceTab = None
-    print(f"[app] вкладка «Переписка» недоступна: {_e}")
     
 
 if terminal_log is not None:
@@ -498,10 +493,7 @@ class ProjectManagerApp:
             f = ttk.Frame(self.notebook, padding=10)
             self.notebook.add(f, text="  Бюджет  ")
             self.budget_tab = BudgetTab(self, f)
-        if CorrespondenceTab is not None and getattr(self, "mail_db", None) is not None:
-            f = ttk.Frame(self.notebook, padding=10)
-            self.notebook.add(f, text="  Переписка  ")
-            self.correspondence_tab = CorrespondenceTab(self, f)
+        
         if CorrespondenceTab is not None:
             f = ttk.Frame(self.notebook, padding=10)
             self.notebook.add(f, text="  Переписка  ")
