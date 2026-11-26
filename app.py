@@ -435,10 +435,10 @@ class ProjectManagerApp:
         ttk.Button(nav, text="Удалить", command=self.delete_project).pack(side=tk.LEFT, padx=2)
         ttk.Button(nav, text="Резервная копия БД",
                    command=lambda: self.make_backup(silent=False)).pack(side=tk.LEFT, padx=10)
-        ttk.Button(<тот_же_фрейм>, text="СКЛАД", command=self.open_warehouse).pack(side=tk.LEFT, padx=5)
+        ttk.Button(nav, text="СКЛАД", command=self.open_warehouse).pack(side=tk.LEFT, padx=5)
         # === Кнопка ЗАКАЗЫ перенесена сюда из вкладки «Закупки» ===
         ttk.Button(nav, text="ЗАКАЗЫ", style='Orders.TButton',
-                   command=self.show_orders).pack(side=tk.LEFT, padx=10)
+                   command=self.show_orders.pack(side=tk.LEFT, padx=10)
 
         ttk.Label(frame_project, text="Проект:").grid(row=1, column=0, sticky="w", pady=5)
         self.combo_projects = ttk.Combobox(frame_project, state="readonly", width=40)
