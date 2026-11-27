@@ -1,8 +1,9 @@
 # -*- coding: utf-8 -*-
-"""СКЛАД: остатки по ячейкам хранения. Не зависит от выбранного проекта."""
+"""СКЛАД: остатки по ячейкам хранения. Не зависит от выбранного проекта.
+Штрихкоды: ячейки — EAN-13 префикс 200+id, позиции — EAN-13 префикс 201+id
+(совпадают с Android-приложением)."""
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
-
 
 def _num(v, d=0.0):
     try:
@@ -10,6 +11,10 @@ def _num(v, d=0.0):
     except (TypeError, ValueError):
         return d
 
+def _ean13(body12):
+    """Контрольная цифра EAN-13 для 12 цифр."""
+    s = sum(int(d) * (1 if i % 2 == 0 else 3) for i, d in enumerate(body12))
+    return body12 + str((10 - s % 10) % 10)
 
 class WarehouseDialog(tk.Toplevel):
     def __init__(self, parent, db_manager):
@@ -28,6 +33,7 @@ class WarehouseDialog(tk.Toplevel):
         except Exception:
             pass
         self.transient(parent)
+        self._ensure_item_barcodes()
         self.create_ui()
         self.refresh_dicts()
         self.load_items()
@@ -49,6 +55,51 @@ class WarehouseDialog(tk.Toplevel):
                 self.parent_app.log_action(msg)
         except Exception:
             pass
+
+    # ==================================================================
+    # Штрихкоды позиций (создание колонки + автозаполнение)
+    # ==================================================================
+    def _ensure_item_barcodes(self):
+        try:
+            cols = [r[1] for r in self.db.conn.execute("PRAGMA table_info(warehouse_items)")]
+            if "barcode" not in cols:
+                self.db.conn.execute("ALTER TABLE warehouse_items ADD COLUMN barcode TEXT DEFAULT ''")
+            for r in self.db.conn.execute(
+                    "SELECT id FROM warehouse_items WHERE barcode IS NULL OR barcode=''").fetchall():
+                self.db.conn.execute("UPDATE warehouse_items SET barcode=? WHERE id=?",
+                                     (_ean13("201" + str(r["id"]).zfill(9)), r["id"]))
+            self.db.conn.commit()
+        except Exception as e:
+            print(f"[warehouse] barcode: {e}")
+
+    def _item_barcode(self, wid):
+        row = self.db.conn.execute("SELECT barcode FROM warehouse_items WHERE id=?",
+                                   (wid,)).fetchone()
+        bc = (row["barcode"] or "") if row else ""
+        if not bc:
+            bc = _ean13("201" + str(wid).zfill(9))
+            self.db.conn.execute("UPDATE warehouse_items SET barcode=? WHERE id=?", (bc, wid))
+            self.db.conn.commit()
+        return bc
+
+    def regen_item_barcode(self):
+        if self._current_id is None:
+            messagebox.showwarning("Внимание", "Выберите позицию в таблице!", parent=self)
+            return
+        bc = _ean13("201" + str(self._current_id).zfill(9))
+        self.db.conn.execute("UPDATE warehouse_items SET barcode=? WHERE id=?",
+                             (bc, self._current_id))
+        self.db.conn.commit()
+        self.lbl_item_bc.config(text=bc)
+        self._log(f"Склад: позиция #{self._current_id} — штрихкод {bc}")
+        keep = self._current_id
+        self.load_items()
+        for iid, rid in self._row_id.items():
+            if rid == keep:
+                self.tree.selection_set(iid)
+                self.tree.see(iid)
+                self.on_select()
+                break
 
     # ==================================================================
     def create_ui(self):
@@ -78,13 +129,14 @@ class WarehouseDialog(tk.Toplevel):
         tf = ttk.LabelFrame(self, text="Остатки  ·  двойной клик по строке — загрузить в форму",
                             padding=6)
         tf.pack(fill="both", expand=True, padx=10, pady=6)
-        cols = ("cell", "barcode", "name", "qty", "descr", "upd")
+        cols = ("cell", "barcode", "item_bc", "name", "qty", "descr", "upd")
         self.tree = ttk.Treeview(tf, columns=cols, show="headings", height=14)
-        for c, t, w in (("cell", "Ячейка хранения", 130), ("barcode", "Штрихкод", 140),
-                        ("name", "Наименование", 380), ("qty", "Кол-во", 90),
-                        ("descr", "Описание", 330), ("upd", "Изменено", 130)):
+        for c, t, w in (("cell", "Ячейка хранения", 120), ("barcode", "Штрихкод ячейки", 130),
+                        ("item_bc", "Штрихкод позиции", 130), ("name", "Наименование", 340),
+                        ("qty", "Кол-во", 80), ("descr", "Описание", 300), ("upd", "Изменено", 130)):
             self.tree.heading(c, text=t)
-            self.tree.column(c, width=w, anchor="center" if c in ("qty", "barcode", "upd") else "w")
+            self.tree.column(c, width=w,
+                             anchor="center" if c in ("qty", "barcode", "item_bc", "upd") else "w")
         vs = ttk.Scrollbar(tf, orient=tk.VERTICAL, command=self.tree.yview)
         hs = ttk.Scrollbar(tf, orient=tk.HORIZONTAL, command=self.tree.xview)
         self.tree.configure(yscroll=vs.set, xscroll=hs.set)
@@ -116,6 +168,13 @@ class WarehouseDialog(tk.Toplevel):
         ttk.Label(card, text="Описание:").grid(row=2, column=0, sticky="nw")
         self.e_descr = tk.Text(card, width=90, height=3)
         self.e_descr.grid(row=2, column=1, columnspan=5, sticky="ew", pady=4)
+
+        ttk.Label(card, text="Штрихкод позиции:").grid(row=3, column=0, sticky="w", pady=4)
+        self.lbl_item_bc = ttk.Label(card, text="—", foreground="#0a58ca",
+                                     font=("Arial", 10, "bold"))
+        self.lbl_item_bc.grid(row=3, column=1, sticky="w", padx=4)
+        ttk.Button(card, text="🔄 Сгенерировать", command=self.regen_item_barcode)\
+            .grid(row=3, column=2, columnspan=2, sticky="w", padx=4)
         card.grid_columnconfigure(1, weight=1)
 
         bf = ttk.Frame(self, padding=(10, 0, 10, 10))
@@ -152,7 +211,7 @@ class WarehouseDialog(tk.Toplevel):
             row = self.db.conn.execute("SELECT barcode FROM storage_cells WHERE id=?",
                                        (cid,)).fetchone()
             bc = row["barcode"] if row else ""
-        self.lbl_cell_bc.config(text=f"штрихкод: {bc}" if bc else "")
+        self.lbl_cell_bc.config(text=f"штрихкод ячейки: {bc}" if bc else "")
 
     def reset_filters(self):
         self.c_f_cell.set("Все")
@@ -161,14 +220,31 @@ class WarehouseDialog(tk.Toplevel):
         self.load_items()
 
     def scan_or_search(self):
-        """Сканер штрихкода: 13 цифр → фильтр по ячейке, иначе текстовый поиск."""
+        """Сканер: 13 цифр → ячейка или позиция по штрихкоду, иначе текстовый поиск."""
         txt = self.e_search.get().strip()
-        if txt.isdigit() and len(txt) == 13:
-            cell = self.db.find_cell_by_barcode(txt)
-            if cell:
-                self.c_f_cell.set(cell["code"])
+        if txt.isdigit():
+            if len(txt) == 13:
+                cell = self.db.find_cell_by_barcode(txt)
+                if cell:
+                    self.c_f_cell.set(cell["code"])
+                    self.e_search.delete(0, tk.END)
+                    self.load_items()
+                    return
+            item = self.db.conn.execute(
+                "SELECT * FROM warehouse_items WHERE barcode=?", (txt,)).fetchone()
+            if item:
+                self.c_f_name.set("Все")
+                cid = item["cell_id"] or 0
+                code = next((c for c, i in self._cells.items() if i == cid), "Все")
+                self.c_f_cell.set(code if cid else "Все")
                 self.e_search.delete(0, tk.END)
                 self.load_items()
+                for iid, rid in self._row_id.items():
+                    if rid == item["id"]:
+                        self.tree.selection_set(iid)
+                        self.tree.see(iid)
+                        self.on_select()
+                        break
                 return
         self.load_items()
 
@@ -186,8 +262,10 @@ class WarehouseDialog(tk.Toplevel):
         for r in rows:
             q = _num(r["qty"])
             total += q
+            keys = r.keys()
+            item_bc = (r["barcode"] or "") if "barcode" in keys else ""
             iid = self.tree.insert("", tk.END, tags=("zero",) if q <= 0 else (), values=(
-                r["cell_code"] or "", r["cell_barcode"] or "", r["name"] or "",
+                r["cell_code"] or "", r["cell_barcode"] or "", item_bc, r["name"] or "",
                 f"{q:g}", r["description"] or "", r["updated_at"] or ""))
             self._row_id[iid] = r["id"]
         s = self.db.warehouse_stats()
@@ -203,11 +281,12 @@ class WarehouseDialog(tk.Toplevel):
         v = self.tree.item(sel[-1])["values"]
         self._current_id = wid
         self.c_cell.set(v[0] if v[0] in self._cells else "— не указана —")
-        self.c_name.set(v[2])
+        self.c_name.set(v[3])
         self.e_qty.delete(0, tk.END)
-        self.e_qty.insert(0, str(v[3]))
+        self.e_qty.insert(0, str(v[4]))
         self.e_descr.delete("1.0", tk.END)
-        self.e_descr.insert("1.0", v[4] or "")
+        self.e_descr.insert("1.0", v[5] or "")
+        self.lbl_item_bc.config(text=v[2] or "—")
         self._show_cell_barcode()
 
     def clear_form(self):
@@ -218,6 +297,7 @@ class WarehouseDialog(tk.Toplevel):
         self.e_qty.insert(0, "0")
         self.e_descr.delete("1.0", tk.END)
         self.lbl_cell_bc.config(text="")
+        self.lbl_item_bc.config(text="—")
 
     # ==================================================================
     def _collect(self):
@@ -229,8 +309,14 @@ class WarehouseDialog(tk.Toplevel):
         if not name:
             messagebox.showwarning("Внимание", "Укажите наименование!", parent=self)
             return
-        self.db.add_warehouse_item(cid, name, qty, descr)
-        self.db.add_warehouse_name(name)       # новое наименование — в базу
+        wid = self.db.add_warehouse_item(cid, name, qty, descr)
+        try:
+            bc = _ean13("201" + str(wid).zfill(9))
+            self.db.conn.execute("UPDATE warehouse_items SET barcode=? WHERE id=?", (bc, wid))
+            self.db.conn.commit()
+        except Exception as e:
+            print(f"[warehouse] barcode: {e}")
+        self.db.add_warehouse_name(name)
         self._log(f"Склад: добавлено «{name}» × {qty:g}")
         self.refresh_dicts()
         self.load_items()
@@ -245,6 +331,7 @@ class WarehouseDialog(tk.Toplevel):
             messagebox.showwarning("Внимание", "Укажите наименование!", parent=self)
             return
         self.db.update_warehouse_item(self._current_id, cid, name, qty, descr)
+        self._item_barcode(self._current_id)
         self.db.add_warehouse_name(name)
         self._log(f"Склад: позиция #{self._current_id} обновлена")
         self.refresh_dicts()
@@ -287,7 +374,8 @@ class WarehouseDialog(tk.Toplevel):
         wb = openpyxl.Workbook()
         ws = wb.active
         ws.title = "Склад"
-        ws.append(["Ячейка хранения", "Штрихкод", "Наименование", "Кол-во", "Описание", "Изменено"])
+        ws.append(["Ячейка хранения", "Штрихкод ячейки", "Штрихкод позиции",
+                   "Наименование", "Кол-во", "Описание", "Изменено"])
         for c in ws[1]:
             c.font = Font(bold=True)
         for iid in self.tree.get_children():
@@ -296,7 +384,7 @@ class WarehouseDialog(tk.Toplevel):
         ws2.append(["Номер ячейки", "Штрихкод", "Примечание"])
         for r in self.db.get_storage_cells():
             ws2.append([r["code"], r["barcode"], r["note"]])
-        for col, w in (("A", 18), ("B", 18), ("C", 50), ("D", 12), ("E", 50), ("F", 20)):
+        for col, w in (("A", 18), ("B", 18), ("C", 18), ("D", 50), ("E", 12), ("F", 50), ("G", 20)):
             ws.column_dimensions[col].width = w
         ws.freeze_panes = "A2"
         try:
