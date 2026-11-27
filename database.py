@@ -74,7 +74,7 @@ class DatabaseManager:
         self.conn = sqlite3.connect(db_path, timeout=15)
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA busy_timeout = 15000")
-
+        self._ensure_fully_paid_triggers()
         self.create_tables()
         self._ensure_order_columns()
         self._ensure_order_received_columns()
@@ -146,6 +146,93 @@ class DatabaseManager:
     def get_mail_settings(self):
         r = self.conn.execute("SELECT * FROM mail_settings WHERE id=1").fetchone()
         return dict(r) if r else {}
+        
+    def _ensure_fully_paid_triggers(self):
+        """fully_paid проставляется автоматически: все платежи оплачены
+        и их сумма покрывает сумму счёта (total → кол-во×цена → сумма позиций)."""
+        def expr(sid):
+            return f"""COALESCE((
+              SELECT CASE WHEN st.cnt > 0 AND st.unpaid = 0 AND st.total > 0
+                               AND st.paid_sum >= st.total - 0.01 THEN 1 ELSE 0 END
+              FROM (
+                SELECT
+                  (SELECT COUNT(*) FROM purchase_payments WHERE spec_id=s.id) cnt,
+                  (SELECT COUNT(*) FROM purchase_payments
+                    WHERE spec_id=s.id AND IFNULL(paid,0)=0) unpaid,
+                  (SELECT IFNULL(SUM(IFNULL(amount,0)),0) FROM purchase_payments
+                    WHERE spec_id=s.id AND IFNULL(paid,0)=1) paid_sum,
+                  CASE WHEN IFNULL(s.total,0) > 0 THEN s.total
+                       WHEN IFNULL(s.quantity,0)*IFNULL(s.price,0) > 0
+                            THEN IFNULL(s.quantity,0)*IFNULL(s.price,0)
+                       ELSE IFNULL((SELECT SUM(CASE WHEN IFNULL(i.total,0)>0 THEN i.total
+                                                    ELSE IFNULL(i.quantity,0)*IFNULL(i.price,0) END)
+                                    FROM purchase_spec_items i WHERE i.spec_id=s.id),0)
+                  END total
+                FROM purchase_specifications s WHERE s.id={sid}
+              ) st), 0)"""
+
+        c = self.conn.cursor()
+        c.executescript(f"""
+        CREATE TRIGGER IF NOT EXISTS trg_pp_ai AFTER INSERT ON purchase_payments BEGIN
+            UPDATE purchase_specifications SET fully_paid={expr('NEW.spec_id')}
+            WHERE id=NEW.spec_id;
+        END;
+        CREATE TRIGGER IF NOT EXISTS trg_pp_au AFTER UPDATE ON purchase_payments BEGIN
+            UPDATE purchase_specifications SET fully_paid={expr('NEW.spec_id')}
+            WHERE id=NEW.spec_id;
+            UPDATE purchase_specifications SET fully_paid={expr('OLD.spec_id')}
+            WHERE id=OLD.spec_id AND OLD.spec_id<>NEW.spec_id;
+        END;
+        CREATE TRIGGER IF NOT EXISTS trg_pp_ad AFTER DELETE ON purchase_payments BEGIN
+            UPDATE purchase_specifications SET fully_paid={expr('OLD.spec_id')}
+            WHERE id=OLD.spec_id;
+        END;
+        CREATE TRIGGER IF NOT EXISTS trg_ps_au AFTER UPDATE OF total, quantity, price
+            ON purchase_specifications BEGIN
+            UPDATE purchase_specifications SET fully_paid={expr('NEW.id')} WHERE id=NEW.id;
+        END;
+        CREATE TRIGGER IF NOT EXISTS trg_psi_ai AFTER INSERT ON purchase_spec_items BEGIN
+            UPDATE purchase_specifications SET fully_paid={expr('NEW.spec_id')}
+            WHERE id=NEW.spec_id;
+        END;
+        CREATE TRIGGER IF NOT EXISTS trg_psi_au AFTER UPDATE ON purchase_spec_items BEGIN
+            UPDATE purchase_specifications SET fully_paid={expr('NEW.spec_id')}
+            WHERE id=NEW.spec_id;
+        END;
+        CREATE TRIGGER IF NOT EXISTS trg_psi_ad AFTER DELETE ON purchase_spec_items BEGIN
+            UPDATE purchase_specifications SET fully_paid={expr('OLD.spec_id')}
+            WHERE id=OLD.spec_id;
+        END;
+        """)
+        self.conn.commit()
+        self.sync_all_specs_paid()
+
+    def sync_all_specs_paid(self):
+        """Разовый пересчёт всех счетов — приводит уже оплаченные к правильному виду."""
+        n = 0
+        for s in self.conn.execute("SELECT id, fully_paid FROM purchase_specifications").fetchall():
+            
+            row = self.conn.execute(
+                "SELECT total, quantity, price FROM purchase_specifications WHERE id=?",
+                (s["id"],)).fetchone()
+            total = self._n(row["total"]) or (self._n(row["quantity"]) * self._n(row["price"]))
+            if total <= 0:
+                items = self.conn.execute(
+                    "SELECT quantity, price, total FROM purchase_spec_items WHERE spec_id=?",
+                    (s["id"],)).fetchall()
+                total = sum(self._n(i["total"]) or self._n(i["quantity"]) * self._n(i["price"])
+                            for i in items)
+            pays = self.conn.execute(
+                "SELECT amount, paid FROM purchase_payments WHERE spec_id=?", (s["id"],)).fetchall()
+            paid_sum = sum(self._n(p["amount"]) for p in pays if p["paid"])
+            need = 1 if (pays and all(p["paid"] for p in pays)
+                         and total > 0 and paid_sum >= total - 0.01) else 0
+            if need != (s["fully_paid"] or 0):
+                self.conn.execute("UPDATE purchase_specifications SET fully_paid=? WHERE id=?",
+                                  (need, s["id"]))
+                n += 1
+        self.conn.commit()
+        return n   
 
     def save_mail_settings(self, data):
         cur = self.get_mail_settings()
