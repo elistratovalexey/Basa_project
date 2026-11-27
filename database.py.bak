@@ -1,0 +1,2989 @@
+import sqlite3
+import os
+import glob
+import re
+from datetime import datetime, timedelta
+
+
+def _date_sort_key(date_str):
+    """Ключ сортировки для дат (пустые/неверные — в конец).
+    Поддерживает ДД.ММ.ГГГГ и ДД.ММ.ГГ через utils.parse_date."""
+    try:
+        from utils import parse_date
+        d = parse_date(date_str)
+    except Exception:
+        d = None
+        try:
+            d = datetime.strptime(str(date_str).strip(), "%d.%m.%Y")
+        except (ValueError, TypeError):
+            d = None
+    return (0, d) if d else (1, datetime.max)
+
+def sync_purchase_payment_flags(self, project_name=None):
+    """paid=1 для платежей с суммой > 0; fully_paid у счёта — если суммы покрывают total.
+    Возвращает (сколько платежей отмечено, сколько счетов закрыто)."""
+    pid = self.get_project_id(project_name) if project_name else None
+    q = '''SELECT pp.id, pp.amount, pp.paid, pp.spec_id
+            FROM purchase_payments pp JOIN purchase_specifications s ON s.id=pp.spec_id'''
+    params = []
+    if pid:
+        q += " WHERE s.project_id=?"
+        params.append(pid)
+    marked = 0
+    specs = set()
+    with self.conn:
+        for r in self.conn.execute(q, params).fetchall():
+            specs.add(r["spec_id"])
+            if self._n(r["amount"]) > 0 and not r["paid"]:
+                self.conn.execute("UPDATE purchase_payments SET paid=1 WHERE id=?", (r["id"],))
+                marked += 1
+        closed = 0
+        for sid in specs:
+            s = self.conn.execute(
+                "SELECT total, quantity, price, fully_paid FROM purchase_specifications WHERE id=?",
+                (sid,)).fetchone()
+            if not s:
+                continue
+            total = self._n(s["total"]) or (self._n(s["quantity"]) * self._n(s["price"]))
+            if total <= 0:
+                items = self.conn.execute(
+                    "SELECT quantity, price, total FROM purchase_spec_items WHERE spec_id=?",
+                    (sid,)).fetchall()
+                total = sum(self._n(i["total"]) or
+                            self._n(i["quantity"]) * self._n(i["price"]) for i in items)
+            paid_sum = self._n(self.conn.execute(
+                "SELECT SUM(IFNULL(amount,0)) s FROM purchase_payments WHERE spec_id=?",
+                (sid,)).fetchone()["s"])
+            need = 1 if (total > 0 and paid_sum >= total - 0.01) else 0
+            if need != (s["fully_paid"] or 0):
+                self.conn.execute("UPDATE purchase_specifications SET fully_paid=? WHERE id=?",
+                                    (need, sid))
+                closed += 1
+    return marked, closed
+
+
+class DatabaseManager:
+    def __init__(self, db_path):
+        self.db_path = db_path
+        db_dir = os.path.dirname(os.path.abspath(db_path))
+        if db_dir and not os.path.isdir(db_dir):
+            raise FileNotFoundError(f"Папка базы данных не найдена: {db_dir}")
+
+        # timeout: база может лежать на сетевом диске и быть открыта
+        # несколькими пользователями — ждём снятия блокировки
+        self.conn = sqlite3.connect(db_path, timeout=15)
+        self.conn.row_factory = sqlite3.Row
+        self.conn.execute("PRAGMA busy_timeout = 15000")
+
+        self.create_tables()
+        self._ensure_order_columns()
+        self._ensure_order_received_columns()
+        self._ensure_order_delivery_number_column()
+        self._ensure_order_write_off_column()
+        self._ensure_price_request_columns()
+        self._ensure_item_statuses()
+        self._ensure_article_aliases()
+        self._ensure_plan_fact_tables()
+        self._ensure_plan_fact_v2()
+        self._ensure_plan_fact_v3()
+        self._ensure_work_names()
+        self._ensure_v19()
+        self._ensure_delivery_addresses_table()
+        self._ensure_purchase_payments_ext_columns()
+        self._ensure_purchase_spec_items_table()
+        self._ensure_purchase_spec_delivery_address()
+        self._ensure_suppliers_columns()
+        self._ensure_kd_columns()          # ← добавить
+        self._ensure_indexes()  
+        self._ensure_mail_tables()
+        self.ensure_column("projects", "orders_cost_coef", "REAL DEFAULT 1.8")        
+        self._ensure_indexes()
+
+        # ================= Переписка (IMAP) =================
+    def _ensure_mail_tables(self):
+        c = self.conn.cursor()
+        c.execute('''CREATE TABLE IF NOT EXISTS mail_settings (
+            id INTEGER PRIMARY KEY CHECK (id=1),
+            host TEXT DEFAULT 'imap.mail.ru',
+            port INTEGER DEFAULT 993,
+            use_ssl INTEGER DEFAULT 1,
+            email TEXT DEFAULT '',
+            password TEXT DEFAULT '',
+            inbox TEXT DEFAULT 'INBOX',
+            sent TEXT DEFAULT '',
+            check_sent INTEGER DEFAULT 1,
+            limit_msgs INTEGER DEFAULT 200,
+            all_projects INTEGER DEFAULT 1,
+            default_type TEXT DEFAULT '',
+            auto_check INTEGER DEFAULT 0,
+            interval_min INTEGER DEFAULT 30)''')
+        c.execute('''CREATE TABLE IF NOT EXISTS mail_messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_id INTEGER NOT NULL,
+            folder TEXT NOT NULL,
+            uid TEXT NOT NULL,
+            message_id TEXT DEFAULT '',
+            subject TEXT DEFAULT '',
+            sender TEXT DEFAULT '',
+            recipients TEXT DEFAULT '',
+            cc TEXT DEFAULT '',
+            date_sent TEXT DEFAULT '',
+            date_iso TEXT DEFAULT '',
+            direction TEXT DEFAULT 'Входящее',
+            work_type TEXT DEFAULT '',
+            body TEXT DEFAULT '',
+            attachments TEXT DEFAULT '',
+            size INTEGER DEFAULT 0,
+            fetched_at TEXT DEFAULT '',
+            note TEXT DEFAULT '',
+            UNIQUE(project_id, folder, uid))''')
+        c.execute("CREATE INDEX IF NOT EXISTS idx_mail_proj ON mail_messages(project_id, date_iso)")
+        c.execute("INSERT OR IGNORE INTO mail_settings (id) VALUES (1)")
+        self.conn.commit()
+
+    def get_mail_settings(self):
+        r = self.conn.execute("SELECT * FROM mail_settings WHERE id=1").fetchone()
+        return dict(r) if r else {}
+
+    def save_mail_settings(self, data):
+        cur = self.get_mail_settings()
+        cur.update({k: v for k, v in data.items() if k != "id"})
+        cols = [k for k in cur if k != "id"]
+        sets = ",".join(f"{k}=?" for k in cols)
+        self.conn.execute(f"UPDATE mail_settings SET {sets} WHERE id=1", [cur[k] for k in cols])
+        self.conn.commit()
+
+    def get_mail_messages(self, project_id, work_type=None, direction=None, search=None):
+        q = """SELECT id, project_id, folder, uid, subject, sender, recipients, cc,
+                      date_sent, date_iso, direction, work_type, attachments, size, note
+               FROM mail_messages WHERE project_id=?"""
+        p = [project_id]
+        if work_type:
+            q += " AND work_type=?"
+            p.append(work_type)
+        if direction:
+            q += " AND direction=?"
+            p.append(direction)
+        if search:
+            q += " AND (subject LIKE ? OR sender LIKE ? OR recipients LIKE ? OR body LIKE ?)"
+            p += [f"%{search}%"] * 4
+        q += " ORDER BY date_iso DESC, id DESC"
+        return self.conn.execute(q, p).fetchall()
+
+    def get_mail_body(self, msg_id):
+        r = self.conn.execute("SELECT * FROM mail_messages WHERE id=?", (msg_id,)).fetchone()
+        return dict(r) if r else {}
+
+    def mail_exists(self, project_id, folder, uid):
+        return self.conn.execute("SELECT 1 FROM mail_messages WHERE project_id=? AND folder=? AND uid=?",
+                                 (project_id, folder, str(uid))).fetchone() is not None
+
+    def add_mail_message(self, data):
+        try:
+            cur = self.conn.execute('''INSERT INTO mail_messages
+                (project_id, folder, uid, message_id, subject, sender, recipients, cc,
+                 date_sent, date_iso, direction, work_type, body, attachments, size, fetched_at, note)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+                (data["project_id"], data["folder"], str(data["uid"]), data.get("message_id", ""),
+                 data.get("subject", ""), data.get("sender", ""), data.get("recipients", ""),
+                 data.get("cc", ""), data.get("date_sent", ""), data.get("date_iso", ""),
+                 data.get("direction", "Входящее"), data.get("work_type", ""),
+                 data.get("body", ""), data.get("attachments", ""), data.get("size", 0),
+                 datetime.now().strftime("%d.%m.%Y %H:%M:%S"), data.get("note", "")))
+            self.conn.commit()
+            return cur.lastrowid
+        except sqlite3.IntegrityError:
+            return None
+
+    def set_mail_work_type(self, msg_id, work_type):
+        self.conn.execute("UPDATE mail_messages SET work_type=? WHERE id=?", (work_type, msg_id))
+        self.conn.commit()
+
+    def set_mail_note(self, msg_id, note):
+        self.conn.execute("UPDATE mail_messages SET note=? WHERE id=?", (note, msg_id))
+        self.conn.commit()
+
+    def delete_mail_message(self, msg_id):
+        self.conn.execute("DELETE FROM mail_messages WHERE id=?", (msg_id,))
+        self.conn.commit()
+
+    def mail_stats(self, project_id):
+        r = self.conn.execute("""SELECT COUNT(*) n, SUM(CASE WHEN direction='Входящее' THEN 1 ELSE 0 END) inc,
+                                        SUM(CASE WHEN direction='Исходящее' THEN 1 ELSE 0 END) out
+                                 FROM mail_messages WHERE project_id=?""", (project_id,)).fetchone()
+        return {"total": r["n"] or 0, "in": r["inc"] or 0, "out": r["out"] or 0} 
+    
+    # ================= План-Факт v3 =================
+    PF_AUDIT_FIELDS = ("start_plan", "end_plan", "start_fact", "end_fact",
+                       "duration_qty", "duration_unit", "status", "responsible",
+                       "progress", "is_blocked", "delay_reason", "cost_weight")
+        # === База наименований работ ===
+    def _ensure_work_names(self):
+        self.conn.execute('''CREATE TABLE IF NOT EXISTS work_names (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT UNIQUE NOT NULL,
+            work_type TEXT DEFAULT '',
+            duration_qty REAL DEFAULT 0,
+            duration_unit TEXT DEFAULT 'Календарные дни')''')
+        self.conn.commit()
+
+    def get_work_names(self):
+        return self.conn.execute("SELECT * FROM work_names ORDER BY name").fetchall()
+
+    def add_work_name(self, name, work_type="", duration_qty=0, duration_unit="Календарные дни"):
+        name = (name or "").strip()
+        if not name:
+            return False
+        try:
+            self.conn.execute("""INSERT INTO work_names (name, work_type, duration_qty, duration_unit)
+                                 VALUES (?,?,?,?)""",
+                              (name, work_type or "", float(duration_qty or 0),
+                               duration_unit or "Календарные дни"))
+            self.conn.commit()
+            return True
+        except sqlite3.IntegrityError:
+            return False
+
+    def update_work_name(self, wid, name, work_type="", duration_qty=0, duration_unit="Календарные дни"):
+        try:
+            self.conn.execute("""UPDATE work_names SET name=?, work_type=?, duration_qty=?, duration_unit=?
+                                 WHERE id=?""",
+                              ((name or "").strip(), work_type or "", float(duration_qty or 0),
+                               duration_unit or "Календарные дни", wid))
+            self.conn.commit()
+            return True
+        except sqlite3.IntegrityError:
+            return False
+
+    def delete_work_name(self, wid):
+        self.conn.execute("DELETE FROM work_names WHERE id=?", (wid,))
+        self.conn.commit()
+
+    def _ensure_plan_fact_v3(self):
+        if hasattr(self, "_ensure_plan_fact_v2"):
+            self._ensure_plan_fact_v2()
+        c = self.conn.cursor()
+        c.execute("PRAGMA table_info(plan_fact)")
+        cols = [r[1] for r in c.fetchall()]
+        for col, typ in (("is_blocked", "INTEGER DEFAULT 0"),
+                         ("delay_reason", "TEXT DEFAULT ''"),
+                         ("blocked_note", "TEXT DEFAULT ''"),
+                         ("link_order_batch", "INTEGER DEFAULT 0"),
+                         ("auto_dates", "INTEGER DEFAULT 0"),
+                         ("cost_weight", "REAL DEFAULT 0"),
+                         ("notify_days", "INTEGER DEFAULT 3"),
+                         ("baseline_start", "TEXT DEFAULT ''"),
+                         ("baseline_end", "TEXT DEFAULT ''")):
+            if col not in cols:
+                c.execute(f"ALTER TABLE plan_fact ADD COLUMN {col} {typ}")
+        c.execute('''CREATE TABLE IF NOT EXISTS delay_reasons (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE NOT NULL)''')
+        c.execute("SELECT COUNT(*) FROM delay_reasons")
+        if c.fetchone()[0] == 0:
+            for n in ("Нет материалов", "Нет КД", "Ожидание оплаты", "Нет ответа поставщика",
+                      "Задержка производства", "Нет транспорта", "Нет людей", "Прочее"):
+                c.execute("INSERT OR IGNORE INTO delay_reasons (name) VALUES (?)", (n,))
+        c.execute('''CREATE TABLE IF NOT EXISTS plan_fact_audit (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts TEXT, project_id INTEGER, work_id INTEGER, number INTEGER,
+            field TEXT, old_value TEXT, new_value TEXT,
+            author TEXT DEFAULT '', device TEXT DEFAULT '')''')
+        c.execute("CREATE INDEX IF NOT EXISTS idx_pf_audit ON plan_fact_audit(project_id, work_id)")
+        self.conn.commit()
+
+    # --- Причины задержек ---
+    def get_delay_reasons(self):
+        return [r[0] for r in self.conn.execute("SELECT name FROM delay_reasons ORDER BY name")]
+
+    def add_delay_reason(self, name):
+        name = (name or "").strip()
+        if not name:
+            return False
+        try:
+            self.conn.execute("INSERT INTO delay_reasons (name) VALUES (?)", (name,))
+            self.conn.commit()
+            return True
+        except sqlite3.IntegrityError:
+            return False
+
+    def rename_delay_reason(self, old, new):
+        new = (new or "").strip()
+        if not new or old == new:
+            return False
+        try:
+            with self.conn:
+                self.conn.execute("UPDATE delay_reasons SET name=? WHERE name=?", (new, old))
+                self.conn.execute("UPDATE plan_fact SET delay_reason=? WHERE delay_reason=?", (new, old))
+            return True
+        except sqlite3.IntegrityError:
+            return False
+
+    def delete_delay_reason(self, name):
+        self.conn.execute("DELETE FROM delay_reasons WHERE name=?", (name,))
+        self.conn.commit()
+
+    # --- Baseline ---
+    def pf_set_baseline(self, project_id, only_empty=False):
+        n = 0
+        for r in self.get_plan_fact(project_id):
+            has = (r["baseline_end"] or "") if "baseline_end" in r.keys() else ""
+            if only_empty and has:
+                continue
+            self.conn.execute("UPDATE plan_fact SET baseline_start=?, baseline_end=? WHERE id=?",
+                              (r["start_plan"] or "", r["end_plan"] or "", r["id"]))
+            n += 1
+        self.conn.commit()
+        return n
+
+    def pf_reset_baseline(self, project_id):
+        self.conn.execute("UPDATE plan_fact SET baseline_start='', baseline_end='' WHERE project_id=?",
+                          (project_id,))
+        self.conn.commit()
+
+    # --- Аудит ---
+    def _pf_audit_write(self, project_id, work_id, number, changes):
+        if not changes:
+            return
+        import socket
+        try:
+            author = os.environ.get("USERNAME") or os.environ.get("USER") or ""
+        except Exception:
+            author = ""
+        ts = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
+        dev = socket.gethostname()
+        with self.conn:
+            for field, (old, new) in changes.items():
+                self.conn.execute("""INSERT INTO plan_fact_audit
+                    (ts, project_id, work_id, number, field, old_value, new_value, author, device)
+                    VALUES (?,?,?,?,?,?,?,?,?)""",
+                    (ts, project_id, work_id, number, field, str(old or ""), str(new or ""), author, dev))
+
+    def pf_audit(self, project_id, work_id=None, limit=500):
+        if work_id:
+            return self.conn.execute("""SELECT * FROM plan_fact_audit
+                WHERE project_id=? AND work_id=? ORDER BY id DESC LIMIT ?""",
+                (project_id, work_id, limit)).fetchall()
+        return self.conn.execute("""SELECT * FROM plan_fact_audit
+            WHERE project_id=? ORDER BY id DESC LIMIT ?""", (project_id, limit)).fetchall()
+
+    # --- Даты и стоимость из заказов ---
+    def pf_sync_from_orders(self, project_id):
+        n = 0
+        for r in self.get_plan_fact(project_id):
+            keys = r.keys()
+            batch = int(r["link_order_batch"] or 0) if "link_order_batch" in keys else 0
+            auto = int(r["auto_dates"] or 0) if "auto_dates" in keys else 0
+            if not batch or not auto:
+                continue
+            st = self.get_order_status(batch) or {}
+            end = st.get("eta_date") or ""
+            if end:
+                start = st.get("confirm_date") or ""
+            else:
+                row = self.conn.execute("""SELECT MAX(max_delivery_date) d, MAX(order_date) od,
+                                                  MAX(payment_date) pd
+                                           FROM orders WHERE order_batch_id=?""", (batch,)).fetchone()
+                end = (row["d"] or "") if row else ""
+                start = (row["pd"] or row["od"] or "") if row else ""
+            changes = {}
+            if end and end != (r["end_plan"] or ""):
+                changes["end_plan"] = (r["end_plan"], end)
+            if start and start != (r["start_plan"] or ""):
+                changes["start_plan"] = (r["start_plan"], start)
+            if changes:
+                self.conn.execute("""UPDATE plan_fact
+                                     SET start_plan = COALESCE(NULLIF(?,''), start_plan),
+                                         end_plan   = COALESCE(NULLIF(?,''), end_plan)
+                                     WHERE id=?""",
+                                  (start, end, r["id"]))
+                self._pf_audit_write(project_id, r["id"], r["number"], changes)
+                n += 1
+        self.conn.commit()
+        return n
+
+    def pf_cost_from_orders(self, project_id):
+        n = 0
+        for r in self.get_plan_fact(project_id):
+            batch = int(r["link_order_batch"] or 0) if "link_order_batch" in r.keys() else 0
+            if not batch:
+                continue
+            total = 0.0
+            for o in self.conn.execute("""SELECT quantity, price, currency FROM orders
+                                          WHERE order_batch_id=?""", (batch,)):
+                total += self._n(o["quantity"]) * self._n(o["price"]) * self.get_rate(o["currency"])
+            if total > 0 and abs(total - float(r["cost_weight"] or 0)) > 0.01:
+                self.conn.execute("UPDATE plan_fact SET cost_weight=? WHERE id=?", (total, r["id"]))
+                n += 1
+        self.conn.commit()
+        return n
+
+    # --- Загрузка ответственных ---
+    def pf_workload(self, project_id, max_parallel=3):
+        rows = [dict(r) for r in self.get_plan_fact(project_id)]
+        met = self.pf_metrics(project_id)["rows"]
+        groups = {}
+        for r in rows:
+            done = (r.get("status") or "") in ("Выполнено", "Завершено")
+            if done:
+                continue
+            name = (r.get("responsible") or "— не назначен —").strip() or "— не назначен —"
+            g = groups.setdefault(name, {"works": 0, "days": 0.0, "overdue": 0, "blocked": 0,
+                                         "intervals": [], "numbers": []})
+            g["works"] += 1
+            g["numbers"].append(str(r["number"]))
+            unit = r.get("duration_unit") or "Календарные дни"
+            q = float(r.get("duration_qty") or 0)
+            g["days"] += q * 7 if unit == "Недели" else q
+            mm = met.get(r["id"], {})
+            if mm.get("light") == "overdue":
+                g["overdue"] += 1
+            if r.get("is_blocked"):
+                g["blocked"] += 1
+            s, e = self.pf_parse(r.get("start_plan")), self.pf_parse(r.get("end_plan"))
+            if s and e:
+                g["intervals"].append((s.date(), e.date()))
+        out = []
+        for name, g in groups.items():
+            events = []
+            for s, e in g["intervals"]:
+                events.append((s, 1))
+                events.append((e, -1))
+            events.sort()
+            cur = peak = 0
+            for _, d in events:
+                cur += d
+                peak = max(peak, cur)
+            overload = peak > max_parallel or g["days"] > 60
+            out.append({"name": name, "works": g["works"], "days": round(g["days"], 1),
+                        "overdue": g["overdue"], "blocked": g["blocked"], "peak": peak,
+                        "overload": overload, "numbers": ", ".join(g["numbers"])})
+        out.sort(key=lambda x: (-x["overload"], -x["peak"], -x["days"]))
+        return out
+
+    # --- Аналитика задержек ---
+    def pf_delay_analytics(self, project_id):
+        rows = [dict(r) for r in self.get_plan_fact(project_id)]
+        met = self.pf_metrics(project_id)["rows"]
+        groups = {}
+        for r in rows:
+            mm = met.get(r["id"], {})
+            late = (mm.get("delta") or 0) > 0
+            if not (r.get("is_blocked") or late or mm.get("late_start")):
+                continue
+            reason = (r.get("delay_reason") or "").strip() or "— причина не указана —"
+            g = groups.setdefault(reason, {"count": 0, "days": 0, "blocked": 0, "numbers": []})
+            g["count"] += 1
+            g["days"] += max(0, mm.get("delta") or 0)
+            g["blocked"] += 1 if r.get("is_blocked") else 0
+            g["numbers"].append(str(r["number"]))
+        out = [{"reason": k, "count": v["count"], "days": v["days"], "blocked": v["blocked"],
+                "numbers": ", ".join(v["numbers"])} for k, v in groups.items()]
+        out.sort(key=lambda x: (-x["days"], -x["count"]))
+        return out
+
+    # --- Уведомления ---
+    def pf_notifications(self, project_id=None, days_ahead=3):
+        today = datetime.now().date()
+        projects = ([{"id": project_id, "name": self.conn.execute(
+            "SELECT name FROM projects WHERE id=?", (project_id,)).fetchone()["name"]}]
+            if project_id else [dict(p) for p in self.get_all_projects()])
+        out = []
+        for p in projects:
+            if not p.get("id"):
+                continue
+            met = self.pf_metrics(p["id"])["rows"]
+            for r in self.get_plan_fact(p["id"]):
+                r = dict(r)
+                done = (r.get("status") or "") in ("Выполнено", "Завершено")
+                if done:
+                    continue
+                mm = met.get(r["id"], {})
+                ahead = int(r.get("notify_days") or days_ahead)
+                sp, ep = self.pf_parse(r.get("start_plan")), self.pf_parse(r.get("end_plan"))
+                base = {"project": p["name"], "number": r["number"], "name": r.get("name") or "",
+                        "responsible": r.get("responsible") or "—", "work_id": r["id"]}
+                if r.get("is_blocked"):
+                    out.append({**base, "kind": "blocked", "days": 0,
+                                "text": f'🔒 заблокирована: {r.get("delay_reason") or "причина не указана"}'})
+                if sp and not r.get("start_fact"):
+                    d = (sp.date() - today).days
+                    if d < 0:
+                        out.append({**base, "kind": "late_start", "days": -d,
+                                    "text": f"старт просрочен на {-d} дн (план {r.get('start_plan')})"})
+                    elif d <= 1:
+                        out.append({**base, "kind": "start_soon", "days": d,
+                                    "text": "старт сегодня" if d == 0 else "старт завтра"})
+                if ep:
+                    d = (ep.date() - today).days
+                    if d < 0:
+                        out.append({**base, "kind": "overdue", "days": -d,
+                                    "text": f"ПРОСРОЧКА {-d} дн (дедлайн {r.get('end_plan')})"})
+                    elif d <= ahead:
+                        out.append({**base, "kind": "deadline_soon", "days": d,
+                                    "text": f"дедлайн через {d} дн ({r.get('end_plan')})"})
+        rank = {"overdue": 0, "late_start": 1, "blocked": 2, "deadline_soon": 3, "start_soon": 4}
+        out.sort(key=lambda x: (rank.get(x["kind"], 9), -x["days"]))
+        return out
+
+    # === Индексы ===
+    def _ensure_indexes(self):
+        c = self.conn.cursor()
+        for sql in (
+            "CREATE INDEX IF NOT EXISTS idx_payments_project ON payments(project_id, number)",
+            "CREATE INDEX IF NOT EXISTS idx_specifications_project ON specifications(project_id, number)",
+            "CREATE INDEX IF NOT EXISTS idx_purchases_project ON purchases(project_id, number)",
+            "CREATE INDEX IF NOT EXISTS idx_orders_batch ON orders(order_batch_id)",
+            "CREATE INDEX IF NOT EXISTS idx_orders_project ON orders(project_name)",
+            "CREATE INDEX IF NOT EXISTS idx_nomenclature_article ON nomenclature(article)",
+            "CREATE INDEX IF NOT EXISTS idx_pspec_project ON purchase_specifications(project_id)",
+            "CREATE INDEX IF NOT EXISTS idx_pspec_items_spec ON purchase_spec_items(spec_id)",
+            "CREATE INDEX IF NOT EXISTS idx_ppayments_spec ON purchase_payments(spec_id)",
+        ):
+            try:
+                c.execute(sql)
+            except sqlite3.OperationalError as e:
+                print(f"Индекс не создан: {e}")
+        self.conn.commit()
+
+    def _ensure_kd_columns(self):
+        c = self.conn.cursor()
+        c.execute("PRAGMA table_info(kd_directory)")
+        cols = [r[1] for r in c.fetchall()]
+        if "kd_name" not in cols:
+            c.execute("ALTER TABLE kd_directory ADD COLUMN kd_name TEXT DEFAULT ''")
+            self.conn.commit()
+            print("Миграция: добавлена колонка kd_directory.kd_name")   
+
+    # === Резервное копирование ===
+    def backup(self, backup_dir, keep=15, prefix="projects"):
+        """Онлайн-копия БД (sqlite backup API) + удаление старых копий."""
+        try:
+            os.makedirs(backup_dir, exist_ok=True)
+            stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            target = os.path.join(backup_dir, f"{prefix}_{stamp}.db")
+            n = 1
+            while os.path.exists(target):
+                target = os.path.join(backup_dir, f"{prefix}_{stamp}_{n}.db")
+                n += 1
+            dst = sqlite3.connect(target)
+            try:
+                self.conn.backup(dst)
+            finally:
+                dst.close()
+            copies = sorted(glob.glob(os.path.join(backup_dir, f"{prefix}_*.db")))
+            for old in copies[:-keep] if keep > 0 else []:
+                try:
+                    os.remove(old)
+                except OSError:
+                    pass
+            return target
+        except Exception as e:
+            print(f"Резервная копия не создана: {e}")
+            return None
+
+    # === Универсальная миграция (используется диалогами через hasattr) ===
+    def ensure_column(self, table, column, coltype="TEXT DEFAULT ''"):
+        """Добавляет колонку, если её нет. Имена проверяются белым списком/regex."""
+        allowed = {
+            "projects", "payments", "specifications", "purchases", "orders",
+            "order_items", "nomenclature", "manufacturers", "subprojects",
+            "kd_directory", "suppliers", "purchase_specifications",
+            "purchase_spec_items", "purchase_payments", "delivery_addresses",
+            # новые таблицы v1.9+
+            "plan_fact", "work_types", "work_statuses", "item_statuses",
+            "nomenclature_aliases", "price_history", "currency_rates",
+        }
+        if table not in allowed:
+            raise ValueError(f"Недопустимая таблица: {table}")
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", column or ""):
+            raise ValueError(f"Недопустимое имя колонки: {column}")
+        c = self.conn.cursor()
+        c.execute(f"PRAGMA table_info({table})")
+        cols = [row[1] for row in c.fetchall()]
+        if column not in cols:
+            c.execute(f"ALTER TABLE {table} ADD COLUMN {column} {coltype}")
+            self.conn.commit()
+            print(f"Миграция: добавлена колонка {table}.{column}")
+
+    # === Миграции схемы ===
+    def _ensure_order_columns(self):
+        c = self.conn.cursor()
+        c.execute("PRAGMA table_info(orders)")
+        columns = [row[1] for row in c.fetchall()]
+        if 'delivery_term' not in columns:
+            c.execute("ALTER TABLE orders ADD COLUMN delivery_term INTEGER DEFAULT 0")
+        if 'delivery_unit' not in columns:
+            c.execute("ALTER TABLE orders ADD COLUMN delivery_unit TEXT DEFAULT ''")
+        if 'price' not in columns:
+            c.execute("ALTER TABLE orders ADD COLUMN price TEXT DEFAULT ''")
+        if 'currency' not in columns:
+            c.execute("ALTER TABLE orders ADD COLUMN currency TEXT DEFAULT ''")
+        self.conn.commit()
+
+    def _ensure_order_received_columns(self):
+        c = self.conn.cursor()
+        c.execute("PRAGMA table_info(orders)")
+        columns = [row[1] for row in c.fetchall()]
+        if 'received' not in columns:
+            c.execute("ALTER TABLE orders ADD COLUMN received INTEGER DEFAULT 0")
+        if 'receipt_date' not in columns:
+            c.execute("ALTER TABLE orders ADD COLUMN receipt_date TEXT DEFAULT ''")
+        self.conn.commit()
+
+    def _ensure_order_delivery_number_column(self):
+        c = self.conn.cursor()
+        c.execute("PRAGMA table_info(orders)")
+        columns = [row[1] for row in c.fetchall()]
+        if 'delivery_number' not in columns:
+            c.execute("ALTER TABLE orders ADD COLUMN delivery_number TEXT DEFAULT ''")
+        self.conn.commit()
+
+    def _ensure_order_write_off_column(self):
+        """Колонка write_off_date (дата списания) в orders."""
+        c = self.conn.cursor()
+        c.execute("PRAGMA table_info(orders)")
+        columns = [row[1] for row in c.fetchall()]
+        if 'write_off_date' not in columns:
+            c.execute("ALTER TABLE orders ADD COLUMN write_off_date TEXT DEFAULT ''")
+            self.conn.commit()
+            print("Миграция: добавлена колонка orders.write_off_date")
+
+    def _ensure_price_request_columns(self):
+        """Флаг 'Запрос цены' в purchases и orders + Z-нумерация."""
+        c = self.conn.cursor()
+        c.execute("PRAGMA table_info(purchases)")
+        cols = [row[1] for row in c.fetchall()]
+        if 'price_request' not in cols:
+            c.execute("ALTER TABLE purchases ADD COLUMN price_request INTEGER DEFAULT 0")
+            print("Миграция: добавлена колонка purchases.price_request")
+        c.execute("PRAGMA table_info(orders)")
+        cols = [row[1] for row in c.fetchall()]
+        if 'price_request' not in cols:
+            c.execute("ALTER TABLE orders ADD COLUMN price_request INTEGER DEFAULT 0")
+        if 'price_request_num' not in cols:
+            c.execute("ALTER TABLE orders ADD COLUMN price_request_num INTEGER DEFAULT 0")
+            print("Миграция: добавлены колонки orders.price_request / price_request_num")
+        self.conn.commit()
+
+    def _ensure_delivery_addresses_table(self):
+        c = self.conn.cursor()
+        c.execute('''CREATE TABLE IF NOT EXISTS delivery_addresses (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            address TEXT NOT NULL,
+            contact TEXT,
+            phone TEXT,
+            note TEXT
+        )''')
+        self.conn.commit()
+
+    def _ensure_purchase_payments_ext_columns(self):
+        c = self.conn.cursor()
+        c.execute("PRAGMA table_info(purchase_payments)")
+        columns = [row[1] for row in c.fetchall()]
+        ext_cols = {
+            'invoice_number': 'TEXT DEFAULT ""',
+            'invoice_date': 'TEXT DEFAULT ""',
+            'supplier_name': 'TEXT DEFAULT ""',
+            'supplier_inn': 'TEXT DEFAULT ""',
+            'payment_purpose': 'TEXT DEFAULT ""',
+            'delivery_term': 'TEXT DEFAULT ""',
+            'delivery_date': 'TEXT DEFAULT ""',
+            'vat_amount': 'REAL DEFAULT 0',
+            'total_with_vat': 'REAL DEFAULT 0',
+        }
+        for col, dtype in ext_cols.items():
+            if col not in columns:
+                c.execute(f"ALTER TABLE purchase_payments ADD COLUMN {col} {dtype}")
+        self.conn.commit()
+
+    def _ensure_purchase_spec_items_table(self):
+        c = self.conn.cursor()
+        c.execute('''CREATE TABLE IF NOT EXISTS purchase_spec_items (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            spec_id INTEGER NOT NULL,
+            name TEXT,
+            quantity REAL DEFAULT 0,
+            price REAL DEFAULT 0,
+            total REAL DEFAULT 0,
+            delivery_term TEXT,
+            delivery_unit TEXT,
+            FOREIGN KEY (spec_id) REFERENCES purchase_specifications(id)
+        )''')
+        self.conn.commit()
+
+    def _ensure_purchase_spec_delivery_address(self):
+        c = self.conn.cursor()
+        c.execute("PRAGMA table_info(purchase_specifications)")
+        columns = [row[1] for row in c.fetchall()]
+        if 'delivery_address' not in columns:
+            c.execute("ALTER TABLE purchase_specifications ADD COLUMN delivery_address TEXT DEFAULT ''")
+        self.conn.commit()
+
+    def _ensure_suppliers_columns(self):
+        c = self.conn.cursor()
+        c.execute("PRAGMA table_info(suppliers)")
+        columns = [row[1] for row in c.fetchall()]
+        for col in ('contact', 'phone', 'email', 'address', 'note'):
+            if col not in columns:
+                c.execute(f"ALTER TABLE suppliers ADD COLUMN {col} TEXT DEFAULT ''")
+        self.conn.commit()
+
+    def create_tables(self):
+        c = self.conn.cursor()
+        c.execute('''CREATE TABLE IF NOT EXISTS projects (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT UNIQUE NOT NULL,
+            path TEXT NOT NULL,
+            contract_date TEXT,
+            contract_amount TEXT,
+            contract_currency TEXT,
+            del_term TEXT,
+            del_unit TEXT,
+            del_base_date TEXT,
+            confirmation_date TEXT,
+            work_start TEXT,
+            work_term TEXT,
+            work_unit TEXT,
+            delivery_address TEXT
+        )''')
+        c.execute('''CREATE TABLE IF NOT EXISTS payments (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_id INTEGER NOT NULL,
+            number INTEGER NOT NULL,
+            date TEXT,
+            amount TEXT,
+            currency TEXT,
+            percent TEXT,
+            paid INTEGER DEFAULT 0,
+            contract_date TEXT,
+            FOREIGN KEY (project_id) REFERENCES projects(id)
+        )''')
+        c.execute('''CREATE TABLE IF NOT EXISTS specifications (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_id INTEGER NOT NULL,
+            number INTEGER NOT NULL,
+            name TEXT,
+            quantity TEXT,
+            price TEXT,
+            currency TEXT,
+            FOREIGN KEY (project_id) REFERENCES projects(id)
+        )''')
+        c.execute('''CREATE TABLE IF NOT EXISTS purchases (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_id INTEGER NOT NULL,
+            number INTEGER NOT NULL,
+            manufacturer TEXT,
+            subproject TEXT,
+            kd TEXT,
+            article TEXT,
+            name TEXT,
+            name_eng TEXT,
+            quantity INTEGER DEFAULT 0,
+            note TEXT,
+            ordered INTEGER DEFAULT 0,
+            order_date TEXT,
+            in_order INTEGER DEFAULT 0,
+            received INTEGER DEFAULT 0,
+            receipt_date TEXT,
+            price_request INTEGER DEFAULT 0,
+            FOREIGN KEY (project_id) REFERENCES projects(id)
+        )''')
+        c.execute('''CREATE TABLE IF NOT EXISTS orders (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            order_batch_id INTEGER NOT NULL,
+            order_date TEXT,
+            project_name TEXT,
+            payment_date TEXT,
+            manufacturer TEXT,
+            subproject TEXT,
+            kd TEXT,
+            article TEXT,
+            name TEXT,
+            name_eng TEXT,
+            quantity INTEGER DEFAULT 0,
+            note TEXT,
+            delivery_days INTEGER DEFAULT 0,
+            delivery_unit_order TEXT,
+            min_delivery_date TEXT,
+            max_delivery_date TEXT,
+            invoice_number TEXT,
+            supplier TEXT,
+            delivery_number TEXT DEFAULT '',
+            received INTEGER DEFAULT 0,
+            receipt_date TEXT DEFAULT '',
+            write_off_date TEXT DEFAULT '',
+            price_request INTEGER DEFAULT 0,
+            price_request_num INTEGER DEFAULT 0
+        )''')
+        c.execute('''CREATE TABLE IF NOT EXISTS order_items (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            order_batch_id INTEGER NOT NULL,
+            article TEXT,
+            name TEXT,
+            name_eng TEXT,
+            quantity INTEGER DEFAULT 0,
+            delivery_term INTEGER DEFAULT 0,
+            delivery_unit TEXT,
+            price TEXT,
+            currency TEXT,
+            note TEXT,
+            manufacturer TEXT,
+            subproject TEXT,
+            kd TEXT,
+            FOREIGN KEY (order_batch_id) REFERENCES orders(order_batch_id)
+        )''')
+        c.execute('''CREATE TABLE IF NOT EXISTS nomenclature (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            manufacturer TEXT,
+            article TEXT,
+            name_rus TEXT,
+            name_eng TEXT
+        )''')
+        c.execute('''CREATE TABLE IF NOT EXISTS manufacturers (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT UNIQUE NOT NULL
+        )''')
+        c.execute('''CREATE TABLE IF NOT EXISTS subprojects (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            project_name TEXT
+        )''')
+        c.execute('''CREATE TABLE IF NOT EXISTS kd_directory (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            kd_number TEXT NOT NULL,
+            project_name TEXT
+        )''')
+        c.execute('''CREATE TABLE IF NOT EXISTS suppliers (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT UNIQUE NOT NULL,
+            contact TEXT,
+            phone TEXT,
+            email TEXT,
+            address TEXT,
+            note TEXT
+        )''')
+        c.execute('''CREATE TABLE IF NOT EXISTS purchase_specifications (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_id INTEGER NOT NULL,
+            supplier TEXT,
+            name TEXT,
+            quantity REAL DEFAULT 0,
+            price REAL DEFAULT 0,
+            total REAL DEFAULT 0,
+            currency TEXT,
+            delivery_term INTEGER DEFAULT 0,
+            delivery_unit TEXT,
+            payment_date TEXT,
+            delivery_date TEXT,
+            fully_paid INTEGER DEFAULT 0,
+            received INTEGER DEFAULT 0,
+            delivery_address TEXT,
+            note TEXT,
+            FOREIGN KEY (project_id) REFERENCES projects(id)
+        )''')
+        c.execute('''CREATE TABLE IF NOT EXISTS purchase_payments (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            spec_id INTEGER NOT NULL,
+            number INTEGER NOT NULL,
+            date TEXT,
+            amount REAL DEFAULT 0,
+            currency TEXT,
+            percent REAL DEFAULT 0,
+            paid INTEGER DEFAULT 0,
+            FOREIGN KEY (spec_id) REFERENCES purchase_specifications(id)
+        )''')
+        self.conn.commit()
+
+    # === Проекты ===
+    def get_all_projects(self, sort_by="name"):
+        """sort_by: 'name' | 'contract_date' (новые сверху) | 'id'"""
+        c = self.conn.cursor()
+        c.execute("SELECT * FROM projects ORDER BY id")
+        rows = c.fetchall()
+        if sort_by == "name":
+            rows = sorted(rows, key=lambda r: (r["name"] or "").upper())
+        elif sort_by == "contract_date":
+            dated = [r for r in rows if _date_sort_key(r["contract_date"])[0] == 0]
+            undated = [r for r in rows if _date_sort_key(r["contract_date"])[0] == 1]
+            dated.sort(key=lambda r: _date_sort_key(r["contract_date"])[1], reverse=True)
+            rows = dated + undated
+        return rows
+
+    def get_project(self, name):
+        c = self.conn.cursor()
+        c.execute("SELECT * FROM projects WHERE name=?", (name,))
+        return c.fetchone()
+
+    def get_project_id(self, name):
+        c = self.conn.cursor()
+        c.execute("SELECT id FROM projects WHERE name=?", (name,))
+        row = c.fetchone()
+        return row['id'] if row else None
+
+    def add_project(self, name, path):
+        c = self.conn.cursor()
+        try:
+            c.execute("INSERT INTO projects (name, path) VALUES (?, ?)", (name, path))
+            self.conn.commit()
+            return True
+        except sqlite3.IntegrityError:
+            return False
+
+    def update_project(self, name, data):
+        c = self.conn.cursor()
+        c.execute('''UPDATE projects SET
+            contract_date=?, contract_amount=?, contract_currency=?,
+            del_term=?, del_unit=?, del_base_date=?,
+            confirmation_date=?, work_start=?, work_term=?, work_unit=?,
+            delivery_address=?
+            WHERE name=?''',
+            (data.get('contract_date', ''), data.get('contract_amount', ''),
+             data.get('contract_currency', ''), data.get('del_term', ''),
+             data.get('del_unit', ''), data.get('del_base_date', ''),
+             data.get('confirmation_date', ''), data.get('work_start', ''),
+             data.get('work_term', ''), data.get('work_unit', ''),
+             data.get('delivery_address', ''), name))
+        self.conn.commit()
+
+    def rename_project(self, old_name, new_name):
+        """Переименование проекта с обновлением ссылок по имени."""
+        if not new_name or old_name == new_name:
+            return False
+        if self.get_project(new_name):
+            return False
+        try:
+            with self.conn:
+                self.conn.execute("UPDATE projects SET name=? WHERE name=?", (new_name, old_name))
+                self.conn.execute("UPDATE orders SET project_name=? WHERE project_name=?", (new_name, old_name))
+                self.conn.execute("UPDATE subprojects SET project_name=? WHERE project_name=?", (new_name, old_name))
+                self.conn.execute("UPDATE kd_directory SET project_name=? WHERE project_name=?", (new_name, old_name))
+            return True
+        except sqlite3.Error as e:
+            print(f"Ошибка переименования проекта: {e}")
+            return False
+
+    def update_project_path(self, name, path):
+        with self.conn:
+            self.conn.execute("UPDATE projects SET path=? WHERE name=?", (path, name))
+
+        # === Коэффициент расходов на заказы (свой для каждого проекта) ===
+    DEFAULT_ORDER_COST_COEF = 1.8
+
+    def get_orders_cost_coef(self, project_name):
+        """Множитель расходов по строкам из «Заказов». По умолчанию 1.8."""
+        row = self.get_project(project_name)
+        if row is not None and "orders_cost_coef" in row.keys():
+            try:
+                v = float(row["orders_cost_coef"])
+                if v > 0:
+                    return v
+            except (TypeError, ValueError):
+                pass
+        return self.DEFAULT_ORDER_COST_COEF
+
+    def set_orders_cost_coef(self, project_name, value):
+        try:
+            v = float(str(value).replace(",", "."))
+        except (TypeError, ValueError):
+            return False
+        if v <= 0:
+            return False
+        self.conn.execute("UPDATE projects SET orders_cost_coef=? WHERE name=?", (v, project_name))
+        self.conn.commit()
+        return True        
+
+    def delete_project(self, name):
+        """Удаляет проект и все зависимые записи одной транзакцией.
+        Заказы (orders) сохраняются как история — привязаны к имени проекта."""
+        project = self.get_project(name)
+        if not project:
+            return
+        project_id = project['id']
+        with self.conn:
+            c = self.conn.cursor()
+            c.execute("""DELETE FROM purchase_payments WHERE spec_id IN
+                         (SELECT id FROM purchase_specifications WHERE project_id=?)""", (project_id,))
+            c.execute("""DELETE FROM purchase_spec_items WHERE spec_id IN
+                         (SELECT id FROM purchase_specifications WHERE project_id=?)""", (project_id,))
+            c.execute("DELETE FROM purchase_specifications WHERE project_id=?", (project_id,))
+            c.execute("DELETE FROM payments WHERE project_id=?", (project_id,))
+            c.execute("DELETE FROM specifications WHERE project_id=?", (project_id,))
+            c.execute("DELETE FROM purchases WHERE project_id=?", (project_id,))
+            # ИСПРАВЛЕНО: работы План-Факта тоже принадлежат проекту
+            c.execute("DELETE FROM plan_fact WHERE project_id=?", (project_id,))
+            c.execute("DELETE FROM projects WHERE id=?", (project_id,))
+
+    # === Платежи ===
+    def get_payments(self, project_id):
+        c = self.conn.cursor()
+        c.execute("SELECT * FROM payments WHERE project_id=? ORDER BY number", (project_id,))
+        return c.fetchall()
+
+    def add_payment(self, project_id, data):
+        c = self.conn.cursor()
+        c.execute('''INSERT INTO payments
+            (project_id, number, date, amount, currency, percent, paid, contract_date)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
+            (project_id, data.get('number', 1), data.get('date', ''),
+             data.get('amount', ''), data.get('currency', ''),
+             data.get('percent', ''), data.get('paid', 0),
+             data.get('contract_date', '')))
+        self.conn.commit()
+
+    def update_payment(self, project_id, number, data):
+        c = self.conn.cursor()
+        c.execute('''UPDATE payments SET date=?, amount=?, currency=?, percent=?, paid=?, contract_date=?
+            WHERE project_id=? AND number=?''',
+            (data.get('date', ''), data.get('amount', ''), data.get('currency', ''),
+             data.get('percent', ''), data.get('paid', 0), data.get('contract_date', ''),
+             project_id, number))
+        self.conn.commit()
+
+    def delete_payment(self, project_id, number):
+        c = self.conn.cursor()
+        c.execute("DELETE FROM payments WHERE project_id=? AND number=?", (project_id, number))
+        self.conn.commit()
+
+    # === Спецификации ===
+    def get_specifications(self, project_id):
+        c = self.conn.cursor()
+        c.execute("SELECT * FROM specifications WHERE project_id=? ORDER BY number", (project_id,))
+        return c.fetchall()
+
+    def add_specification(self, project_id, data):
+        c = self.conn.cursor()
+        c.execute('''INSERT INTO specifications (project_id, number, name, quantity, price, currency)
+            VALUES (?, ?, ?, ?, ?, ?)''',
+            (project_id, data.get('number', 1), data.get('name', ''),
+             data.get('quantity', ''), data.get('price', ''), data.get('currency', '')))
+        self.conn.commit()
+
+    def update_specification(self, project_id, number, data):
+        c = self.conn.cursor()
+        c.execute('''UPDATE specifications SET name=?, quantity=?, price=?, currency=?
+            WHERE project_id=? AND number=?''',
+            (data.get('name', ''), data.get('quantity', ''),
+             data.get('price', ''), data.get('currency', ''),
+             project_id, number))
+        self.conn.commit()
+
+    def delete_specification(self, project_id, number):
+        c = self.conn.cursor()
+        c.execute("DELETE FROM specifications WHERE project_id=? AND number=?", (project_id, number))
+        self.conn.commit()
+
+    # === Закупки ===
+    def get_purchases(self, project_id):
+        """JOIN с projects: каждая строка несёт project_name
+        (нужно для колонки «Проект» во вкладке «Закупки»)."""
+        c = self.conn.cursor()
+        c.execute('''SELECT p.*, pr.name AS project_name
+                     FROM purchases p
+                     LEFT JOIN projects pr ON pr.id = p.project_id
+                     WHERE p.project_id=? ORDER BY p.number''', (project_id,))
+        return c.fetchall()
+
+    def get_next_number(self, table, project_id):
+        """Следующий свободный номер по ВСЕМ записям проекта (не по фильтру)."""
+        if table not in ("payments", "specifications", "purchases", "plan_fact"):
+            raise ValueError(table)
+        c = self.conn.cursor()
+        c.execute(f"SELECT MAX(CAST(number AS INTEGER)) AS m FROM {table} WHERE project_id=?",
+                  (project_id,))
+        row = c.fetchone()
+        return (row["m"] or 0) + 1
+
+    def get_purchase_by_number(self, project_id, number):
+        c = self.conn.cursor()
+        c.execute("SELECT * FROM purchases WHERE project_id=? AND number=?", (project_id, number))
+        return c.fetchone()
+
+    def add_purchase(self, project_id, data):
+        c = self.conn.cursor()
+        c.execute('''INSERT INTO purchases
+            (project_id, number, manufacturer, subproject, kd, article, name, name_eng,
+             quantity, note, ordered, order_date, in_order, received, receipt_date, price_request)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+            (project_id, data.get('number', 1), data.get('manufacturer', ''),
+             data.get('subproject', ''), data.get('kd', ''), data.get('article', ''),
+             data.get('name', ''), data.get('name_eng', ''),
+             data.get('quantity', 0), data.get('note', ''),
+             data.get('ordered', 0), data.get('order_date', ''),
+             data.get('in_order', 0), data.get('received', 0),
+             data.get('receipt_date', ''), data.get('price_request', 0)))
+        self.conn.commit()
+
+    def update_purchase(self, project_id, number, data):
+        c = self.conn.cursor()
+        c.execute('''UPDATE purchases SET
+            manufacturer=?, subproject=?, kd=?, article=?, name=?, name_eng=?,
+            quantity=?, note=?, ordered=?, order_date=?, in_order=?, received=?,
+            receipt_date=?, price_request=?
+            WHERE project_id=? AND number=?''',
+            (data.get('manufacturer', ''), data.get('subproject', ''),
+             data.get('kd', ''), data.get('article', ''),
+             data.get('name', ''), data.get('name_eng', ''),
+             data.get('quantity', 0), data.get('note', ''),
+             data.get('ordered', 0), data.get('order_date', ''),
+             data.get('in_order', 0), data.get('received', 0),
+             data.get('receipt_date', ''), data.get('price_request', 0),
+             project_id, number))
+        self.conn.commit()
+
+    def set_purchase_flag(self, project_id, number, field, value):
+        if field not in ("ordered", "in_order", "received", "price_request"):
+            raise ValueError(f"Недопустимое поле: {field}")
+        c = self.conn.cursor()
+        c.execute(f"UPDATE purchases SET {field}=? WHERE project_id=? AND number=?",
+                  (value, project_id, number))
+        self.conn.commit()
+
+    def move_purchase(self, from_project_id, number, to_project_id):
+        """Перенос закупки в другой проект с перенумерацией.
+        Возвращает новый номер позиции в целевом проекте."""
+        if from_project_id == to_project_id:
+            return number
+        new_number = self.get_next_number("purchases", to_project_id)
+        c = self.conn.cursor()
+        c.execute('''UPDATE purchases SET project_id=?, number=?
+                     WHERE project_id=? AND number=?''',
+                  (to_project_id, new_number, from_project_id, number))
+        self.conn.commit()
+        return new_number
+
+    def delete_purchase(self, project_id, number):
+        c = self.conn.cursor()
+        c.execute("DELETE FROM purchases WHERE project_id=? AND number=?", (project_id, number))
+        self.conn.commit()
+
+    # === Заказы ===
+    def get_next_order_batch_id(self):
+        c = self.conn.cursor()
+        c.execute("SELECT MAX(order_batch_id) as max_id FROM orders")
+        row = c.fetchone()
+        return (row['max_id'] or 0) + 1
+
+    def get_next_price_request_num(self):
+        """Следующий номер Z-серии (запросы цены)."""
+        c = self.conn.cursor()
+        c.execute("SELECT MAX(price_request_num) AS m FROM orders WHERE price_request=1")
+        row = c.fetchone()
+        return (row['m'] or 0) + 1
+
+    def get_order_batches(self):
+        c = self.conn.cursor()
+        c.execute('''SELECT order_batch_id,
+                            MAX(order_date) as order_date,
+                            MAX(project_name) as project_name,
+                            MAX(payment_date) as payment_date,
+                            MAX(manufacturer) as manufacturer,
+                            MAX(delivery_days) as delivery_days,
+                            MAX(delivery_unit_order) as delivery_unit_order,
+                            MAX(min_delivery_date) as min_delivery_date,
+                            MAX(max_delivery_date) as max_delivery_date,
+                            MAX(invoice_number) as invoice_number,
+                            MAX(supplier) as supplier,
+                            MAX(delivery_number) as delivery_number,
+                            MAX(received) as received,
+                            MAX(receipt_date) as receipt_date,
+                            MAX(write_off_date) as write_off_date,
+                            MAX(price_request) as price_request,
+                            MAX(price_request_num) as price_request_num,
+                            MAX(status) as status,
+                            MAX(confirm_date) as confirm_date,
+                            MAX(ship_date) as ship_date,
+                            MAX(tracking) as tracking,
+                            MAX(eta_date) as eta_date
+                     FROM orders
+                     GROUP BY order_batch_id
+                     ORDER BY order_batch_id DESC''')
+        return c.fetchall()
+
+    def get_order_items(self, batch_id):
+        c = self.conn.cursor()
+        c.execute('''SELECT id, article, name, name_eng, quantity, note,
+                            manufacturer, subproject, kd,
+                            delivery_term, delivery_unit, price, currency,
+                            item_status, IFNULL(qty_received, 0) AS qty_received,
+                            IFNULL(received, 0) AS received, receipt_date
+                     FROM orders
+                     WHERE order_batch_id=?
+                     ORDER BY id''', (batch_id,))
+        result = []
+        for row in c.fetchall():
+            result.append({
+                'id': row['id'],
+                'article': row['article'] or '',
+                'name': row['name'] or '',
+                'name_eng': row['name_eng'] or '',
+                'quantity': row['quantity'] or 0,
+                'delivery_term': row['delivery_term'] or 0,
+                'delivery_unit': row['delivery_unit'] or '',
+                'price': row['price'] or '',
+                'currency': row['currency'] or '',
+                'note': row['note'] or '',
+                'manufacturer': row['manufacturer'] or '',
+                'subproject': row['subproject'] or '',
+                'kd': row['kd'] or '',
+                'item_status': row['item_status'] or '',
+                'qty_received': row['qty_received'] or 0,
+                'received': row['received'] or 0,
+                'receipt_date': row['receipt_date'] or '',
+            })
+        return result
+    
+    def add_order(self, data):
+        c = self.conn.cursor()
+        c.execute('''INSERT INTO orders
+            (order_batch_id, order_date, project_name, payment_date, manufacturer,
+             subproject, kd, article, name, name_eng, quantity, note,
+             price_request, price_request_num)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+            (data.get('order_batch_id', 0), data.get('order_date', ''),
+             data.get('project_name', ''), data.get('payment_date', ''),
+             data.get('manufacturer', ''), data.get('subproject', ''),
+             data.get('kd', ''), data.get('article', ''),
+             data.get('name', ''), data.get('name_eng', ''),
+             data.get('quantity', 0), data.get('note', ''),
+             data.get('price_request', 0), data.get('price_request_num', 0)))
+        self.conn.commit()
+
+    def update_order_batch(self, batch_id, order_date, project_name, payment_date,
+                           delivery_days, delivery_unit, min_date, max_date):
+        c = self.conn.cursor()
+        c.execute('''UPDATE orders SET order_date=?, project_name=?, payment_date=?,
+            delivery_days=?, delivery_unit_order=?, min_delivery_date=?, max_delivery_date=?
+            WHERE order_batch_id=?''',
+            (order_date, project_name, payment_date,
+             delivery_days, delivery_unit, min_date, max_date, batch_id))
+        self.conn.commit()
+
+    def set_order_received(self, batch_id, value, receipt_date=""):
+        c = self.conn.cursor()
+        c.execute("UPDATE orders SET received=?, receipt_date=? WHERE order_batch_id=?",
+                  (value, receipt_date, batch_id))
+        self.conn.commit()
+
+    def set_order_delivery_number(self, batch_id, delivery_number):
+        c = self.conn.cursor()
+        c.execute("UPDATE orders SET delivery_number=? WHERE order_batch_id=?",
+                  (delivery_number, batch_id))
+        self.conn.commit()
+
+    def set_order_write_off_date(self, batch_id, write_off_date):
+        c = self.conn.cursor()
+        c.execute("UPDATE orders SET write_off_date=? WHERE order_batch_id=?",
+                  (write_off_date, batch_id))
+        self.conn.commit()
+
+    def set_order_price_request(self, batch_id, value):
+        """Включить/выключить 'Запрос цены'; при включении назначает Z-номер."""
+        c = self.conn.cursor()
+        if value:
+            c.execute("SELECT MAX(price_request_num) FROM orders WHERE order_batch_id=?", (batch_id,))
+            num = c.fetchone()[0] or 0
+            if not num:
+                num = self.get_next_price_request_num()
+            c.execute("UPDATE orders SET price_request=1, price_request_num=? WHERE order_batch_id=?",
+                      (num, batch_id))
+        else:
+            c.execute("UPDATE orders SET price_request=0 WHERE order_batch_id=?", (batch_id,))
+        self.conn.commit()
+
+    def get_order_projects(self):
+        c = self.conn.cursor()
+        c.execute("SELECT DISTINCT project_name FROM orders "
+                  "WHERE project_name IS NOT NULL AND project_name != '' ORDER BY project_name")
+        return [row[0] for row in c.fetchall()]
+
+    def delete_order_batch(self, batch_id):
+        with self.conn:
+            self.conn.execute("DELETE FROM orders WHERE order_batch_id=?", (batch_id,))
+            self.conn.execute("DELETE FROM order_items WHERE order_batch_id=?", (batch_id,))
+
+    def update_order_item(self, item_id, data):
+        """Обновление позиции заказа. Можно передать ТОЛЬКО изменённое поле —
+        остальные сохранятся. При правке qty_received пересчитывается received."""
+        c = self.conn.cursor()
+        c.execute("""SELECT article, name, name_eng, quantity, note, manufacturer, subproject, kd,
+                            delivery_term, delivery_unit, price, currency, item_status,
+                            IFNULL(qty_received,0) AS qty_received,
+                            IFNULL(received,0) AS received, receipt_date, order_batch_id
+                     FROM orders WHERE id=?""", (item_id,))
+        current = c.fetchone()
+        if not current:
+            return
+
+        def num(v, default=0):
+            try:
+                return float(str(v).replace(" ", "").replace(",", "."))
+            except (TypeError, ValueError):
+                return default
+
+        quantity = num(data.get('quantity', current['quantity']), current['quantity'] or 0)
+        qty_rec = num(data.get('qty_received', current['qty_received']), current['qty_received'] or 0)
+        if qty_rec < 0:
+            qty_rec = 0
+
+        # «Получено» и дата получения follow за количеством
+        received = current['received'] or 0
+        receipt_date = current['receipt_date'] or ''
+        if 'qty_received' in data or 'quantity' in data:
+            if quantity > 0 and qty_rec >= quantity:
+                received = 1
+                if not receipt_date:
+                    receipt_date = datetime.now().strftime("%d.%m.%Y")
+            else:
+                received = 0
+                if qty_rec <= 0:
+                    receipt_date = ''
+
+        c.execute('''UPDATE orders SET
+                        article=?, name=?, name_eng=?, quantity=?,
+                        note=?, manufacturer=?, subproject=?, kd=?,
+                        delivery_term=?, delivery_unit=?, price=?, currency=?, item_status=?,
+                        qty_received=?, received=?, receipt_date=?
+                     WHERE id=?''',
+                  (data.get('article', current['article'] or ''),
+                   data.get('name', current['name'] or ''),
+                   data.get('name_eng', current['name_eng'] or ''),
+                   quantity,
+                   data.get('note', current['note'] or ''),
+                   data.get('manufacturer', current['manufacturer'] or ''),
+                   data.get('subproject', current['subproject'] or ''),
+                   data.get('kd', current['kd'] or ''),
+                   num(data.get('delivery_term', current['delivery_term']), current['delivery_term'] or 0),
+                   data.get('delivery_unit', current['delivery_unit'] or ''),
+                   data.get('price', current['price'] or ''),
+                   data.get('currency', current['currency'] or ''),
+                   data.get('item_status', current['item_status'] or ''),
+                   qty_rec, received, receipt_date,
+                   item_id))
+        self.conn.commit()
+        self._sync_batch_received(current['order_batch_id'])
+        
+    def delete_order_item(self, item_id):
+        c = self.conn.cursor()
+        c.execute("DELETE FROM orders WHERE id=?", (item_id,))
+        self.conn.commit()
+
+    # === Номенклатура ===
+    def search_nomenclature(self, query, field='article'):
+        c = self.conn.cursor()
+        q = f"%{query}%"
+        if field == 'article':
+            c.execute('''SELECT DISTINCT n.* FROM nomenclature n
+                         LEFT JOIN nomenclature_aliases a ON a.nomenclature_id = n.id
+                         WHERE n.article LIKE ? OR a.alias LIKE ?
+                         LIMIT 10''', (q, q))
+        else:
+            c.execute("SELECT * FROM nomenclature WHERE name_rus LIKE ? OR name_eng LIKE ? LIMIT 10",
+                      (q, q))
+        return c.fetchall()
+
+    def add_nomenclature(self, data):
+        c = self.conn.cursor()
+        c.execute('''INSERT INTO nomenclature (manufacturer, article, name_rus, name_eng)
+            VALUES (?, ?, ?, ?)''',
+            (data.get('manufacturer', ''), data.get('article', ''),
+             data.get('name_rus', ''), data.get('name_eng', '')))
+        self.conn.commit()
+
+    def get_nomenclature(self):
+        c = self.conn.cursor()
+        c.execute("SELECT * FROM nomenclature ORDER BY article")
+        return c.fetchall()
+
+    def delete_nomenclature(self, item_id):
+        c = self.conn.cursor()
+        c.execute("DELETE FROM nomenclature WHERE id=?", (item_id,))
+        self.conn.commit()
+
+    # ВНИМАНИЕ: find_nomenclature_by_article определён ОДИН раз —
+    # в блоке «Алиасы артикулов» ниже (с учётом алиасов и нормализации).
+
+    # === Производители ===
+    def get_manufacturers(self):
+        c = self.conn.cursor()
+        c.execute("SELECT * FROM manufacturers ORDER BY name")
+        return c.fetchall()
+
+    def add_manufacturer(self, name):
+        c = self.conn.cursor()
+        try:
+            c.execute("INSERT INTO manufacturers (name) VALUES (?)", (name,))
+            self.conn.commit()
+            return True
+        except sqlite3.IntegrityError:
+            return False
+
+    def rename_manufacturer(self, old_name, new_name):
+        """Переименование с обновлением закупок, заказов и номенклатуры."""
+        try:
+            with self.conn:
+                self.conn.execute("UPDATE manufacturers SET name=? WHERE name=?", (new_name, old_name))
+                for table in ("purchases", "orders", "nomenclature"):
+                    self.conn.execute(f"UPDATE {table} SET manufacturer=? WHERE manufacturer=?",
+                                      (new_name, old_name))
+            return True
+        except sqlite3.IntegrityError:
+            return False
+
+    def delete_manufacturer(self, name):
+        c = self.conn.cursor()
+        c.execute("DELETE FROM manufacturers WHERE name=?", (name,))
+        self.conn.commit()
+
+    # === Подпроекты ===
+    def get_subprojects(self, project_name=None):
+        c = self.conn.cursor()
+        if project_name:
+            c.execute("""SELECT * FROM subprojects
+                         WHERE project_name=? OR project_name='' OR project_name IS NULL
+                         ORDER BY name""", (project_name,))
+        else:
+            c.execute("SELECT * FROM subprojects ORDER BY name")
+        return c.fetchall()
+
+    def add_subproject(self, name, project_name=""):
+        c = self.conn.cursor()
+        c.execute("INSERT INTO subprojects (name, project_name) VALUES (?, ?)", (name, project_name))
+        self.conn.commit()
+
+    def delete_subproject(self, name):
+        c = self.conn.cursor()
+        c.execute("DELETE FROM subprojects WHERE name=?", (name,))
+        self.conn.commit()
+
+    def update_subproject(self, subproject_id, new_name, new_project_name):
+        c = self.conn.cursor()
+        c.execute("UPDATE subprojects SET name=?, project_name=? WHERE id=?",
+                  (new_name, new_project_name, subproject_id))
+        self.conn.commit()
+
+    # === КД ===
+    def get_kd_directory(self, project_name=None):
+        c = self.conn.cursor()
+        if project_name:
+            c.execute("""SELECT * FROM kd_directory
+                         WHERE project_name=? OR project_name='' OR project_name IS NULL
+                         ORDER BY kd_number""", (project_name,))
+        else:
+            c.execute("SELECT * FROM kd_directory ORDER BY kd_number")
+        return c.fetchall()
+
+    def add_kd(self, kd_number, project_name="", kd_name=""):
+        c = self.conn.cursor()
+        c.execute("INSERT INTO kd_directory (kd_number, project_name, kd_name) VALUES (?, ?, ?)",
+                  (kd_number, project_name, kd_name))
+        self.conn.commit()
+        return c.lastrowid
+
+    def update_kd(self, kd_id, kd_number, kd_name="", project_name=""):
+        self.conn.execute("UPDATE kd_directory SET kd_number=?, kd_name=?, project_name=? WHERE id=?",
+                          (kd_number, kd_name, project_name, kd_id))
+        self.conn.commit()
+
+    def delete_kd(self, kd_number):
+        c = self.conn.cursor()
+        c.execute("DELETE FROM kd_directory WHERE kd_number=?", (kd_number,))
+        self.conn.commit()
+        
+    # === Поставщики ===
+    def get_suppliers(self):
+        c = self.conn.cursor()
+        c.execute("SELECT * FROM suppliers ORDER BY name")
+        return c.fetchall()
+
+    def add_supplier(self, data):
+        c = self.conn.cursor()
+        try:
+            c.execute('''INSERT INTO suppliers (name, contact, phone, email, address, note)
+                VALUES (?, ?, ?, ?, ?, ?)''',
+                (data.get('name', ''), data.get('contact', ''),
+                 data.get('phone', ''), data.get('email', ''),
+                 data.get('address', ''), data.get('note', '')))
+            self.conn.commit()
+            return True
+        except sqlite3.IntegrityError:
+            return False
+
+    def update_supplier(self, supplier_id, data):
+        c = self.conn.cursor()
+        c.execute('''UPDATE suppliers SET name=?, contact=?, phone=?, email=?, address=?, note=?
+            WHERE id=?''',
+            (data.get('name', ''), data.get('contact', ''),
+             data.get('phone', ''), data.get('email', ''),
+             data.get('address', ''), data.get('note', ''), supplier_id))
+        self.conn.commit()
+
+    def delete_supplier(self, supplier_id):
+        c = self.conn.cursor()
+        c.execute("DELETE FROM suppliers WHERE id=?", (supplier_id,))
+        self.conn.commit()
+
+    # === Спецификации закупок ===
+    def get_purchase_specifications(self, project_id):
+        c = self.conn.cursor()
+        c.execute("SELECT * FROM purchase_specifications WHERE project_id=? ORDER BY id", (project_id,))
+        return c.fetchall()
+
+    def get_purchase_spec_by_id(self, spec_id):
+        c = self.conn.cursor()
+        c.execute("SELECT * FROM purchase_specifications WHERE id=?", (spec_id,))
+        return c.fetchone()
+
+    def add_purchase_spec(self, project_id, data):
+        c = self.conn.cursor()
+        c.execute('''INSERT INTO purchase_specifications
+            (project_id, supplier, name, quantity, price, total, currency,
+             delivery_term, delivery_unit, payment_date, delivery_date,
+             fully_paid, received, delivery_address, note)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+            (project_id, data.get('supplier', ''), data.get('name', ''),
+             data.get('quantity', 0), data.get('price', 0), data.get('total', 0),
+             data.get('currency', ''), data.get('delivery_term', 0),
+             data.get('delivery_unit', ''), data.get('payment_date', ''),
+             data.get('delivery_date', ''), data.get('fully_paid', 0),
+             data.get('received', 0), data.get('delivery_address', ''),
+             data.get('note', '')))
+        self.conn.commit()
+
+    def update_purchase_spec(self, spec_id, data):
+        c = self.conn.cursor()
+        c.execute('''UPDATE purchase_specifications SET
+            supplier=?, name=?, quantity=?, price=?, total=?, currency=?,
+            delivery_term=?, delivery_unit=?, payment_date=?, delivery_date=?,
+            fully_paid=?, received=?, delivery_address=?, note=?
+            WHERE id=?''',
+            (data.get('supplier', ''), data.get('name', ''),
+             data.get('quantity', 0), data.get('price', 0), data.get('total', 0),
+             data.get('currency', ''), data.get('delivery_term', 0),
+             data.get('delivery_unit', ''), data.get('payment_date', ''),
+             data.get('delivery_date', ''), data.get('fully_paid', 0),
+             data.get('received', 0), data.get('delivery_address', ''),
+             data.get('note', ''), spec_id))
+        self.conn.commit()
+
+    def delete_purchase_spec(self, spec_id):
+        with self.conn:
+            self.conn.execute("DELETE FROM purchase_payments WHERE spec_id=?", (spec_id,))
+            self.conn.execute("DELETE FROM purchase_spec_items WHERE spec_id=?", (spec_id,))
+            self.conn.execute("DELETE FROM purchase_specifications WHERE id=?", (spec_id,))
+
+    # === Позиции спецификации закупок ===
+    def add_purchase_spec_item(self, spec_id, data):
+        c = self.conn.cursor()
+        c.execute('''INSERT INTO purchase_spec_items
+            (spec_id, name, quantity, price, total, delivery_term, delivery_unit)
+            VALUES (?, ?, ?, ?, ?, ?, ?)''',
+            (spec_id, data.get('name', ''), data.get('quantity', 0),
+             data.get('price', 0), data.get('total', 0),
+             data.get('delivery_term', ''), data.get('delivery_unit', '')))
+        self.conn.commit()
+
+    def get_purchase_spec_items(self, spec_id):
+        c = self.conn.cursor()
+        c.execute("SELECT * FROM purchase_spec_items WHERE spec_id=? ORDER BY id", (spec_id,))
+        return c.fetchall()
+
+    def update_purchase_spec_item(self, item_id, data):
+        c = self.conn.cursor()
+        c.execute('''UPDATE purchase_spec_items SET
+            name=?, quantity=?, price=?, total=?, delivery_term=?, delivery_unit=?
+            WHERE id=?''',
+            (data.get('name', ''), data.get('quantity', 0),
+             data.get('price', 0), data.get('total', 0),
+             data.get('delivery_term', ''), data.get('delivery_unit', ''), item_id))
+        self.conn.commit()
+
+    def delete_purchase_spec_item(self, item_id):
+        c = self.conn.cursor()
+        c.execute("DELETE FROM purchase_spec_items WHERE id=?", (item_id,))
+        self.conn.commit()
+
+    def delete_purchase_spec_items(self, spec_id):
+        c = self.conn.cursor()
+        c.execute("DELETE FROM purchase_spec_items WHERE spec_id=?", (spec_id,))
+        self.conn.commit()
+
+    # === Платежи по спецификации закупок ===
+    def get_purchase_payments(self, spec_id):
+        c = self.conn.cursor()
+        c.execute("SELECT * FROM purchase_payments WHERE spec_id=? ORDER BY number", (spec_id,))
+        return c.fetchall()
+
+    def get_purchase_payments_ext(self, spec_id):
+        c = self.conn.cursor()
+        c.execute("SELECT * FROM purchase_payments WHERE spec_id=? ORDER BY number", (spec_id,))
+        return c.fetchall()
+
+    def add_purchase_payment(self, spec_id, data):
+        c = self.conn.cursor()
+        c.execute('''INSERT INTO purchase_payments
+            (spec_id, number, date, amount, currency, percent, paid)
+            VALUES (?, ?, ?, ?, ?, ?, ?)''',
+            (spec_id, data.get('number', 1), data.get('date', ''),
+             data.get('amount', 0), data.get('currency', ''),
+             data.get('percent', 0), data.get('paid', 0)))
+        self.conn.commit()
+
+    def add_purchase_payment_ext(self, spec_id, data):
+        c = self.conn.cursor()
+        c.execute('''INSERT INTO purchase_payments
+            (spec_id, number, date, amount, currency, percent, paid,
+             invoice_number, invoice_date, supplier_name, supplier_inn,
+             payment_purpose, delivery_term, delivery_date, vat_amount, total_with_vat)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+            (spec_id, data.get('number', 1), data.get('date', ''),
+             data.get('amount', 0), data.get('currency', ''),
+             data.get('percent', 0), data.get('paid', 0),
+             data.get('invoice_number', ''), data.get('invoice_date', ''),
+             data.get('supplier_name', ''), data.get('supplier_inn', ''),
+             data.get('payment_purpose', ''), data.get('delivery_term', ''),
+             data.get('delivery_date', ''), data.get('vat_amount', 0),
+             data.get('total_with_vat', 0)))
+        self.conn.commit()
+
+    def update_purchase_payment(self, payment_id, data):
+        c = self.conn.cursor()
+        c.execute('''UPDATE purchase_payments SET
+            number=?, date=?, amount=?, currency=?, percent=?, paid=?
+            WHERE id=?''',
+            (data.get('number', 1), data.get('date', ''),
+             data.get('amount', 0), data.get('currency', ''),
+             data.get('percent', 0), data.get('paid', 0), payment_id))
+        self.conn.commit()
+
+    def update_purchase_payment_ext(self, payment_id, data):
+        c = self.conn.cursor()
+        c.execute('''UPDATE purchase_payments SET
+            number=?, date=?, amount=?, currency=?, percent=?, paid=?,
+            invoice_number=?, invoice_date=?, supplier_name=?, supplier_inn=?,
+            payment_purpose=?, delivery_term=?, delivery_date=?, vat_amount=?, total_with_vat=?
+            WHERE id=?''',
+            (data.get('number', 1), data.get('date', ''),
+             data.get('amount', 0), data.get('currency', ''),
+             data.get('percent', 0), data.get('paid', 0),
+             data.get('invoice_number', ''), data.get('invoice_date', ''),
+             data.get('supplier_name', ''), data.get('supplier_inn', ''),
+             data.get('payment_purpose', ''), data.get('delivery_term', ''),
+             data.get('delivery_date', ''), data.get('vat_amount', 0),
+             data.get('total_with_vat', 0), payment_id))
+        self.conn.commit()
+
+    def delete_purchase_payment(self, payment_id):
+        c = self.conn.cursor()
+        c.execute("DELETE FROM purchase_payments WHERE id=?", (payment_id,))
+        self.conn.commit()
+
+    # === Адреса доставки ===
+    def get_delivery_addresses(self):
+        c = self.conn.cursor()
+        c.execute("SELECT * FROM delivery_addresses ORDER BY name")
+        return c.fetchall()
+
+    def add_delivery_address(self, data):
+        c = self.conn.cursor()
+        c.execute('''INSERT INTO delivery_addresses (name, address, contact, phone, note)
+            VALUES (?, ?, ?, ?, ?)''',
+            (data.get('name', ''), data.get('address', ''),
+             data.get('contact', ''), data.get('phone', ''), data.get('note', '')))
+        self.conn.commit()
+
+    def update_delivery_address(self, addr_id, data):
+        c = self.conn.cursor()
+        c.execute('''UPDATE delivery_addresses SET name=?, address=?, contact=?, phone=?, note=?
+            WHERE id=?''',
+            (data.get('name', ''), data.get('address', ''),
+             data.get('contact', ''), data.get('phone', ''), data.get('note', ''), addr_id))
+        self.conn.commit()
+
+    def delete_delivery_address(self, addr_id):
+        c = self.conn.cursor()
+        c.execute("DELETE FROM delivery_addresses WHERE id=?", (addr_id,))
+        self.conn.commit()
+
+    # ================= v1.9: статусы / приёмка / цены / курсы =================
+    ORDER_STATUSES = ["Запрос цены", "КП получено", "Размещён", "Подтверждён",
+                      "Оплачен", "Отгружен", "Получен", "Списан"]
+
+    def _ensure_v19(self):
+        c = self.conn.cursor()
+        c.execute("PRAGMA table_info(orders)")
+        cols = [r[1] for r in c.fetchall()]
+        for col, typ in (("status", "TEXT DEFAULT ''"), ("confirm_date", "TEXT DEFAULT ''"),
+                         ("ship_date", "TEXT DEFAULT ''"), ("tracking", "TEXT DEFAULT ''"),
+                         ("eta_date", "TEXT DEFAULT ''"), ("qty_received", "REAL DEFAULT 0"),
+                         ("receive_note", "TEXT DEFAULT ''")):
+            if col not in cols:
+                c.execute(f"ALTER TABLE orders ADD COLUMN {col} {typ}")
+        c.execute('''CREATE TABLE IF NOT EXISTS price_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            article TEXT, name TEXT, manufacturer TEXT, supplier TEXT,
+            price REAL DEFAULT 0, currency TEXT DEFAULT '', qty REAL DEFAULT 0,
+            date TEXT, project_name TEXT, order_batch_id INTEGER, source TEXT)''')
+        c.execute("CREATE INDEX IF NOT EXISTS idx_ph_article ON price_history(article)")
+        c.execute('''CREATE TABLE IF NOT EXISTS currency_rates (
+            date TEXT NOT NULL, code TEXT NOT NULL, rate REAL NOT NULL,
+            PRIMARY KEY (date, code))''')
+        self.conn.commit()
+        print("Миграция v1.9: статусы/приёмка/история цен/курсы — OK")
+
+    @staticmethod
+    def _d(s):
+        try:
+            from utils import parse_date
+            return parse_date(s)
+        except Exception:
+            return None
+
+    @staticmethod
+    def _n(s):
+        try:
+            from utils import parse_number
+            v = parse_number(s)
+            return v if v is not None else 0.0
+        except Exception:
+            return 0.0
+
+    def _iso(self, s):
+        d = self._d(s)
+        return d.strftime("%Y-%m-%d") if d else None
+
+    # --- Курсы валют (дата хранится в ISO) ---
+    def save_rates(self, rates, date_str):
+        iso = self._iso(date_str) or datetime.now().strftime("%Y-%m-%d")
+        c = self.conn.cursor()
+        n = 0
+        for code, rate in (rates or {}).items():
+            try:
+                r = float(rate)
+            except (TypeError, ValueError):
+                continue
+            if r > 0:
+                c.execute("INSERT OR REPLACE INTO currency_rates(date, code, rate) VALUES (?,?,?)",
+                          (iso, str(code).upper().strip(), r))
+                n += 1
+        self.conn.commit()
+        return n
+
+    _CUR_ALIASES = {
+        "RUB": "RUB", "RUR": "RUB", "₽": "RUB", "₽ (РУБЛИ)": "RUB", "₽ (РУБЛЬ)": "RUB",
+        "РУБЛИ": "RUB", "РУБ": "RUB",
+        "USD": "USD", "$": "USD", "$ (ДОЛЛАРЫ)": "USD", "ДОЛЛАРЫ": "USD",
+        "EUR": "EUR", "€": "EUR", "€ (ЕВРО)": "EUR", "ЕВРО": "EUR",
+        "CNY": "CNY", "¥": "CNY", "¥ (ЮАНИ)": "CNY", "ЮАНИ": "CNY",
+        "TRY": "TRY", "₺": "TRY", "₺ (ЛИРЫ)": "TRY", "₺ (ЛИРА)": "TRY", "ЛИРЫ": "TRY",
+        "GBP": "GBP", "CHF": "CHF",
+    }
+
+    def norm_currency(self, code):
+        """'₽ (Рубли)' → 'RUB', '$ (Доллары)' → 'USD' и т.д."""
+        c = (code or "").strip()
+        if not c:
+            return "RUB"
+        if c in self._CUR_ALIASES:
+            return self._CUR_ALIASES[c]
+        return self._CUR_ALIASES.get(c.upper(), c.upper())
+
+    def has_rates(self):
+        r = self.conn.execute("SELECT COUNT(*) c FROM currency_rates").fetchone()
+        return (r["c"] or 0) > 0
+
+    def get_rate(self, code, date_str=None):
+        code = self.norm_currency(code)
+        if code == "RUB":
+            return 1.0
+        c = self.conn.cursor()
+        iso = self._iso(date_str)
+        if iso:
+            c.execute("SELECT rate FROM currency_rates WHERE code=? AND date<=? ORDER BY date DESC LIMIT 1",
+                      (code, iso))
+            r = c.fetchone()
+            if r:
+                return float(r["rate"])
+        c.execute("SELECT rate FROM currency_rates WHERE code=? ORDER BY date DESC LIMIT 1", (code,))
+        r = c.fetchone()
+        return float(r["rate"]) if r else 1.0
+
+    def get_rates_table(self, limit=40):
+        return self.conn.execute(
+            "SELECT date, code, rate FROM currency_rates ORDER BY date DESC, code LIMIT ?",
+            (limit,)).fetchall()
+
+    # --- Статусы заказа ---
+    def get_order_status(self, batch_id):
+        r = self.conn.execute('''SELECT MAX(status) status, MAX(confirm_date) confirm_date,
+                    MAX(ship_date) ship_date, MAX(tracking) tracking, MAX(eta_date) eta_date,
+                    MAX(received) received, MAX(receipt_date) receipt_date,
+                    MAX(write_off_date) write_off_date, MAX(supplier) supplier,
+                    MAX(invoice_number) invoice_number, MAX(project_name) project_name
+             FROM orders WHERE order_batch_id=?''', (batch_id,)).fetchone()
+        return dict(r) if r else {}
+
+    def set_order_status(self, batch_id, status=None, confirm_date=None, ship_date=None,
+                         tracking=None, eta_date=None, write_off_date=None):
+        sets, p = [], []
+        for col, val in (("status", status), ("confirm_date", confirm_date),
+                         ("ship_date", ship_date), ("tracking", tracking),
+                         ("eta_date", eta_date), ("write_off_date", write_off_date)):
+            if val is not None:
+                sets.append(f"{col}=?")
+                p.append(val)
+        if not sets:
+            return
+        p.append(batch_id)
+        self.conn.execute(f"UPDATE orders SET {', '.join(sets)} WHERE order_batch_id=?", p)
+        self.conn.commit()
+        st = (status or "").strip()
+        today = datetime.now().strftime("%d.%m.%Y")
+        if st in ("Получен", "Списан"):
+            self.receive_batch(batch_id, today)
+        if st == "Списан" and not write_off_date:
+            self.set_order_write_off_date(batch_id, today)
+
+    # --- Приёмка ---
+    def get_receiving_rows(self, project_name=None, supplier=None, invoice=None, only_pending=True):
+        q = '''SELECT id, order_batch_id, article, name, manufacturer, IFNULL(quantity,0) quantity,
+                      IFNULL(qty_received,0) qty_received, IFNULL(received,0) received,
+                      receipt_date, supplier, invoice_number, project_name, price, currency,
+                      delivery_number, receive_note, item_status
+               FROM orders WHERE 1=1'''
+        p = []
+        if project_name:
+            q += " AND project_name=?"
+            p.append(project_name)
+        if supplier:
+            q += " AND supplier=?"
+            p.append(supplier)
+        if invoice:
+            q += " AND invoice_number LIKE ?"
+            p.append(f"%{invoice}%")
+        if only_pending:
+            q += " AND (IFNULL(received,0)=0 OR IFNULL(qty_received,0) < IFNULL(quantity,0))"
+        q += " ORDER BY order_batch_id DESC, id"
+        return self.conn.execute(q, p).fetchall()
+
+    def receive_order_item(self, item_id, qty, date_str, note=""):
+        c = self.conn.cursor()
+        r = c.execute("SELECT order_batch_id, IFNULL(quantity,0) q FROM orders WHERE id=?",
+                      (item_id,)).fetchone()
+        if not r:
+            return False
+        full = 1 if (r["q"] > 0 and qty >= r["q"]) else 0
+        c.execute('''UPDATE orders SET qty_received=?, received=?, receipt_date=?, receive_note=?
+                     WHERE id=?''', (qty, full, date_str if qty > 0 else "", note, item_id))
+        self.conn.commit()
+        self._sync_batch_received(r["order_batch_id"])
+        return True
+
+    def receive_batch(self, batch_id, date_str):
+        """Отмечает весь заказ полученным.
+        ИСПРАВЛЕНО: уже указанная дата получения НЕ затирается сегодняшней."""
+        self.conn.execute('''UPDATE orders
+                             SET qty_received=IFNULL(quantity,0), received=1,
+                                 receipt_date=CASE WHEN IFNULL(receipt_date,'')=''
+                                                   THEN ? ELSE receipt_date END
+                             WHERE order_batch_id=?''', (date_str, batch_id))
+        self.conn.commit()
+        self._sync_batch_received(batch_id)
+
+    def _sync_batch_received(self, batch_id):
+        s = self.conn.execute('''SELECT COUNT(*) n,
+                    SUM(CASE WHEN IFNULL(received,0)=1 THEN 1 ELSE 0 END) r
+             FROM orders WHERE order_batch_id=?''', (batch_id,)).fetchone()
+        if s and s["n"] and s["n"] == (s["r"] or 0):
+            self.conn.execute('''UPDATE orders SET status='Получен'
+                WHERE order_batch_id=? AND IFNULL(status,'') NOT IN ('Получен','Списан')''',
+                (batch_id,))
+            self.conn.commit()
+
+    # --- История цен ---
+    def _price_rows(self):
+        rows = []
+        for o in self.conn.execute('''SELECT article, name, manufacturer, supplier, price, currency,
+                    quantity, order_date, project_name, order_batch_id FROM orders''').fetchall():
+            p = self._n(o["price"])
+            if p > 0:
+                rows.append({"article": (o["article"] or "").strip(), "name": o["name"] or "",
+                             "manufacturer": o["manufacturer"] or "", "supplier": o["supplier"] or "",
+                             "price": p, "currency": o["currency"] or "", "qty": self._n(o["quantity"]),
+                             "date": o["order_date"] or "", "project_name": o["project_name"] or "",
+                             "order_batch_id": o["order_batch_id"], "source": "Заказ"})
+        for it in self.conn.execute('''SELECT i.name, i.price, i.quantity, s.supplier, s.currency,
+                    s.payment_date, pr.name proj
+             FROM purchase_spec_items i
+             JOIN purchase_specifications s ON s.id=i.spec_id
+             LEFT JOIN projects pr ON pr.id=s.project_id''').fetchall():
+            p = self._n(it["price"])
+            if p > 0:
+                rows.append({"article": "", "name": it["name"] or "", "manufacturer": "",
+                             "supplier": it["supplier"] or "", "price": p,
+                             "currency": it["currency"] or "", "qty": self._n(it["quantity"]),
+                             "date": it["payment_date"] or "", "project_name": it["proj"] or "",
+                             "order_batch_id": None, "source": "Спецификация"})
+        return rows
+
+    def rebuild_price_history(self):
+        rows = self._price_rows()
+        with self.conn:
+            self.conn.execute("DELETE FROM price_history")
+            self.conn.executemany('''INSERT INTO price_history
+                (article,name,manufacturer,supplier,price,currency,qty,date,project_name,order_batch_id,source)
+                VALUES (:article,:name,:manufacturer,:supplier,:price,:currency,:qty,:date,
+                        :project_name,:order_batch_id,:source)''', rows)
+        return len(rows)
+
+    def get_price_history(self, article=None, limit=1000):
+        if article:
+            return self.conn.execute('''SELECT * FROM price_history
+                WHERE UPPER(TRIM(article))=UPPER(TRIM(?)) ORDER BY date DESC LIMIT ?''',
+                (article, limit)).fetchall()
+        return self.conn.execute("SELECT * FROM price_history ORDER BY date DESC LIMIT ?",
+                                 (limit,)).fetchall()
+
+    def get_price_summary(self, article):
+        art = (article or "").strip().upper()
+        if not art:
+            return None
+        rows = [r for r in self._price_rows() if (r["article"] or "").strip().upper() == art]
+        if not rows:
+            return None
+        rows.sort(key=lambda r: (self._d(r["date"]) or datetime.min), reverse=True)
+        last, best = rows[0], min(rows, key=lambda r: r["price"])
+        prev = rows[1] if len(rows) > 1 else None
+        delta = ((last["price"] - prev["price"]) / prev["price"] * 100) if prev and prev["price"] else None
+        return {"last": last, "best": best, "count": len(rows), "delta": delta,
+                "min": best["price"], "max": max(r["price"] for r in rows)}
+
+    # --- Дашборд ---
+    def get_dashboard(self, project_name=None, days_soon=7, days_pay=7,
+                      max_age_days=180, no_confirm_max_days=45):
+        """ИСПРАВЛЕНО: архивные статусы и заказы старше max_age_days не напоминаются —
+        иначе в просрочку попадала вся история (101 напоминание / 39 просрочек)."""
+        today = datetime.now().date()
+        out = {"overdue": [], "soon": [], "price_requests": [],
+               "no_confirm": [], "unpaid_inv": [], "pay_week": []}
+        for b in self.conn.execute('''SELECT order_batch_id, MAX(order_date) od,
+                MAX(project_name) proj, MAX(supplier) sup, MAX(invoice_number) inv,
+                MAX(status) st, MAX(payment_date) pd, MAX(max_delivery_date) maxd,
+                MAX(eta_date) eta, MAX(received) rec, MAX(price_request) pr,
+                MAX(price_request_num) prn FROM orders GROUP BY order_batch_id''').fetchall():
+            if project_name and (b["proj"] or "") != project_name:
+                continue
+            st = (b["st"] or "").strip()
+            if st in ("Получен", "Списан"):
+                continue
+            d0 = self._d(b["od"])
+            if max_age_days and d0 and (today - d0.date()).days > max_age_days:
+                continue
+            label = f"Z{b['prn']}" if (b["pr"] and b["prn"]) else str(b["order_batch_id"])
+            base = {"№": label, "Проект": b["proj"] or "", "Поставщик": b["sup"] or "",
+                    "Инвойс": b["inv"] or "", "Статус": st, "batch_id": b["order_batch_id"]}
+            eta = self._d(b["eta"]) or self._d(b["maxd"])
+            if not b["rec"] and eta:
+                dd = (eta.date() - today).days
+                if dd < 0:
+                    out["overdue"].append({**base, "Дата": b["eta"] or b["maxd"], "Дней": dd})
+                elif dd <= days_soon:
+                    out["soon"].append({**base, "Дата": b["eta"] or b["maxd"], "Дней": dd})
+            if b["pr"] and not (b["pd"] or "").strip():
+                out["price_requests"].append({**base, "Дата заказа": b["od"] or ""})
+            if d0 and not b["rec"] and st in ("", "Размещён", "Запрос цены", "КП получено"):
+                age = (today - d0.date()).days
+                if 5 < age <= no_confirm_max_days:
+                    out["no_confirm"].append({**base, "Дата заказа": b["od"], "Дней": age})
+        for s in self.conn.execute('''SELECT s.id, s.supplier, s.name, s.total, s.currency,
+                s.payment_date, s.fully_paid, pr.name proj
+             FROM purchase_specifications s LEFT JOIN projects pr ON pr.id=s.project_id''').fetchall():
+            if project_name and (s["proj"] or "") != project_name:
+                continue
+            if s["fully_paid"]:
+                continue
+            pay = self._d(s["payment_date"])
+            if max_age_days and pay and (today - pay.date()).days > max_age_days:
+                continue
+            row = {"Проект": s["proj"] or "", "Поставщик": s["supplier"] or "",
+                   "Спецификация": s["name"] or "", "Сумма": s["total"] or 0,
+                   "Валюта": s["currency"] or "", "Дата оплаты": s["payment_date"] or "",
+                   "spec_id": s["id"]}
+            out["unpaid_inv"].append(row)
+            if pay and 0 <= (pay.date() - today).days <= days_pay:
+                out["pay_week"].append(row)
+        for k in out:
+            out[k].sort(key=lambda r: r.get("Дней", 0))
+        return out
+
+
+    # --- Бюджет проекта (в рублях) ---
+    def get_project_budget(self, project_name, date_str=None, cost_coef=None):
+        res = {"plan_sell": 0.0, "income": 0.0,
+               "plan_buy": 0.0, "plan_buy_orders": 0.0, "plan_buy_specs": 0.0,
+               "orders_base": 0.0, "orders_markup": 0.0,
+               "paid_sup": 0.0, "paid_sup_by_flag": 0.0, "paid_sup_unmarked": 0.0,
+               "received": 0.0, "balance": 0.0, "margin": 0.0, "plan_margin": 0.0,
+               "coef": 0.0, "detail": [], "detail_refs": []}
+        pid = self.get_project_id(project_name)
+        if not pid:
+            return res
+
+        if cost_coef:
+            coef = float(cost_coef)
+        elif hasattr(self, "get_orders_cost_coef"):
+            coef = self.get_orders_cost_coef(project_name)
+        else:
+            coef = 1.8
+        res["coef"] = coef
+
+        def rub(v, cur):
+            return v * self.get_rate(cur, date_str)
+
+        def add(kind, item, amount, cur, rv, ref):
+            res["detail"].append((kind, item, amount, cur, rv))
+            res["detail_refs"].append(ref)
+
+        c = self.conn.cursor()
+
+        # --- План продажи ---
+        for s in c.execute("SELECT number, name, quantity, price, currency FROM specifications WHERE project_id=?",
+                           (pid,)).fetchall():
+            v = self._n(s["quantity"]) * self._n(s["price"])
+            rv = rub(v, s["currency"])
+            res["plan_sell"] += rv
+            add("План (спецификация)", s["name"] or "", v, s["currency"] or "", rv,
+                {"kind": "specification", "number": s["number"], "project": project_name})
+
+        # --- Оплачено КЛИЕНТОМ ---
+        for p in c.execute("SELECT number, amount, currency, paid FROM payments WHERE project_id=?",
+                           (pid,)).fetchall():
+            if p["paid"]:
+                v = self._n(p["amount"])
+                rv = rub(v, p["currency"])
+                res["income"] += rv
+                add("Оплата заказчика", f"платёж №{p['number']}", v, p["currency"] or "", rv,
+                    {"kind": "payment", "number": p["number"], "project": project_name})
+
+        # --- Закупки из ЗАКАЗОВ × коэффициент ---
+        mark = "" if abs(coef - 1.0) < 1e-9 else f" ×{coef:g}"
+        for o in c.execute("""SELECT order_batch_id, article, name, quantity, price, currency, received
+                              FROM orders WHERE project_name=?""", (project_name,)).fetchall():
+            base = self._n(o["quantity"]) * self._n(o["price"])
+            v = base * coef
+            res["orders_base"] += rub(base, o["currency"])
+            res["plan_buy_orders"] += rub(v, o["currency"])
+            if o["received"]:
+                res["received"] += rub(v, o["currency"])
+            add("Закупка (заказ)", (o["article"] or o["name"] or "") + mark, v, o["currency"] or "",
+                rub(v, o["currency"]),
+                {"kind": "order", "batch_id": o["order_batch_id"],
+                 "article": o["article"] or "", "project": project_name})
+        res["orders_markup"] = res["plan_buy_orders"] - res["orders_base"]
+
+        # --- Закупки из СПЕЦИФИКАЦИЙ ЗАКУПОК (счета поставщиков) ---
+        for s in c.execute("""SELECT id, supplier, name, quantity, price, total, currency, received
+                              FROM purchase_specifications WHERE project_id=?""", (pid,)).fetchall():
+            cur = s["currency"] or ""
+            spec_dict = dict(s)
+            base = self._n(s["total"]) or (self._n(s["quantity"]) * self._n(s["price"]))
+            label = f'{s["supplier"] or ""} · {s["name"] or "счёт #" + str(s["id"])}'.strip(" ·")
+            if base > 0:
+                rv = rub(base, cur)
+                res["plan_buy_specs"] += rv
+                if s["received"]:
+                    res["received"] += rv
+                add("Закупка (спецификация)", label, base, cur, rv,
+                    {"kind": "purchase_spec", "spec_id": s["id"], "spec": spec_dict, "project": project_name})
+            else:
+                for it in c.execute("""SELECT name, quantity, price, total
+                                       FROM purchase_spec_items WHERE spec_id=?""", (s["id"],)).fetchall():
+                    iv = self._n(it["total"]) or (self._n(it["quantity"]) * self._n(it["price"]))
+                    if iv <= 0:
+                        continue
+                    rv = rub(iv, cur)
+                    res["plan_buy_specs"] += rv
+                    if s["received"]:
+                        res["received"] += rv
+                    add("Закупка (спецификация)", f'{label} · {it["name"] or ""}'.strip(" ·"), iv, cur, rv,
+                        {"kind": "purchase_spec", "spec_id": s["id"], "spec": spec_dict, "project": project_name})
+
+        res["plan_buy"] = res["plan_buy_orders"] + res["plan_buy_specs"]
+
+        # --- Оплачено ПОСТАВЩИКАМ (по факту суммы) ---
+        for pay in c.execute('''SELECT pp.number, pp.amount, pp.currency, pp.paid,
+                                       pp.spec_id, s.supplier
+             FROM purchase_payments pp JOIN purchase_specifications s ON s.id=pp.spec_id
+             WHERE s.project_id=? ORDER BY pp.spec_id, pp.number''', (pid,)).fetchall():
+            v = self._n(pay["amount"])
+            if v <= 0:
+                continue
+            rv = rub(v, pay["currency"])
+            res["paid_sup"] += rv
+            if pay["paid"]:
+                res["paid_sup_by_flag"] += rv
+            else:
+                res["paid_sup_unmarked"] += rv
+            mk = "" if pay["paid"] else " (не отмечен «Оплачен»)"
+            label = f'{pay["supplier"] or ""} · счёт #{pay["spec_id"]} · платёж №{pay["number"]}{mk}'
+            add("Оплата поставщику", label.strip(" ·"), v, pay["currency"] or "", rv,
+                {"kind": "supplier_payment", "spec_id": pay["spec_id"], "project": project_name})
+
+        res["balance"] = res["income"] - res["paid_sup"]
+        res["margin"] = res["balance"]
+        res["plan_margin"] = res["plan_sell"] - res["plan_buy"]
+        return res
+            
+    # === План-Факт: справочники и карточки работ ===
+    def _ensure_plan_fact_tables(self):
+        c = self.conn.cursor()
+        c.execute('''CREATE TABLE IF NOT EXISTS work_types (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT UNIQUE NOT NULL
+        )''')
+        c.execute('''CREATE TABLE IF NOT EXISTS work_statuses (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT UNIQUE NOT NULL
+        )''')
+        c.execute('''CREATE TABLE IF NOT EXISTS plan_fact (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_id INTEGER NOT NULL,
+            number INTEGER NOT NULL,
+            name TEXT,
+            work_type TEXT,
+            status TEXT,
+            note TEXT DEFAULT '',
+            FOREIGN KEY (project_id) REFERENCES projects(id)
+        )''')
+        c.execute("CREATE INDEX IF NOT EXISTS idx_pf_project ON plan_fact(project_id, number)")
+        c.execute("SELECT COUNT(*) FROM work_types")
+        if c.fetchone()[0] == 0:
+            for n in ("Проектирование", "Производство", "Поставка", "Монтаж", "Пусконаладка"):
+                c.execute("INSERT OR IGNORE INTO work_types (name) VALUES (?)", (n,))
+        c.execute("SELECT COUNT(*) FROM work_statuses")
+        if c.fetchone()[0] == 0:
+            for n in ("Не начато", "В работе", "Выполнено", "Приостановлено"):
+                c.execute("INSERT OR IGNORE INTO work_statuses (name) VALUES (?)", (n,))
+        self.conn.commit()
+
+    def get_work_types(self):
+        c = self.conn.cursor()
+        c.execute("SELECT name FROM work_types ORDER BY name")
+        return [r[0] for r in c.fetchall()]
+
+    def add_work_type(self, name):
+        name = (name or "").strip()
+        if not name:
+            return False
+        try:
+            self.conn.execute("INSERT INTO work_types (name) VALUES (?)", (name,))
+            self.conn.commit()
+            return True
+        except sqlite3.IntegrityError:
+            return False
+
+    def rename_work_type(self, old, new):
+        new = (new or "").strip()
+        if not new or old == new:
+            return False
+        try:
+            with self.conn:
+                self.conn.execute("UPDATE work_types SET name=? WHERE name=?", (new, old))
+                self.conn.execute("UPDATE plan_fact SET work_type=? WHERE work_type=?", (new, old))
+            return True
+        except sqlite3.IntegrityError:
+            return False
+
+    def delete_work_type(self, name):
+        self.conn.execute("DELETE FROM work_types WHERE name=?", (name,))
+        self.conn.commit()
+
+    def get_work_statuses(self):
+        c = self.conn.cursor()
+        c.execute("SELECT name FROM work_statuses ORDER BY name")
+        return [r[0] for r in c.fetchall()]
+
+    def add_work_status(self, name):
+        name = (name or "").strip()
+        if not name:
+            return False
+        try:
+            self.conn.execute("INSERT INTO work_statuses (name) VALUES (?)", (name,))
+            self.conn.commit()
+            return True
+        except sqlite3.IntegrityError:
+            return False
+
+    def rename_work_status(self, old, new):
+        new = (new or "").strip()
+        if not new or old == new:
+            return False
+        try:
+            with self.conn:
+                self.conn.execute("UPDATE work_statuses SET name=? WHERE name=?", (new, old))
+                self.conn.execute("UPDATE plan_fact SET status=? WHERE status=?", (new, old))
+            return True
+        except sqlite3.IntegrityError:
+            return False
+
+    def delete_work_status(self, name):
+        self.conn.execute("DELETE FROM work_statuses WHERE name=?", (name,))
+        self.conn.commit()
+
+    def get_plan_fact(self, project_id):
+        c = self.conn.cursor()
+        c.execute("SELECT * FROM plan_fact WHERE project_id=? ORDER BY number", (project_id,))
+        return c.fetchall()
+
+    PF_FIELDS = ("name", "work_type", "status", "note", "subproject", "responsible",
+                 "start_plan", "start_fact", "duration_qty", "duration_unit",
+                 "end_plan", "end_fact", "comment", "progress", "is_milestone", "parent_id")
+
+    def add_plan_fact(self, project_id, data):
+        d = {k: data.get(k, "") for k in self.PF_FIELDS}
+        d["duration_unit"] = d["duration_unit"] or "Календарные дни"
+        d["end_plan"] = d["end_plan"] or self.pf_end_plan(d["start_plan"], d["duration_qty"], d["duration_unit"])
+        if d["start_plan"] and not data.get("baseline_start"):
+            self.conn.execute("SELECT 1")  # baseline задаётся ниже после вставки
+        cols = ("project_id", "number") + self.PF_FIELDS + ("baseline_start", "baseline_end")
+        vals = [project_id, data.get("number", 1)] + [d[k] for k in self.PF_FIELDS] + \
+               [d["start_plan"], d["end_plan"]]
+        ph = ",".join("?" for _ in cols)
+        cur = self.conn.execute(f"INSERT INTO plan_fact ({','.join(cols)}) VALUES ({ph})", vals)
+        self.conn.commit()
+        return cur.lastrowid
+
+        PF_FIELDS = ("name", "work_type", "status", "note", "subproject", "responsible",
+                 "start_plan", "start_fact", "duration_qty", "duration_unit",
+                 "end_plan", "end_fact", "comment", "progress", "is_milestone", "parent_id",
+                 "is_blocked", "delay_reason", "blocked_note", "link_order_batch",
+                 "auto_dates", "cost_weight", "notify_days")
+
+    def update_plan_fact(self, project_id, number, data):
+        cur = self.conn.execute("SELECT * FROM plan_fact WHERE project_id=? AND number=?",
+                                (project_id, number)).fetchone()
+        if not cur:
+            return
+        keys = cur.keys()
+        d, changes = {}, {}
+        for k in self.PF_FIELDS:
+            new = data.get(k, cur[k] if k in keys else "")
+            d[k] = new
+            if k in self.PF_AUDIT_FIELDS and k in keys and str(cur[k] or "") != str(new or ""):
+                changes[k] = (cur[k], new)
+        d["end_plan"] = data.get("end_plan") or self.pf_end_plan(
+            d["start_plan"], d["duration_qty"], d["duration_unit"])
+        if "end_plan" in keys and str(cur["end_plan"] or "") != str(d["end_plan"] or ""):
+            changes["end_plan"] = (cur["end_plan"], d["end_plan"])
+        sets = ",".join(f"{k}=?" for k in self.PF_FIELDS)
+        self.conn.execute(f"UPDATE plan_fact SET {sets} WHERE project_id=? AND number=?",
+                          [d[k] for k in self.PF_FIELDS] + [project_id, number])
+        self.conn.commit()
+        self._pf_audit_write(project_id, cur["id"], number, changes)
+
+    def delete_plan_fact(self, project_id, number):
+        c = self.conn.cursor()
+        c.execute("DELETE FROM plan_fact WHERE project_id=? AND number=?", (project_id, number))
+        self.conn.commit()
+
+    # === Сквозной поиск (Ctrl+K) ===
+    def search_everything(self, query, limit_per_kind=60):
+        """Ищет подстроку сразу во всех сущностях.
+        Возвращает список словарей: kind, project, ref, title, subtitle, extra, payload."""
+        q = (query or "").strip().lower()
+        if len(q) < 2:
+            return []
+        res = []
+
+        def hit(*vals):
+            return any(q in str(v).lower() for v in vals if v not in (None, ""))
+
+        c = self.conn.cursor()
+
+        # --- Проекты ---
+        for p in c.execute("""SELECT id, name, path, contract_date, delivery_address
+                              FROM projects""").fetchall():
+            if hit(p["name"], p["path"], p["delivery_address"]):
+                res.append({"kind": "Проект", "project": p["name"], "ref": p["id"],
+                            "title": p["name"], "subtitle": p["contract_date"] or "",
+                            "extra": p["path"] or "",
+                            "payload": {"type": "project", "project": p["name"]}})
+
+        # --- Закупки ---
+        for r in c.execute("""SELECT p.id, p.number, p.article, p.name, p.name_eng, p.manufacturer,
+                                     p.subproject, p.kd, p.note, p.order_date, pr.name AS proj
+                              FROM purchases p LEFT JOIN projects pr ON pr.id = p.project_id""").fetchall():
+            if hit(r["article"], r["name"], r["name_eng"], r["manufacturer"],
+                   r["subproject"], r["kd"], r["note"]):
+                res.append({"kind": "Закупка", "project": r["proj"] or "", "ref": r["number"],
+                            "title": f'{r["article"] or ""} — {r["name"] or ""}'.strip(" —"),
+                            "subtitle": r["manufacturer"] or "",
+                            "extra": f'подпроект: {r["subproject"] or "—"}; КД: {r["kd"] or "—"}',
+                            "payload": {"type": "purchase", "project": r["proj"] or "",
+                                        "number": r["number"]}})
+
+        # --- Заказы (шапки) ---
+        for b in c.execute("""SELECT order_batch_id, MAX(order_date) od, MAX(project_name) proj,
+                                     MAX(manufacturer) man, MAX(supplier) sup,
+                                     MAX(invoice_number) inv, MAX(delivery_number) dn,
+                                     MAX(payment_date) pd, MAX(price_request) pr,
+                                     MAX(price_request_num) prn, MAX(status) st
+                              FROM orders GROUP BY order_batch_id""").fetchall():
+            if hit(b["inv"], b["sup"], b["dn"], b["proj"], b["man"], b["od"], b["st"]):
+                label = f'Z{b["prn"]}' if (b["pr"] and b["prn"]) else str(b["order_batch_id"])
+                res.append({"kind": "Заказ", "project": b["proj"] or "", "ref": label,
+                            "title": f'Инвойс {b["inv"] or "—"} · {b["sup"] or "—"}',
+                            "subtitle": b["man"] or "",
+                            "extra": f'статус: {b["st"] or "—"}; поставка: {b["dn"] or "—"}; '
+                                     f'оплата: {b["pd"] or "—"}',
+                            "payload": {"type": "order", "batch_id": b["order_batch_id"],
+                                        "project": b["proj"] or ""}})
+
+        # --- Позиции заказов (ДОБАВЛЕН поиск по статусу артикула) ---
+        for it in c.execute("""SELECT id, order_batch_id, article, name, name_eng, manufacturer,
+                                      project_name, quantity, price, currency, item_status
+                               FROM orders""").fetchall():
+            if hit(it["article"], it["name"], it["name_eng"], it["manufacturer"], it["item_status"]):
+                res.append({"kind": "Позиция заказа", "project": it["project_name"] or "",
+                            "ref": it["order_batch_id"],
+                            "title": f'{it["article"] or ""} — {it["name"] or ""}'.strip(" —"),
+                            "subtitle": it["manufacturer"] or "",
+                            "extra": f'кол-во {it["quantity"] or 0}; цена {it["price"] or "—"} '
+                                     f'{it["currency"] or ""}; статус: {it["item_status"] or "—"}',
+                            "payload": {"type": "order", "batch_id": it["order_batch_id"],
+                                        "project": it["project_name"] or ""}})
+
+        # --- Счета (спецификации закупок) ---
+        for s in c.execute("""SELECT s.id, s.supplier, s.name, s.total, s.currency, s.payment_date,
+                                     s.note, s.delivery_address, pr.name AS proj
+                              FROM purchase_specifications s
+                              LEFT JOIN projects pr ON pr.id = s.project_id""").fetchall():
+            if hit(s["supplier"], s["name"], s["note"], s["delivery_address"]):
+                res.append({"kind": "Счёт", "project": s["proj"] or "", "ref": s["id"],
+                            "title": f'{s["supplier"] or "—"} · {s["name"] or ""}',
+                            "subtitle": f'{s["total"] or 0} {s["currency"] or ""}',
+                            "extra": f'оплата: {s["payment_date"] or "—"}',
+                            "payload": {"type": "spec", "spec_id": s["id"],
+                                        "project": s["proj"] or ""}})
+
+        # --- Позиции счетов ---
+        for i in c.execute("""SELECT i.id, i.spec_id, i.name, i.quantity, i.price, i.total,
+                                     s.supplier, s.currency, pr.name AS proj
+                              FROM purchase_spec_items i
+                              JOIN purchase_specifications s ON s.id = i.spec_id
+                              LEFT JOIN projects pr ON pr.id = s.project_id""").fetchall():
+            if hit(i["name"], i["supplier"]):
+                res.append({"kind": "Позиция счёта", "project": i["proj"] or "", "ref": i["spec_id"],
+                            "title": i["name"] or "",
+                            "subtitle": f'{i["quantity"] or 0} × {i["price"] or 0} {i["currency"] or ""}',
+                            "extra": i["supplier"] or "",
+                            "payload": {"type": "spec", "spec_id": i["spec_id"],
+                                        "project": i["proj"] or ""}})
+
+        # --- Платежи поставщикам ---
+        for pay in c.execute("""SELECT pp.id, pp.spec_id, pp.number, pp.date, pp.amount, pp.currency,
+                                       pp.invoice_number, pp.supplier_name, pp.payment_purpose,
+                                       pr.name AS proj
+                                FROM purchase_payments pp
+                                JOIN purchase_specifications s ON s.id = pp.spec_id
+                                LEFT JOIN projects pr ON pr.id = s.project_id""").fetchall():
+            if hit(pay["invoice_number"], pay["supplier_name"], pay["payment_purpose"]):
+                res.append({"kind": "Платёж", "project": pay["proj"] or "",
+                            "ref": pay["number"],
+                            "title": f'{pay["supplier_name"] or "—"} · счёт {pay["invoice_number"] or "—"}',
+                            "subtitle": f'{pay["amount"] or 0} {pay["currency"] or ""}',
+                            "extra": pay["date"] or "",
+                            "payload": {"type": "payments", "spec_id": pay["spec_id"],
+                                        "project": pay["proj"] or ""}})
+
+        # --- Номенклатура ---
+        for n in c.execute("""SELECT id, manufacturer, article, name_rus, name_eng
+                              FROM nomenclature""").fetchall():
+            if hit(n["article"], n["name_rus"], n["name_eng"], n["manufacturer"]):
+                res.append({"kind": "Номенклатура", "project": "", "ref": n["id"],
+                            "title": f'{n["article"] or ""} — {n["name_rus"] or n["name_eng"] or ""}'.strip(" —"),
+                            "subtitle": n["manufacturer"] or "", "extra": n["name_eng"] or "",
+                            "payload": {"type": "nomenclature", "article": n["article"] or "",
+                                        "name": n["name_rus"] or "", "name_eng": n["name_eng"] or "",
+                                        "manufacturer": n["manufacturer"] or ""}})
+
+        # --- Поставщики ---
+        for s in c.execute("""SELECT id, name, contact, phone, email, address, note
+                              FROM suppliers""").fetchall():
+            if hit(s["name"], s["contact"], s["phone"], s["email"], s["address"], s["note"]):
+                res.append({"kind": "Поставщик", "project": "", "ref": s["id"],
+                            "title": s["name"] or "", "subtitle": s["contact"] or "",
+                            "extra": f'{s["phone"] or ""} {s["email"] or ""}'.strip(),
+                            "payload": {"type": "supplier", "supplier_id": s["id"]}})
+
+        # --- Спецификации (план продажи) ---
+        for sp in c.execute("""SELECT s.id, s.number, s.name, s.quantity, s.price, s.currency, pr.name AS proj
+                               FROM specifications s LEFT JOIN projects pr ON pr.id = s.project_id""").fetchall():
+            if hit(sp["name"]):
+                res.append({"kind": "Спецификация", "project": sp["proj"] or "", "ref": sp["number"],
+                            "title": sp["name"] or "",
+                            "subtitle": f'{sp["quantity"] or ""} × {sp["price"] or ""} {sp["currency"] or ""}',
+                            "extra": "", "payload": {"type": "project", "project": sp["proj"] or ""}})
+
+        # --- План-Факт (ДОБАВЛЕНО: работы проекта тоже ищутся) ---
+        for pf in c.execute("""SELECT f.id, f.number, f.name, f.work_type, f.status, f.note, pr.name AS proj
+                               FROM plan_fact f LEFT JOIN projects pr ON pr.id = f.project_id""").fetchall():
+            if hit(pf["name"], pf["work_type"], pf["status"], pf["note"]):
+                res.append({"kind": "План-Факт", "project": pf["proj"] or "", "ref": pf["number"],
+                            "title": pf["name"] or "",
+                            "subtitle": pf["work_type"] or "",
+                            "extra": f'статус: {pf["status"] or "—"}',
+                            "payload": {"type": "project", "project": pf["proj"] or ""}})
+
+        # ограничение по каждому типу
+        out, counts = [], {}
+        order = ["Проект", "Закупка", "Заказ", "Позиция заказа", "Счёт",
+                 "Позиция счёта", "Платёж", "Номенклатура", "Поставщик",
+                 "Спецификация", "План-Факт"]
+        res.sort(key=lambda r: order.index(r["kind"]) if r["kind"] in order else 99)
+        for r in res:
+            k = r["kind"]
+            counts[k] = counts.get(k, 0) + 1
+            if counts[k] <= limit_per_kind:
+                out.append(r)
+        return out
+
+    # === Алиасы артикулов поставщиков ===
+    def _ensure_article_aliases(self):
+        c = self.conn.cursor()
+        c.execute('''CREATE TABLE IF NOT EXISTS nomenclature_aliases (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            nomenclature_id INTEGER NOT NULL,
+            alias TEXT NOT NULL,
+            alias_norm TEXT NOT NULL,
+            alias_compact TEXT NOT NULL,
+            supplier TEXT DEFAULT '',
+            note TEXT DEFAULT '',
+            FOREIGN KEY (nomenclature_id) REFERENCES nomenclature(id)
+        )''')
+        c.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_alias_norm ON nomenclature_aliases(alias_norm)")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_alias_nom ON nomenclature_aliases(nomenclature_id)")
+        self.conn.commit()
+
+    @staticmethod
+    def normalize_article(s):
+        """Верхний регистр + без пробелов (в т.ч. неразрывных)."""
+        s = (s or "").upper()
+        for ch in (" ", "\u00a0", "\u202f", "\t"):
+            s = s.replace(ch, "")
+        return s.strip()
+
+    @staticmethod
+    def compact_article(s):
+        """Дополнительно без разделителей: дефис, слэш, точка, подчёркивание, обратный слэш."""
+        s = DatabaseManager.normalize_article(s)
+        for ch in ("-", "/", ".", "_", "\\"):
+            s = s.replace(ch, "")
+        return s
+
+    def resolve_article(self, article):
+        """Возвращает {'row', 'matched_by', 'alias'} или None.
+        Порядок: точное → без пробелов → без разделителей → таблица алиасов."""
+        art = (article or "").strip()
+        if not art:
+            return None
+        c = self.conn.cursor()
+        c.execute("SELECT * FROM nomenclature WHERE UPPER(TRIM(article))=UPPER(TRIM(?)) LIMIT 1", (art,))
+        row = c.fetchone()
+        if row:
+            return {"row": row, "matched_by": "exact", "alias": ""}
+
+        norm = self.normalize_article(art)
+        comp = self.compact_article(art)
+        c.execute("""SELECT * FROM nomenclature
+                     WHERE UPPER(REPLACE(REPLACE(REPLACE(article,' ',''),CHAR(160),''),CHAR(8239),''))=?
+                     LIMIT 1""", (norm,))
+        row = c.fetchone()
+        if row:
+            return {"row": row, "matched_by": "norm", "alias": ""}
+        c.execute("""SELECT * FROM nomenclature
+                     WHERE UPPER(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(
+                           article,' ',''),'-',''),'/',''),'.',''),'_',''),CHAR(160),''))=?
+                     LIMIT 1""", (comp,))
+        row = c.fetchone()
+        if row:
+            return {"row": row, "matched_by": "compact", "alias": ""}
+
+        a = c.execute("SELECT * FROM nomenclature_aliases WHERE alias_norm=? LIMIT 1", (norm,)).fetchone()
+        if not a:
+            a = c.execute("SELECT * FROM nomenclature_aliases WHERE alias_compact=? LIMIT 1", (comp,)).fetchone()
+        if a:
+            row = c.execute("SELECT * FROM nomenclature WHERE id=?", (a["nomenclature_id"],)).fetchone()
+            if row:
+                return {"row": row, "matched_by": "alias", "alias": a["alias"]}
+        return None
+
+    def find_nomenclature_by_article(self, article):
+        """Единственная версия метода: точное совпадение + нормализация + алиасы."""
+        r = self.resolve_article(article)
+        return r["row"] if r else None
+
+    def get_aliases(self, nomenclature_id):
+        return self.conn.execute(
+            "SELECT * FROM nomenclature_aliases WHERE nomenclature_id=? ORDER BY alias",
+            (nomenclature_id,)).fetchall()
+
+    def add_alias(self, nomenclature_id, alias, supplier="", note=""):
+        alias = (alias or "").strip()
+        if not alias:
+            return False, "Пустой алиас"
+        try:
+            self.conn.execute('''INSERT INTO nomenclature_aliases
+                (nomenclature_id, alias, alias_norm, alias_compact, supplier, note)
+                VALUES (?, ?, ?, ?, ?, ?)''',
+                (nomenclature_id, alias, self.normalize_article(alias),
+                 self.compact_article(alias), supplier.strip(), note.strip()))
+            self.conn.commit()
+            return True, ""
+        except sqlite3.IntegrityError:
+            return False, "Такой алиас уже привязан к другой записи"
+
+    def delete_alias(self, alias_id):
+        self.conn.execute("DELETE FROM nomenclature_aliases WHERE id=?", (alias_id,))
+        self.conn.commit()
+
+    def find_duplicate_groups(self):
+        """Группы номенклатуры, совпадающие после нормализации."""
+        rows = self.conn.execute(
+            "SELECT id, article, manufacturer, name_rus FROM nomenclature").fetchall()
+        groups = {}
+        for r in rows:
+            key = self.compact_article(r["article"])
+            if key:
+                groups.setdefault(key, []).append(dict(r))
+        return [g for g in groups.values() if len(g) > 1]
+
+    def merge_nomenclature(self, keep_id, drop_ids, rewrite_refs=True):
+        """Объединяет записи: алиасы и старый артикул уходят в каноническую запись,
+        ссылки в закупках/заказах переписываются на канонический артикул."""
+        c = self.conn.cursor()
+        keep = c.execute("SELECT * FROM nomenclature WHERE id=?", (keep_id,)).fetchone()
+        if not keep:
+            return 0
+        canonical = keep["article"]
+        merged = 0
+        with self.conn:
+            for did in drop_ids:
+                if did == keep_id:
+                    continue
+                row = c.execute("SELECT article FROM nomenclature WHERE id=?", (did,)).fetchone()
+                if not row:
+                    continue
+                old = row["article"] or ""
+                self.conn.execute("UPDATE nomenclature_aliases SET nomenclature_id=? WHERE nomenclature_id=?",
+                                  (keep_id, did))
+                if old:
+                    self.conn.execute('''INSERT OR IGNORE INTO nomenclature_aliases
+                        (nomenclature_id, alias, alias_norm, alias_compact, supplier, note)
+                        VALUES (?, ?, ?, ?, '', 'из объединённой записи')''',
+                        (keep_id, old, self.normalize_article(old), self.compact_article(old)))
+                if rewrite_refs and old:
+                    self.conn.execute("UPDATE purchases SET article=? WHERE UPPER(TRIM(article))=UPPER(TRIM(?))",
+                                      (canonical, old))
+                    self.conn.execute("UPDATE orders SET article=? WHERE UPPER(TRIM(article))=UPPER(TRIM(?))",
+                                      (canonical, old))
+                self.conn.execute("DELETE FROM nomenclature WHERE id=?", (did,))
+                merged += 1
+        return merged
+
+    # === Статусы артикулов (позиций заказа) ===
+    def _ensure_item_statuses(self):
+        c = self.conn.cursor()
+        c.execute("PRAGMA table_info(orders)")
+        cols = [r[1] for r in c.fetchall()]
+        if 'item_status' not in cols:
+            c.execute("ALTER TABLE orders ADD COLUMN item_status TEXT DEFAULT ''")
+            print("Миграция: добавлена колонка orders.item_status")
+        c.execute('''CREATE TABLE IF NOT EXISTS item_statuses (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT UNIQUE NOT NULL)''')
+        c.execute("SELECT COUNT(*) FROM item_statuses")
+        if c.fetchone()[0] == 0:
+            for n in ("Не заказан", "Заказан", "В производстве", "Отгружен",
+                      "Получен", "Брак/замена", "Отменён"):
+                c.execute("INSERT OR IGNORE INTO item_statuses (name) VALUES (?)", (n,))
+        self.conn.commit()
+
+    def get_item_statuses(self):
+        return [r[0] for r in self.conn.execute("SELECT name FROM item_statuses ORDER BY name")]
+
+    def add_item_status(self, name):
+        name = (name or "").strip()
+        if not name:
+            return False
+        try:
+            self.conn.execute("INSERT INTO item_statuses (name) VALUES (?)", (name,))
+            self.conn.commit()
+            return True
+        except sqlite3.IntegrityError:
+            return False
+
+    def rename_item_status(self, old, new):
+        new = (new or "").strip()
+        if not new or old == new:
+            return False
+        try:
+            with self.conn:
+                self.conn.execute("UPDATE item_statuses SET name=? WHERE name=?", (new, old))
+                self.conn.execute("UPDATE orders SET item_status=? WHERE item_status=?", (new, old))
+            return True
+        except sqlite3.IntegrityError:
+            return False
+
+    def delete_item_status(self, name):
+        self.conn.execute("DELETE FROM item_statuses WHERE name=?", (name,))
+        self.conn.commit()
+
+    def set_item_status(self, item_id, status):
+        self.conn.execute("UPDATE orders SET item_status=? WHERE id=?", (status, item_id))
+        self.conn.commit()
+
+    def set_batch_item_status(self, batch_id, status):
+        self.conn.execute("UPDATE orders SET item_status=? WHERE order_batch_id=?", (status, batch_id))
+        self.conn.commit()
+
+    # ================= План-Факт v2 =================
+    PF_UNITS = ["Календарные дни", "Рабочие дни", "Недели"]
+    PF_LINK_TYPES = ["FS", "SS", "FF", "SF", "NONE"]
+
+    def _ensure_plan_fact_v2(self):
+        c = self.conn.cursor()
+        c.execute("PRAGMA table_info(plan_fact)")
+        cols = [r[1] for r in c.fetchall()]
+        for col, typ in (("subproject", "TEXT DEFAULT ''"),
+                         ("responsible", "TEXT DEFAULT ''"),
+                         ("start_plan", "TEXT DEFAULT ''"),
+                         ("start_fact", "TEXT DEFAULT ''"),
+                         ("duration_qty", "REAL DEFAULT 0"),
+                         ("duration_unit", "TEXT DEFAULT 'Календарные дни'"),
+                         ("end_plan", "TEXT DEFAULT ''"),
+                         ("end_fact", "TEXT DEFAULT ''"),
+                         ("comment", "TEXT DEFAULT ''"),
+                         ("progress", "INTEGER DEFAULT 0"),
+                         ("is_milestone", "INTEGER DEFAULT 0"),
+                         ("parent_id", "INTEGER DEFAULT 0"),
+                         ("baseline_start", "TEXT DEFAULT ''"),
+                         ("baseline_end", "TEXT DEFAULT ''")):
+            if col not in cols:
+                c.execute(f"ALTER TABLE plan_fact ADD COLUMN {col} {typ}")
+        c.execute('''CREATE TABLE IF NOT EXISTS responsibles (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT UNIQUE NOT NULL,
+            position TEXT DEFAULT '',
+            email TEXT DEFAULT '',
+            phone TEXT DEFAULT '',
+            note TEXT DEFAULT '')''')
+        c.execute('''CREATE TABLE IF NOT EXISTS plan_fact_links (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_id INTEGER NOT NULL,
+            work_id INTEGER NOT NULL,
+            depends_on INTEGER NOT NULL,
+            link_type TEXT DEFAULT 'FS',
+            lag_days INTEGER DEFAULT 0,
+            UNIQUE(work_id, depends_on))''')
+        c.execute("CREATE INDEX IF NOT EXISTS idx_pf_links ON plan_fact_links(project_id, work_id)")
+        self.conn.commit()
+
+    # --- Ответственные ---
+    def get_responsibles(self):
+        return self.conn.execute("SELECT * FROM responsibles ORDER BY name").fetchall()
+
+    def add_responsible(self, name, position="", email="", phone="", note=""):
+        name = (name or "").strip()
+        if not name:
+            return False
+        try:
+            self.conn.execute("""INSERT INTO responsibles (name, position, email, phone, note)
+                                 VALUES (?,?,?,?,?)""", (name, position, email, phone, note))
+            self.conn.commit()
+            return True
+        except sqlite3.IntegrityError:
+            return False
+
+    def update_responsible(self, rid, name, position="", email="", phone="", note=""):
+        try:
+            self.conn.execute("""UPDATE responsibles SET name=?, position=?, email=?, phone=?, note=?
+                                 WHERE id=?""", (name, position, email, phone, note, rid))
+            self.conn.commit()
+            return True
+        except sqlite3.IntegrityError:
+            return False
+
+    def rename_responsible(self, old, new):
+        new = (new or "").strip()
+        if not new or old == new:
+            return False
+        try:
+            with self.conn:
+                self.conn.execute("UPDATE responsibles SET name=? WHERE name=?", (new, old))
+                self.conn.execute("UPDATE plan_fact SET responsible=? WHERE responsible=?", (new, old))
+            return True
+        except sqlite3.IntegrityError:
+            return False
+
+    def delete_responsible(self, rid):
+        self.conn.execute("DELETE FROM responsibles WHERE id=?", (rid,))
+        self.conn.commit()
+
+    # --- Даты и длительности ---
+    @staticmethod
+    def pf_parse(s):
+        s = (s or "").strip()
+        if not s:
+            return None
+        for fmt in ("%d.%m.%Y", "%d.%m.%y", "%Y-%m-%d"):
+            try:
+                return datetime.strptime(s, fmt)
+            except ValueError:
+                continue
+        return None
+
+    def pf_shift(self, start, qty, unit):
+        """Дата окончания = начало + длительность."""
+        if start is None:
+            return None
+        try:
+            n = int(float(qty or 0))
+        except (TypeError, ValueError):
+            n = 0
+        if n <= 0:
+            return start
+        if unit == "Недели":
+            return start + timedelta(days=n * 7)
+        if unit == "Рабочие дни":
+            try:
+                import holidays as _h
+                from utils import add_working_days_with_holidays
+                return add_working_days_with_holidays(start, n, _h.Russia())
+            except Exception:
+                d, added = start, 0
+                while added < n:
+                    d += timedelta(days=1)
+                    if d.weekday() < 5:
+                        added += 1
+                return d
+        return start + timedelta(days=n)
+
+    def pf_end_plan(self, start_plan, qty, unit):
+        d = self.pf_shift(self.pf_parse(start_plan), qty, unit)
+        return d.strftime("%d.%m.%Y") if d else ""
+
+    # --- Зависимости ---
+    def get_pf_links(self, project_id, work_id=None):
+        if work_id is None:
+            return self.conn.execute(
+                "SELECT * FROM plan_fact_links WHERE project_id=? ORDER BY work_id", (project_id,)).fetchall()
+        return self.conn.execute(
+            "SELECT * FROM plan_fact_links WHERE project_id=? AND work_id=?",
+            (project_id, work_id)).fetchall()
+
+    def add_pf_link(self, project_id, work_id, depends_on, link_type="FS", lag_days=0):
+        if int(work_id) == int(depends_on):
+            return False, "Работа не может зависеть от самой себя"
+        if link_type not in self.PF_LINK_TYPES:
+            link_type = "FS"
+        # проверка обратного цикла
+        if self._pf_creates_cycle(project_id, work_id, depends_on):
+            return False, "Такая связь создаёт цикл зависимостей"
+        try:
+            self.conn.execute("""INSERT OR REPLACE INTO plan_fact_links
+                (project_id, work_id, depends_on, link_type, lag_days) VALUES (?,?,?,?,?)""",
+                (project_id, work_id, depends_on, link_type, int(lag_days or 0)))
+            self.conn.commit()
+            return True, ""
+        except sqlite3.Error as e:
+            return False, str(e)
+
+    def delete_pf_link(self, link_id):
+        self.conn.execute("DELETE FROM plan_fact_links WHERE id=?", (link_id,))
+        self.conn.commit()
+
+    def _pf_creates_cycle(self, project_id, work_id, depends_on):
+        """Есть ли путь depends_on → ... → work_id (тогда новая связь замкнёт цикл)."""
+        links = {}
+        for r in self.get_pf_links(project_id):
+            links.setdefault(r["work_id"], []).append(r["depends_on"])
+        stack, seen = [depends_on], set()
+        while stack:
+            cur = stack.pop()
+            if cur == work_id:
+                return True
+            if cur in seen:
+                continue
+            seen.add(cur)
+            stack.extend(links.get(cur, []))
+        return False
+
+    def pf_recalc_schedule(self, project_id):
+        """Каскадный пересчёт дат по зависимостям (топологический порядок)."""
+        rows = {r["id"]: dict(r) for r in self.get_plan_fact(project_id)}
+        if not rows:
+            return 0
+        preds = {}
+        for l in self.get_pf_links(project_id):
+            preds.setdefault(l["work_id"], []).append(dict(l))
+        order, seen, temp = [], set(), set()
+
+        def visit(wid):
+            if wid in seen or wid not in rows:
+                return
+            if wid in temp:
+                return                      # цикл — пропускаем
+            temp.add(wid)
+            for l in preds.get(wid, []):
+                visit(l["depends_on"])
+            temp.discard(wid)
+            seen.add(wid)
+            order.append(wid)
+
+        for wid in rows:
+            visit(wid)
+
+        changed = 0
+        for wid in order:
+            w = rows[wid]
+            links = [l for l in preds.get(wid, []) if l["link_type"] != "NONE"]
+            if links:
+                starts, ends = [], []
+                for l in links:
+                    p = rows.get(l["depends_on"])
+                    if not p:
+                        continue
+                    ps, pe = self.pf_parse(p.get("start_plan")), self.pf_parse(p.get("end_plan"))
+                    lag = timedelta(days=int(l["lag_days"] or 0))
+                    t = l["link_type"]
+                    if t == "FS" and pe:
+                        starts.append(pe + lag + timedelta(days=1))
+                    elif t == "SS" and ps:
+                        starts.append(ps + lag)
+                    elif t == "FF" and pe:
+                        ends.append(pe + lag)
+                    elif t == "SF" and ps:
+                        ends.append(ps + lag)
+                new_start = w.get("start_plan") or ""
+                if starts:
+                    new_start = max(starts).strftime("%d.%m.%Y")
+                new_end = self.pf_end_plan(new_start, w.get("duration_qty"), w.get("duration_unit"))
+                if ends:
+                    e = max(ends)
+                    new_end = e.strftime("%d.%m.%Y")
+                    back = self.pf_shift(e, -(w.get("duration_qty") or 0), w.get("duration_unit")) \
+                        if False else None
+                    # для FF/SF начало считаем обратным сдвигом только для календарных/недель
+                    unit = w.get("duration_unit")
+                    n = int(float(w.get("duration_qty") or 0))
+                    days = n * 7 if unit == "Недели" else n
+                    new_start = (e - timedelta(days=days)).strftime("%d.%m.%Y")
+                if new_start != (w.get("start_plan") or "") or new_end != (w.get("end_plan") or ""):
+                    self.conn.execute("UPDATE plan_fact SET start_plan=?, end_plan=? WHERE id=?",
+                                      (new_start, new_end, wid))
+                    w["start_plan"], w["end_plan"] = new_start, new_end
+                    changed += 1
+            else:
+                end = self.pf_end_plan(w.get("start_plan"), w.get("duration_qty"), w.get("duration_unit"))
+                if end != (w.get("end_plan") or ""):
+                    self.conn.execute("UPDATE plan_fact SET end_plan=? WHERE id=?", (end, wid))
+                    w["end_plan"] = end
+                    changed += 1
+        self.conn.commit()
+        return changed
+
+    # --- Контроль: метрики по работам и сводка ---
+    def pf_metrics(self, project_id):
+        rows = [dict(r) for r in self.get_plan_fact(project_id)]
+        today = datetime.now().date()
+        links, succ = {}, {}
+        for l in self.get_pf_links(project_id):
+            links.setdefault(l["work_id"], []).append(dict(l))
+            succ.setdefault(l["depends_on"], []).append(l["work_id"])
+        by_id = {r["id"]: r for r in rows}
+        ends = [self.pf_parse(r.get("end_plan")) for r in rows]
+        ends = [e for e in ends if e]
+        project_end = max(ends) if ends else None
+
+        out = {}
+        tw = dw = cw = ccw = 0.0
+        summary = {"total": len(rows), "done": 0, "in_work": 0, "overdue": 0,
+                   "late_start": 0, "critical": 0, "blocked": 0,
+                   "progress": 0, "progress_cost": 0, "base_shift": 0}
+        for r in rows:
+            wid = r["id"]
+            sp, sf = self.pf_parse(r.get("start_plan")), self.pf_parse(r.get("start_fact"))
+            ep, ef = self.pf_parse(r.get("end_plan")), self.pf_parse(r.get("end_fact"))
+            be = self.pf_parse(r.get("baseline_end"))
+            dur = float(r.get("duration_qty") or 0)
+            cost = float(r.get("cost_weight") or 0)
+            weight = dur if dur > 0 else 1.0
+            done = (r.get("status") or "") in ("Выполнено", "Завершено")
+            prog = 100 if done else int(r.get("progress") or 0)
+            tw += weight; dw += weight * prog / 100.0
+            if cost > 0:
+                cw += cost; ccw += cost * prog / 100.0
+
+            delta = None
+            if ef and ep:
+                delta = (ef.date() - ep.date()).days
+            elif ep and not done:
+                delta = (today - ep.date()).days
+            elif done:
+                delta = 0
+            base_shift = (ep.date() - be.date()).days if (ep and be) else None
+            if base_shift:
+                summary["base_shift"] = max(summary["base_shift"], base_shift)
+
+            forecast = ""
+            if sf and not done:
+                f = self.pf_shift(sf, dur, r.get("duration_unit"))
+                forecast = f.strftime("%d.%m.%Y") if f else ""
+            late_start = bool(sp and not sf and sp.date() < today and not done)
+
+            slack = None
+            if ep:
+                if succ.get(wid):
+                    ss = [self.pf_parse(by_id[s].get("start_plan")) for s in succ[wid] if s in by_id]
+                    ss = [x for x in ss if x]
+                    if ss:
+                        slack = (min(ss).date() - ep.date()).days - 1
+                elif project_end:
+                    slack = (project_end.date() - ep.date()).days
+            critical = (slack is not None and slack <= 0 and not done)
+
+            if done:
+                light = "done"
+            elif r.get("is_blocked"):
+                light = "blocked"
+            elif delta is not None and delta > 0:
+                light = "overdue"
+            elif ep and 0 <= (ep.date() - today).days <= 3:
+                light = "soon"
+            else:
+                light = "ok"
+
+            out[wid] = {"delta": delta, "forecast": forecast, "late_start": late_start,
+                        "slack": slack, "critical": critical, "light": light, "progress": prog,
+                        "base_shift": base_shift, "blocked": bool(r.get("is_blocked")),
+                        "cost": cost,
+                        "depends": ", ".join(f'№{by_id[l["depends_on"]]["number"]}({l["link_type"]})'
+                                             for l in links.get(wid, []) if l["depends_on"] in by_id) or "—"}
+            summary["done"] += 1 if done else 0
+            summary["in_work"] += 1 if (not done and sf) else 0
+            summary["overdue"] += 1 if light == "overdue" else 0
+            summary["late_start"] += 1 if late_start else 0
+            summary["critical"] += 1 if critical else 0
+            summary["blocked"] += 1 if r.get("is_blocked") else 0
+        summary["progress"] = round(dw / tw * 100, 1) if tw else 0.0
+        summary["progress_cost"] = round(ccw / cw * 100, 1) if cw else summary["progress"]
+        return {"rows": out, "summary": summary}
+
+    def close(self):
+        if self.conn:
+            try:
+                self.conn.close()
+            except sqlite3.Error:
+                pass
+            self.conn = None
