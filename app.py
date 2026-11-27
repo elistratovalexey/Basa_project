@@ -396,7 +396,7 @@ class ProjectManagerApp:
         style.configure('Orders.TButton', background='#FF6B00', foreground='black',
                         font=('Arial', 10, 'bold'))
         style.map('Orders.TButton',
-                  background=[('active', '#FF8533'), ('pressed', '#CC5500')],
+                  background=[('active', '#0FF8533'), ('pressed', '#CC5500')],
                   foreground=[('active', 'black'), ('pressed', 'black')])
 
         frame_top = ttk.Frame(self.root)
@@ -435,6 +435,7 @@ class ProjectManagerApp:
         ttk.Button(nav, text="Удалить", command=self.delete_project).pack(side=tk.LEFT, padx=2)
         ttk.Button(nav, text="Резервная копия БД",
                    command=lambda: self.make_backup(silent=False)).pack(side=tk.LEFT, padx=10)
+        ttk.Button(nav, text="СКЛАД", command=self.open_warehouse).pack(side=tk.LEFT, padx=5)
         # === Кнопка ЗАКАЗЫ перенесена сюда из вкладки «Закупки» ===
         ttk.Button(nav, text="ЗАКАЗЫ", style='Orders.TButton',
                    command=self.show_orders).pack(side=tk.LEFT, padx=10)
@@ -477,7 +478,7 @@ class ProjectManagerApp:
         self.purchases_tab = PurchasesTab(self, f)
 
         f = ttk.Frame(self.notebook, padding=10)
-        self.notebook.add(f, text="  Спецификация Закупок  ")
+        self.notebook.add(f, text="  ЗАКУПКИ РОССИЯ  ")
         self.purchase_spec_tab = PurchaseSpecTab(self, f)
 
         f = ttk.Frame(self.notebook, padding=10)
@@ -652,6 +653,16 @@ class ProjectManagerApp:
             return
         ms = max(1, int(sm.cfg.get("interval_min", 15))) * 60 * 1000
         self._sync_job = self.root.after(ms, self._auto_sync_tick)
+
+    def open_warehouse(self):
+        """СКЛАД — остатки по ячейкам (не зависит от проекта)."""
+        try:
+            from dialogs.warehouse_dialog import WarehouseDialog
+        except ImportError as e:
+            messagebox.showerror("Склад", f"Модуль склада недоступен:\\n{e}")
+            return
+        dlg = WarehouseDialog(self.root, self.db_manager)
+        
 
     def _auto_sync_tick(self):
         self.sync_now_silent()

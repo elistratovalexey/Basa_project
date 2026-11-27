@@ -1,6 +1,8 @@
 # -*- coding: utf-8 -*-
-"""План-Факт v4: сроки, зависимости, baseline, блокировки, загрузка, аудит,
-уведомления, база наименований работ и правка полей прямо в таблице."""
+"""План-Факт v5: сроки, зависимости, baseline, блокировки, загрузка, аудит,
+уведомления, дата напоминания, связь с заказами И счетами (ЗАКУПКИ РОССИЯ),
+база наименований работ, правка полей прямо в таблице.
+"""
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 from datetime import datetime
@@ -27,12 +29,11 @@ class PlanFactTab(BaseTab):
         self._row_num = {}
         self._parents = {}
         self._orders = {}
+        self._link_map = {}
         self._work_names = {}
         self._pf_inline = None
         self.create_ui()
 
-    # ==================================================================
-    # Интерфейс
     # ==================================================================
     def create_ui(self):
         top = ttk.Frame(self.parent)
@@ -72,7 +73,7 @@ class PlanFactTab(BaseTab):
         self.c_name = ttk.Combobox(card, width=46)
         self.c_name.grid(row=0, column=3, columnspan=4, sticky="ew", padx=(0, 4))
         self.c_name.bind("<<ComboboxSelected>>", self.on_work_name_selected)
-        self.e_name = self.c_name          # совместимость с остальным кодом
+        self.e_name = self.c_name
         ttk.Button(card, text="+", width=2,
                    command=self.add_work_name_inline).grid(row=0, column=7, sticky="w", padx=(0, 8))
         ttk.Label(card, text="Подпроект:").grid(row=0, column=8, sticky="w")
@@ -137,8 +138,8 @@ class PlanFactTab(BaseTab):
         ttk.Label(card, text="Причина:").grid(row=4, column=2, sticky="w")
         self.c_reason = ttk.Combobox(card, width=24)
         self.c_reason.grid(row=4, column=3, columnspan=2, sticky="w")
-        ttk.Label(card, text="Связать с заказом:").grid(row=4, column=5, sticky="w")
-        self.c_order = ttk.Combobox(card, width=18, state="readonly")
+        ttk.Label(card, text="Связать с заказом/счётом:").grid(row=4, column=5, sticky="w")
+        self.c_order = ttk.Combobox(card, width=30, state="readonly")
         self.c_order.grid(row=4, column=6, columnspan=2, sticky="w")
         self.v_auto = tk.BooleanVar(value=False)
         ttk.Checkbutton(card, text="Даты из заказа", variable=self.v_auto).grid(row=4, column=8, sticky="w")
@@ -147,9 +148,18 @@ class PlanFactTab(BaseTab):
         self.e_notify.grid(row=4, column=10, sticky="w")
         self.e_notify.insert(0, "3")
 
-        ttk.Label(card, text="Комментарии:").grid(row=5, column=0, sticky="nw", pady=3)
+        ttk.Label(card, text="Дата напоминания:").grid(row=5, column=0, sticky="w", pady=3)
+        self.e_remind = ttk.Entry(card, width=12)
+        self.e_remind.grid(row=5, column=1, sticky="w")
+        ttk.Button(card, text="📅", width=2,
+                   command=lambda: self._pick(self.e_remind)).grid(row=5, column=2, sticky="w")
+        ttk.Label(card, foreground="gray",
+                  text="напоминание при входе в программу за 3 дня до даты").grid(
+            row=5, column=3, columnspan=5, sticky="w")
+
+        ttk.Label(card, text="Комментарии:").grid(row=6, column=0, sticky="nw", pady=3)
         self.e_comment = tk.Text(card, width=100, height=2)
-        self.e_comment.grid(row=5, column=1, columnspan=10, sticky="ew", pady=3)
+        self.e_comment.grid(row=6, column=1, columnspan=10, sticky="ew", pady=3)
         card.grid_columnconfigure(3, weight=1)
 
         for w in (self.e_start_plan, self.e_dur):
@@ -181,17 +191,18 @@ class PlanFactTab(BaseTab):
                                               "Enter — сохранить, Tab — дальше, Esc — отмена", padding=6)
         tf.pack(fill="both", expand=True, padx=6, pady=4)
         cols = ("num", "name", "sub", "type", "resp", "status", "sp", "sf", "dur",
-                "ep", "ef", "delta", "prog", "forecast", "slack", "depends", "base", "lock", "cost")
+                "ep", "ef", "delta", "prog", "forecast", "slack", "depends", "base",
+                "lock", "cost", "remind")
         self.tree = ttk.Treeview(tf, columns=cols, show="tree headings", height=13)
         self.tree.heading("#0", text="")
         self.tree.column("#0", width=28, stretch=False)
-        heads = [("num", "№", 42), ("name", "Наименование работ", 250), ("sub", "Подпроект", 110),
-                 ("type", "Тип", 100), ("resp", "Ответственный", 120), ("status", "Статус", 100),
-                 ("sp", "Начало план", 88), ("sf", "Начало факт", 88), ("dur", "Выполнение", 105),
-                 ("ep", "Окончание план", 95), ("ef", "Окончание факт", 95), ("delta", "Δ дней", 60),
-                 ("prog", "%", 45), ("forecast", "Прогноз", 88), ("slack", "Резерв", 60),
-                 ("depends", "Зависит от", 120), ("base", "Сдвиг базы", 80),
-                 ("lock", "🔒", 40), ("cost", "Стоимость ₽", 100)]
+        heads = [("num", "№", 42), ("name", "Наименование работ", 240), ("sub", "Подпроект", 105),
+                 ("type", "Тип", 95), ("resp", "Ответственный", 115), ("status", "Статус", 95),
+                 ("sp", "Начало план", 85), ("sf", "Начало факт", 85), ("dur", "Выполнение", 100),
+                 ("ep", "Окончание план", 92), ("ef", "Окончание факт", 92), ("delta", "Δ дней", 58),
+                 ("prog", "%", 42), ("forecast", "Прогноз", 85), ("slack", "Резерв", 58),
+                 ("depends", "Зависит от", 115), ("base", "Сдвиг базы", 78),
+                 ("lock", "🔒", 38), ("cost", "Стоимость ₽", 95), ("remind", "Напоминание", 95)]
         for c, t, w in heads:
             self.tree.heading(c, text=t)
             self.tree.column(c, width=w,
@@ -204,13 +215,12 @@ class PlanFactTab(BaseTab):
         hs.pack(side=tk.BOTTOM, fill="x")
         for tag, kw in (("overdue", {"background": "#f8d7da"}), ("soon", {"background": "#fff3cd"}),
                         ("done", {"background": "#d9ead3"}), ("blocked", {"background": "#e2e3e5"}),
-                        ("critical", {"foreground": "#8b0000"}), ("latestart", {"foreground": "#b02a37"})):
+                        ("critical", {"foreground": "#8b0000"}), ("latestart", {"foreground": "#b02a37"}),
+                        ("remind", {"background": "#cfe2f3"})):
             self.tree.tag_configure(tag, **kw)
         self.tree.bind("<<TreeviewSelect>>", self.on_select)
         self.tree.bind("<Double-1>", self.on_tree_double_click)
 
-    # ==================================================================
-    # Вспомогательное
     # ==================================================================
     def _pick(self, entry):
         try:
@@ -253,15 +263,27 @@ class PlanFactTab(BaseTab):
         self.c_parent["values"] = list(self._parents.keys())
         if not self.c_parent.get():
             self.c_parent.set("— нет —")
-        self._orders = {"— нет —": 0}
+
+        # связи: (номер заказа, id счёта) — заказы И счета «ЗАКУПКИ РОССИЯ»
+        self._link_map = {"— нет —": (0, 0)}
         try:
             for b in self.db_manager.get_order_batches():
                 if (b["project_name"] or "") == proj:
-                    lbl = f'№{b["order_batch_id"]} · {b["supplier"] or ""} {b["order_date"] or ""}'.strip()
-                    self._orders[lbl] = b["order_batch_id"]
+                    lbl = (f'Заказ №{b["order_batch_id"]} · {b["supplier"] or "—"} · '
+                           f'{b["invoice_number"] or b["order_date"] or ""}').strip(" ·")
+                    self._link_map[lbl] = (b["order_batch_id"], 0)
         except Exception:
             pass
-        self.c_order["values"] = list(self._orders.keys())
+        try:
+            if pid:
+                for sp in self.db_manager.get_purchase_specifications(pid):
+                    lbl = (f'Счёт #{sp["id"]} · {sp["supplier"] or "—"} · '
+                           f'{sp["name"] or ""}').strip(" ·")
+                    self._link_map[lbl] = (0, sp["id"])
+        except Exception:
+            pass
+        self._orders = self._link_map
+        self.c_order["values"] = list(self._link_map.keys())
         if not self.c_order.get():
             self.c_order.set("— нет —")
         self.c_f_resp["values"] = [""] + resp
@@ -275,8 +297,6 @@ class PlanFactTab(BaseTab):
         self.c_f_sub.set("")
         self.load_records()
 
-    # ==================================================================
-    # Загрузка таблицы
     # ==================================================================
     def load_records(self):
         for i in self.tree.get_children():
@@ -301,7 +321,7 @@ class PlanFactTab(BaseTab):
                   f"сдвиг от базы до {s['base_shift']} дн"))
         try:
             notes = self.db_manager.pf_notifications(pid)
-            bad = sum(1 for n in notes if n["kind"] in ("overdue", "late_start", "blocked"))
+            bad = sum(1 for n in notes if n["kind"] in ("overdue", "late_start", "blocked", "remind"))
             self.lbl_notify.config(text=f"🔔 событий: {len(notes)} (критичных {bad})" if notes else "")
         except Exception:
             pass
@@ -309,6 +329,7 @@ class PlanFactTab(BaseTab):
         f_resp, f_sub = self.c_f_resp.get(), self.c_f_sub.get()
         by_id = {r["id"]: r for r in rows}
         iids = {}
+        today = datetime.now().date()
 
         def visible(r):
             mm = met.get(r["id"], {})
@@ -335,6 +356,9 @@ class PlanFactTab(BaseTab):
                 tags.append("critical")
             if mm.get("late_start"):
                 tags.append("latestart")
+            rd = self.db_manager.pf_parse(r.get("remind_date"))
+            if rd and (rd.date() - today).days <= 3:
+                tags.append("remind")
             iid = self.tree.insert(parent_iid, tk.END, text="", tags=tuple(tags), values=(
                 r["number"], r.get("name") or "", r.get("subproject") or "", r.get("work_type") or "",
                 r.get("responsible") or "", r.get("status") or "", r.get("start_plan") or "",
@@ -344,7 +368,8 @@ class PlanFactTab(BaseTab):
                 mm.get("depends") or "—",
                 mm.get("base_shift") if mm.get("base_shift") is not None else "",
                 "🔒" if r.get("is_blocked") else "",
-                f'{_num(r.get("cost_weight")):,.0f}'.replace(",", " ") if _num(r.get("cost_weight")) else ""))
+                f'{_num(r.get("cost_weight")):,.0f}'.replace(",", " ") if _num(r.get("cost_weight")) else "",
+                r.get("remind_date") or ""))
             iids[r["id"]] = iid
             self._row_num[iid] = r["number"]
 
@@ -367,8 +392,6 @@ class PlanFactTab(BaseTab):
         for iid in iids.values():
             self.tree.item(iid, open=True)
 
-    # ==================================================================
-    # Карточка
     # ==================================================================
     def on_select(self, event=None):
         sel = self.tree.selection()
@@ -393,7 +416,7 @@ class PlanFactTab(BaseTab):
         self.v_blocked.set(bool(row.get("is_blocked")))
         self.v_auto.set(bool(row.get("auto_dates")))
         for e, k in ((self.e_start_plan, "start_plan"), (self.e_start_fact, "start_fact"),
-                     (self.e_end_fact, "end_fact")):
+                     (self.e_end_fact, "end_fact"), (self.e_remind, "remind_date")):
             e.delete(0, tk.END)
             e.insert(0, row.get(k) or "")
         self.e_dur.delete(0, tk.END)
@@ -410,8 +433,9 @@ class PlanFactTab(BaseTab):
         self.e_comment.insert("1.0", row.get("comment") or "")
         par = int(row.get("parent_id") or 0)
         self.c_parent.set(next((k for k, v in self._parents.items() if v == par), "— нет —"))
-        ob = int(row.get("link_order_batch") or 0)
-        self.c_order.set(next((k for k, v in self._orders.items() if v == ob), "— нет —"))
+        want = (int(row.get("link_order_batch") or 0), int(row.get("link_spec_id") or 0))
+        self.c_order.set(next((k for k, v in self._link_map.items()
+                               if v == want and want != (0, 0)), "— нет —"))
         self._recalc_label()
         mm = self.db_manager.pf_metrics(pid)["rows"].get(row["id"], {})
         self.lbl_forecast.config(
@@ -421,7 +445,7 @@ class PlanFactTab(BaseTab):
     def clear_form(self):
         self._current_number = None
         for e in (self.e_num, self.e_name, self.e_start_plan, self.e_start_fact,
-                  self.e_end_fact, self.e_dur, self.e_cost):
+                  self.e_end_fact, self.e_dur, self.e_cost, self.e_remind):
             e.delete(0, tk.END)
         self.e_progress.delete(0, tk.END)
         self.e_progress.insert(0, "0")
@@ -441,6 +465,7 @@ class PlanFactTab(BaseTab):
 
     def _collect(self):
         comment = self.e_comment.get("1.0", tk.END).strip()
+        link = self._link_map.get(self.c_order.get(), (0, 0))
         return {
             "name": self.e_name.get().strip(),
             "subproject": self.c_subproject.get().strip(),
@@ -460,10 +485,12 @@ class PlanFactTab(BaseTab):
             "is_blocked": 1 if self.v_blocked.get() else 0,
             "delay_reason": self.c_reason.get().strip(),
             "blocked_note": comment,
-            "link_order_batch": self._orders.get(self.c_order.get(), 0),
+            "link_order_batch": link[0],
+            "link_spec_id": link[1],
             "auto_dates": 1 if self.v_auto.get() else 0,
             "cost_weight": _num(self.e_cost.get()),
             "notify_days": int(_num(self.e_notify.get(), 3)),
+            "remind_date": self.e_remind.get().strip(),
             "comment": comment, "note": comment,
         }
 
@@ -503,6 +530,13 @@ class PlanFactTab(BaseTab):
         self._current_number = num
         self.app.log_action(f"План-Факт: работа №{num} {action} ({data['name']})")
         self.load_records()
+        # вернуть выделение и показать сохранённую связь
+        for iid in self.tree.get_children():
+            if self._row_num.get(iid) == num:
+                self.tree.selection_set(iid)
+                self.tree.see(iid)
+                self.on_select()
+                break
 
     def delete_record(self):
         num = self._current_number
@@ -560,8 +594,6 @@ class PlanFactTab(BaseTab):
         messagebox.showinfo("Базовый план", f"Зафиксировано работ: {n}")
 
     # ==================================================================
-    # Окна и отчёты
-    # ==================================================================
     def _pid_row(self):
         if self._current_number is None:
             return None, None
@@ -575,30 +607,35 @@ class PlanFactTab(BaseTab):
         if not row:
             messagebox.showwarning("Внимание", "Выберите работу!")
             return
-        WorkLinksDialog(self.root, self.db_manager, pid, row)
+        dlg = WorkLinksDialog(self.root, self.db_manager, pid, row)
+        self.root.wait_window(dlg)
         self.db_manager.pf_recalc_schedule(pid)
         self.load_records()
 
     def open_responsibles(self):
-        ResponsiblesDialog(self.root, self.db_manager)
+        dlg = ResponsiblesDialog(self.root, self.db_manager)
+        self.root.wait_window(dlg)
         self._refresh_dicts()
 
     def open_work_types(self):
-        DirectoryDialog(self.root, "Типы работ", self.db_manager.get_work_types,
-                        self.db_manager.add_work_type, self.db_manager.rename_work_type,
-                        self.db_manager.delete_work_type)
+        dlg = DirectoryDialog(self.root, "Типы работ", self.db_manager.get_work_types,
+                              self.db_manager.add_work_type, self.db_manager.rename_work_type,
+                              self.db_manager.delete_work_type)
+        self.root.wait_window(dlg)
         self._refresh_dicts()
 
     def open_work_statuses(self):
-        DirectoryDialog(self.root, "Статусы работ", self.db_manager.get_work_statuses,
-                        self.db_manager.add_work_status, self.db_manager.rename_work_status,
-                        self.db_manager.delete_work_status)
+        dlg = DirectoryDialog(self.root, "Статусы работ", self.db_manager.get_work_statuses,
+                              self.db_manager.add_work_status, self.db_manager.rename_work_status,
+                              self.db_manager.delete_work_status)
+        self.root.wait_window(dlg)
         self._refresh_dicts()
 
     def open_delay_reasons(self):
-        DirectoryDialog(self.root, "Причины задержек", self.db_manager.get_delay_reasons,
-                        self.db_manager.add_delay_reason, self.db_manager.rename_delay_reason,
-                        self.db_manager.delete_delay_reason)
+        dlg = DirectoryDialog(self.root, "Причины задержек", self.db_manager.get_delay_reasons,
+                              self.db_manager.add_delay_reason, self.db_manager.rename_delay_reason,
+                              self.db_manager.delete_delay_reason)
+        self.root.wait_window(dlg)
         self._refresh_dicts()
 
     def _need_pid(self):
@@ -648,7 +685,8 @@ class PlanFactTab(BaseTab):
         TableReportDialog(self.root, "Уведомления по работам",
                           [("№", 50), ("Работа", 230), ("Ответственный", 140), ("Событие", 300)],
                           [[n["number"], n["name"], n["responsible"], n["text"]] for n in notes],
-                          highlight=lambda row: "ПРОСРОЧКА" in str(row[3]) or "🔒" in str(row[3]))
+                          highlight=lambda row: "ПРОСРОЧКА" in str(row[3]) or "🔒" in str(row[3])
+                          or "напоминание" in str(row[3]))
 
     def open_gantt(self):
         pid = self._need_pid()
@@ -678,7 +716,8 @@ class PlanFactTab(BaseTab):
         ws.append(["№", "Наименование", "Подпроект", "Тип", "Ответственный", "Статус",
                    "Начало план", "Начало факт", "Выполнение", "Окончание план", "Окончание факт",
                    "Δ дней", "%", "Прогноз", "Резерв", "Зависит от", "Сдвиг базы",
-                   "Заблокирована", "Причина", "Стоимость ₽", "Комментарии"])
+                   "Заблокирована", "Причина", "Стоимость ₽", "Напоминание",
+                   "Заказ", "Счёт", "Комментарии"])
         for c in ws[2]:
             c.font = Font(bold=True)
         for r in self.db_manager.get_plan_fact(pid):
@@ -689,7 +728,8 @@ class PlanFactTab(BaseTab):
                        r["end_plan"], r["end_fact"], mm.get("delta"), mm.get("progress"),
                        mm.get("forecast"), mm.get("slack"), mm.get("depends"), mm.get("base_shift"),
                        "да" if r["is_blocked"] else "", r["delay_reason"],
-                       round(_num(r["cost_weight"]), 2), r["comment"]])
+                       round(_num(r["cost_weight"]), 2), r["remind_date"],
+                       r["link_order_batch"] or "", r["link_spec_id"] or "", r["comment"]])
         ws2 = wb.create_sheet("Загрузка")
         ws2.append(["Ответственный", "Работ", "Дней", "Просрочено", "Блокировано", "Пик", "Перегруз"])
         for w in self.db_manager.pf_workload(pid):
@@ -769,7 +809,8 @@ class PlanFactTab(BaseTab):
                 "Добавьте блок «База наименований работ» и вызов "
                 "self._ensure_work_names() в __init__.", parent=self.root)
             return
-        WorkNamesDialog(self.root, self.db_manager)
+        dlg = WorkNamesDialog(self.root, self.db_manager)
+        self.root.wait_window(dlg)
         self._refresh_work_names()
 
     # ==================================================================
@@ -789,6 +830,7 @@ class PlanFactTab(BaseTab):
         12: ("progress", "int"),
         17: ("is_blocked", "blocked"),
         18: ("cost_weight", "float"),
+        19: ("remind_date", "date"),
     }
     _PF_READONLY = {
         9: "Окончание план = Начало план + Выполнение. Меняйте их.",
@@ -1447,7 +1489,7 @@ class GanttDialog(tk.Toplevel):
         dates = []
         for r in rows:
             for k in ("start_plan", "end_plan", "start_fact", "end_fact",
-                      "baseline_start", "baseline_end"):
+                      "baseline_start", "baseline_end", "remind_date"):
                 d = db.pf_parse(r.get(k))
                 if d:
                     dates.append(d)
@@ -1457,11 +1499,17 @@ class GanttDialog(tk.Toplevel):
         from datetime import timedelta
         d0, d1 = min(dates), max(dates)
         span = max((d1 - d0).days + 1, 1)
+
+        # ИСПРАВЛЕНО: у Canvas опция называется yscrollcommand, а не yscroll
         cv = tk.Canvas(self, bg="white")
-        sb = ttk.Scrollbar(self, orient=tk.VERTICAL, command=cv.yview)
-        cv.configure(yscroll=sb.set, scrollregion=(0, 0, 280 + span * 14, len(rows) * 30 + 60))
+        vs = ttk.Scrollbar(self, orient=tk.VERTICAL, command=cv.yview)
+        hs = ttk.Scrollbar(self, orient=tk.HORIZONTAL, command=cv.xview)
+        cv.configure(yscrollcommand=vs.set, xscrollcommand=hs.set,
+                     scrollregion=(0, 0, 290 + span * 14, len(rows) * 30 + 70))
         cv.pack(side=tk.LEFT, fill="both", expand=True)
-        sb.pack(side=tk.RIGHT, fill="y")
+        vs.pack(side=tk.RIGHT, fill="y")
+        hs.pack(side=tk.BOTTOM, fill="x")
+
         left, top, scale = 270, 40, 14
         for i in range(0, span, 7):
             x = left + i * scale
@@ -1478,6 +1526,7 @@ class GanttDialog(tk.Toplevel):
             bs, be = db.pf_parse(r.get("baseline_start")), db.pf_parse(r.get("baseline_end"))
             sp, ep = db.pf_parse(r.get("start_plan")), db.pf_parse(r.get("end_plan"))
             sf, ef = db.pf_parse(r.get("start_fact")), db.pf_parse(r.get("end_fact"))
+            rd = db.pf_parse(r.get("remind_date"))
             if bs and be:
                 cv.create_rectangle(left + (bs - d0).days * scale, y,
                                     left + ((be - d0).days + 1) * scale, y + 4,
@@ -1494,6 +1543,9 @@ class GanttDialog(tk.Toplevel):
                 cv.create_rectangle(left + (sf - d0).days * scale, y + 17,
                                     left + ((e - d0).days + 1) * scale, y + 25,
                                     fill=color, outline="#999")
+            if rd:
+                x = left + (rd - d0).days * scale
+                cv.create_oval(x - 3, y + 8, x + 3, y + 14, fill="#0a58ca", outline="")
         cv.create_text(left, 10, anchor="w", font=("Arial", 8, "bold"),
                        text="серая — базовый план, синяя — текущий план, цветная — факт; "
-                            "красная линия — сегодня")
+                            "красная линия — сегодня, синяя точка — напоминание")

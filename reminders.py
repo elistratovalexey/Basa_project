@@ -101,7 +101,7 @@ def collect(db, project_name=None):
                 who = n.get("responsible") or "—"
                 head = (f"[{n.get('project')}] работа №{n.get('number')} "
                         f"«{n.get('name')}» ({who})")
-                if kind in ("overdue", "late_start"):
+                if kind in ("overdue", "late_start", "remind"):
                     items.append(("critical", f"{head}: {n.get('text')}"))
                 elif kind == "blocked":
                     items.append(("normal", f"{head}: {n.get('text')}"))
