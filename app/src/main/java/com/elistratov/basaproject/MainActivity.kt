@@ -35,7 +35,7 @@ class MainActivity : AppCompatActivity() {
         val wrap = LinearLayout.LayoutParams.WRAP_CONTENT
         val root = binding.root as LinearLayout
 
-        // Ряд иконок: убираем из него текстовые кнопки, добавляем ⬆ и 
+        // Ряд иконок: убираем текстовые кнопки, добавляем ⬆ 📊 📦
         val iconRow = root.getChildAt(0) as LinearLayout
         iconRow.removeView(binding.btnSync)
         iconRow.removeView(binding.btnOrders)
@@ -46,7 +46,10 @@ class MainActivity : AppCompatActivity() {
         val btnGantt = Button(this).apply { text = "📊" }
         btnGantt.setOnClickListener { startActivity(Intent(this, GanttActivity::class.java)) }
         iconRow.addView(btnGantt, LinearLayout.LayoutParams(wrap, wrap))
-        for (b in listOf(binding.btnSettings, btnUpdate, btnGantt)) {
+        val btnStock = Button(this).apply { text = "📦" }
+        btnStock.setOnClickListener { startActivity(Intent(this, WarehouseActivity::class.java)) }
+        iconRow.addView(btnStock, LinearLayout.LayoutParams(wrap, wrap))
+        for (b in listOf(binding.btnSettings, btnUpdate, btnGantt, btnStock)) {
             b.minWidth = 0
             b.minimumWidth = 0
             b.setPadding(dp(10), 0, dp(10), 0)

@@ -2,6 +2,8 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
 
     <application
         android:allowBackup="true"
@@ -20,6 +22,7 @@
         <activity android:name=".SettingsActivity" android:label="Настройки" android:parentActivityName=".MainActivity"/>
         <activity android:name=".OrdersActivity" android:label="База заказов" android:parentActivityName=".MainActivity"/>
         <activity android:name=".GanttActivity" android:label="Диаграмма Ганта" android:parentActivityName=".MainActivity"/>
+        <activity android:name=".WarehouseActivity" android:label="Склад" android:parentActivityName=".MainActivity"/>
 
         <provider
             android:name="androidx.core.content.FileProvider"
