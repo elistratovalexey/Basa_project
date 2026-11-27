@@ -300,6 +300,21 @@ class DatabaseManager:
         self.conn.commit()
         return True, ""
 
+    def regenerate_barcode(self, cid):
+        """Пересоздаёт EAN-13 для ячейки (префикс 200 + id + контрольная цифра)."""
+        barcode = self._ean13("200" + str(cid).zfill(9))
+        self.conn.execute("UPDATE storage_cells SET barcode=? WHERE id=?", (barcode, cid))
+        self.conn.commit()
+        return barcode
+
+    def find_cell_by_barcode(self, code):
+        """Поиск ячейки по штрихкоду ИЛИ по номеру — для сканера на складе."""
+        code = (code or "").strip()
+        if not code:
+            return None
+        return self.conn.execute(
+            "SELECT * FROM storage_cells WHERE barcode=? OR code=?", (code, code)).fetchone()
+
     def find_cell_by_barcode(self, code):
         code = (code or "").strip()
         return self.conn.execute(
