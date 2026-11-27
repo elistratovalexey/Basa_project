@@ -12,9 +12,38 @@ class NomenclatureDialog(tk.Toplevel):
         track_geometry(self, "nomenclature_dialog")
         self.resizable(True, True)
         self.db_manager = db_manager
+        self._search_job = None
+
+        # --- Поиск по производителю / артикулу / наименованию ---
+        search_frame = ttk.LabelFrame(self, text="Поиск", padding=6)
+        search_frame.pack(fill=tk.X, padx=10, pady=(10, 0))
+
+        ttk.Label(search_frame, text="Производитель:").grid(row=0, column=0, sticky="w", padx=(0, 5))
+        self.search_manufacturer = ttk.Entry(search_frame, width=22)
+        self.search_manufacturer.grid(row=0, column=1, sticky="ew", padx=(0, 15))
+
+        ttk.Label(search_frame, text="Артикул:").grid(row=0, column=2, sticky="w", padx=(0, 5))
+        self.search_article = ttk.Entry(search_frame, width=22)
+        self.search_article.grid(row=0, column=3, sticky="ew", padx=(0, 15))
+
+        ttk.Label(search_frame, text="Наименование:").grid(row=0, column=4, sticky="w", padx=(0, 5))
+        self.search_name = ttk.Entry(search_frame, width=32)
+        self.search_name.grid(row=0, column=5, sticky="ew", padx=(0, 15))
+
+        ttk.Button(search_frame, text="Сброс", command=self.reset_search).grid(row=0, column=6, padx=(0, 10))
+        self.lbl_count = ttk.Label(search_frame, text="", foreground="gray")
+        self.lbl_count.grid(row=0, column=7, sticky="e")
+
+        search_frame.grid_columnconfigure(1, weight=1)
+        search_frame.grid_columnconfigure(3, weight=1)
+        search_frame.grid_columnconfigure(5, weight=1)
+
+        for e in (self.search_manufacturer, self.search_article, self.search_name):
+            e.bind("<KeyRelease>", lambda ev: self._search_debounce())
+            e.bind("<Return>", lambda ev: self.load_nomenclature())
 
         top_frame = ttk.Frame(self)
-        top_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=(10, 5))
+        top_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=(5, 5))
 
         columns = ("id", "manufacturer", "article", "name_rus", "name_eng")
         self.tree = ttk.Treeview(top_frame, columns=columns, show="headings", height=18)
@@ -69,16 +98,65 @@ class NomenclatureDialog(tk.Toplevel):
 
         self.tree.bind("<<TreeviewSelect>>", self.on_select)
         self.load_nomenclature()
+        self.search_manufacturer.focus_set()
         self.grab_set()
 
-    def load_nomenclature(self):
+    # ==================================================================
+    # Поиск
+    # ==================================================================
+    def _search_debounce(self):
+        if self._search_job:
+            try:
+                self.after_cancel(self._search_job)
+            except Exception:
+                pass
+        self._search_job = self.after(250, self.load_nomenclature)
+
+    def reset_search(self):
+        for e in (self.search_manufacturer, self.search_article, self.search_name):
+            e.delete(0, tk.END)
+        self.load_nomenclature()
+
+    def _filters(self):
+        return (self.search_manufacturer.get().strip().lower(),
+                self.search_article.get().strip().lower(),
+                self.search_name.get().strip().lower())
+
+    def _matches(self, r, f_man, f_art, f_name):
+        if f_man and f_man not in (r['manufacturer'] or "").lower():
+            return False
+        if f_art and f_art not in (r['article'] or "").lower():
+            return False
+        if f_name:
+            hay = f"{r['name_rus'] or ''} {r['name_eng'] or ''}".lower()
+            if f_name not in hay:
+                return False
+        return True
+
+    # ==================================================================
+    def load_nomenclature(self, keep_selection=False):
+        prev = None
+        if keep_selection:
+            sel = self.tree.selection()
+            if sel:
+                prev = self.tree.item(sel[0])['values'][0]
         for item in self.tree.get_children():
             self.tree.delete(item)
+        f_man, f_art, f_name = self._filters()
+        shown = 0
         for r in self.db_manager.get_nomenclature():
-            self.tree.insert("", tk.END, values=(
+            if not self._matches(r, f_man, f_art, f_name):
+                continue
+            iid = self.tree.insert("", tk.END, values=(
                 r['id'], r['manufacturer'] or "", r['article'] or "",
                 r['name_rus'] or "", r['name_eng'] or ""
             ))
+            shown += 1
+            if prev is not None and r['id'] == prev:
+                self.tree.selection_set(iid)
+                self.tree.see(iid)
+        total = shown if not (f_man or f_art or f_name) else shown
+        self.lbl_count.config(text=f"найдено: {shown}" if (f_man or f_art or f_name) else "")
 
     def on_select(self, event):
         selected = self.tree.selection()
@@ -114,13 +192,13 @@ class NomenclatureDialog(tk.Toplevel):
         if not selected:
             messagebox.showwarning("Внимание", "Выберите запись для редактирования!")
             return
-        old_article = self.tree.item(selected[0])['values'][2]
+        record_id = self.tree.item(selected[0])['values'][0]
         self.db_manager.conn.cursor().execute('''UPDATE nomenclature SET
-            manufacturer=?, article=?, name_rus=?, name_eng=? WHERE article=?''',
+            manufacturer=?, article=?, name_rus=?, name_eng=? WHERE id=?''',
             (self.entry_manufacturer.get(), self.entry_article.get(),
-             self.entry_name_rus.get(), self.entry_name_eng.get(), old_article))
+             self.entry_name_rus.get(), self.entry_name_eng.get(), record_id))
         self.db_manager.conn.commit()
-        self.load_nomenclature()
+        self.load_nomenclature(keep_selection=True)
 
     def delete_record(self):
         selected = self.tree.selection()
