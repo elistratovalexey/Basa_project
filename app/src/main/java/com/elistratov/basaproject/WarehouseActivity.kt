@@ -6,11 +6,11 @@ import android.os.Bundle
 import android.text.Editable
 import android.text.TextWatcher
 import android.view.View
-import android.view.ViewGroup
 import android.widget.AdapterView
 import android.widget.ArrayAdapter
 import android.widget.Button
 import android.widget.EditText
+import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ListView
 import android.widget.Spinner
@@ -20,6 +20,8 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
+import com.google.zxing.BarcodeFormat
+import com.journeyapps.barcodescanner.BarcodeEncoder
 import com.journeyapps.barcodescanner.ScanContract
 import com.journeyapps.barcodescanner.ScanOptions
 import java.text.SimpleDateFormat
@@ -104,19 +106,46 @@ class WarehouseActivity : AppCompatActivity() {
             cellFilter = cell["id"]!!.toInt()
             mode.setSelection(0)
             search.setText("")
-            Toast.makeText(this, "Ячейка ${cell["code"]}", Toast.LENGTH_SHORT).show()
-        } else {
-            search.setText(code)
-            Toast.makeText(this, "Штрихкод $code не найден — поиск по тексту", Toast.LENGTH_LONG).show()
+            toast("Ячейка ${cell["code"]}")
+            reload(); return
         }
+        val item = q("SELECT id FROM warehouse_items WHERE barcode=?", arrayOf(code)).firstOrNull()
+        if (item != null) {
+            cellFilter = 0
+            mode.setSelection(0)
+            search.setText(code)
+            toast("Позиция найдена по штрихкоду")
+            reload(); return
+        }
+        search.setText(code)
+        toast("Штрихкод $code не найден — поиск по тексту")
         reload()
     }
+
+    private fun hasColumn(table: String, col: String): Boolean = try {
+        db.readableDatabase.rawQuery("PRAGMA table_info($table)", null).use { c ->
+            var ok = false
+            while (c.moveToNext()) if (c.getString(1) == col) ok = true
+            ok
+        }
+    } catch (e: Exception) { false }
 
     private fun ensureTables() {
         val w = db.writableDatabase
         w.execSQL("CREATE TABLE IF NOT EXISTS storage_cells (id INTEGER PRIMARY KEY AUTOINCREMENT, code TEXT UNIQUE NOT NULL, barcode TEXT UNIQUE, note TEXT DEFAULT '')")
         w.execSQL("CREATE TABLE IF NOT EXISTS warehouse_names (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE NOT NULL, article TEXT DEFAULT '', unit TEXT DEFAULT 'шт', note TEXT DEFAULT '')")
         w.execSQL("CREATE TABLE IF NOT EXISTS warehouse_items (id INTEGER PRIMARY KEY AUTOINCREMENT, cell_id INTEGER DEFAULT 0, name TEXT DEFAULT '', qty REAL DEFAULT 0, description TEXT DEFAULT '', updated_at TEXT DEFAULT '')")
+        if (!hasColumn("warehouse_items", "barcode"))
+            w.execSQL("ALTER TABLE warehouse_items ADD COLUMN barcode TEXT DEFAULT ''")
+        // детерминированное восстановление штрихкодов (200 — ячейки, 201 — позиции)
+        for (r in q("SELECT id FROM warehouse_items WHERE barcode IS NULL OR barcode=''")) {
+            val id = r["id"]!!.toInt()
+            w.execSQL("UPDATE warehouse_items SET barcode=? WHERE id=?", arrayOf(ean13("201" + id.toString().padStart(9, '0')), id))
+        }
+        for (r in q("SELECT id FROM storage_cells WHERE barcode IS NULL OR barcode=''")) {
+            val id = r["id"]!!.toInt()
+            w.execSQL("UPDATE storage_cells SET barcode=? WHERE id=?", arrayOf(ean13("200" + id.toString().padStart(9, '0')), id))
+        }
     }
 
     private fun q(sql: String, args: Array<String> = emptyArray()): List<Map<String, String>> {
@@ -149,7 +178,7 @@ class WarehouseActivity : AppCompatActivity() {
                 var sql = "SELECT w.*, c.code AS cell_code, c.barcode AS cell_barcode FROM warehouse_items w LEFT JOIN storage_cells c ON c.id=w.cell_id WHERE 1=1"
                 val a = mutableListOf<String>()
                 if (cellFilter > 0) { sql += " AND w.cell_id=?"; a.add(cellFilter.toString()) }
-                if (s.isNotEmpty()) { sql += " AND (w.name LIKE ? OR w.description LIKE ? OR c.code LIKE ? OR c.barcode LIKE ?)"; repeat(4) { a.add(like) } }
+                if (s.isNotEmpty()) { sql += " AND (w.name LIKE ? OR w.description LIKE ? OR c.code LIKE ? OR c.barcode LIKE ? OR w.barcode LIKE ?)"; repeat(5) { a.add(like) } }
                 sql += " ORDER BY c.code, w.name"
                 q(sql, a.toTypedArray())
             }
@@ -176,10 +205,12 @@ class WarehouseActivity : AppCompatActivity() {
     private fun editDialog(row: Map<String, String>?) {
         val m = mode.selectedItemPosition
         val dp = { v: Int -> (resources.displayMetrics.density * v).toInt() }
+        val match = LinearLayout.LayoutParams.MATCH_PARENT
+        val wrap = LinearLayout.LayoutParams.WRAP_CONTENT
         val form = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(16), dp(8), dp(16), 0) }
         fun field(hint: String, value: String?): EditText {
             val e = EditText(this).apply { this.hint = hint; setText(value ?: ""); setSingleLine() }
-            form.addView(e, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
+            form.addView(e, LinearLayout.LayoutParams(match, wrap))
             return e
         }
         val cells = q("SELECT id, code FROM storage_cells ORDER BY code")
@@ -197,16 +228,12 @@ class WarehouseActivity : AppCompatActivity() {
                 eQty = field("Количество", row?.get("qty"))
                 eDesc = field("Описание / примечание", row?.get("description"))
                 eCode = EditText(this); eNote = EditText(this); eArt = EditText(this); eUnit = EditText(this)
-                if (row != null) {
-                    val idx = cells.indexOfFirst { it["id"] == row["cell_id"] }
-                    cellSpin.setSelection(idx + 1)
-                }
+                if (row != null) cellSpin.setSelection(cells.indexOfFirst { it["id"] == row["cell_id"] } + 1)
             }
             1 -> {
                 eCode = field("Номер ячейки", row?.get("code"))
                 eNote = field("Примечание", row?.get("note"))
                 eName = EditText(this); eQty = EditText(this); eDesc = EditText(this); eArt = EditText(this); eUnit = EditText(this)
-                if (row != null) form.addView(TextView(this).apply { text = "Штрихкод: ${row["barcode"]}" })
             }
             else -> {
                 eName = field("Наименование", row?.get("name"))
@@ -216,6 +243,36 @@ class WarehouseActivity : AppCompatActivity() {
                 eCode = EditText(this); eQty = EditText(this); eDesc = EditText(this)
             }
         }
+
+        // --- Штрихкод: кнопка генерации + картинка (для ячеек и позиций) ---
+        if (m != 2) {
+            val bcLabel = TextView(this).apply { textSize = 14f }
+            val bcImage = ImageView(this)
+            val btnGen = Button(this).apply { text = "🔄 Штрихкод" }
+            val bcRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+            bcRow.addView(bcLabel, LinearLayout.LayoutParams(0, wrap, 1f))
+            bcRow.addView(btnGen, LinearLayout.LayoutParams(wrap, wrap))
+            form.addView(bcRow)
+            form.addView(bcImage, LinearLayout.LayoutParams(match, dp(90)))
+            fun showBc(code: String?) {
+                bcLabel.text = "Штрихкод: " + (if (code.isNullOrEmpty()) "создастся при сохранении" else code)
+                try {
+                    bcImage.setImageBitmap(if (!code.isNullOrEmpty()) BarcodeEncoder().encodeBitmap(code, BarcodeFormat.EAN_13, 600, 180) else null)
+                } catch (e: Exception) { }
+            }
+            showBc(row?.get("barcode"))
+            btnGen.setOnClickListener {
+                if (row == null) { toast("Сначала сохраните — штрихкод создастся автоматически"); return@setOnClickListener }
+                val prefix = if (m == 1) "200" else "201"
+                val table = if (m == 1) "storage_cells" else "warehouse_items"
+                val code = ean13(prefix + row["id"]!!.toInt().toString().padStart(9, '0'))
+                db.writableDatabase.execSQL("UPDATE $table SET barcode=? WHERE id=?", arrayOf(code, row["id"]))
+                if (m == 0) db.writableDatabase.execSQL("UPDATE warehouse_items SET updated_at=? WHERE id=?", arrayOf(now(), row["id"]))
+                showBc(code); reload()
+                CloudPush.pushWarehouse(this) { _, msg -> toast(msg) }
+            }
+        }
+
         val builder = AlertDialog.Builder(this)
             .setTitle(if (row == null) "Добавить" else "Редактировать")
             .setView(form)
@@ -229,8 +286,13 @@ class WarehouseActivity : AppCompatActivity() {
                             val qty = eQty.text.toString().replace(",", ".").toDoubleOrNull() ?: 0.0
                             val desc = eDesc.text.toString()
                             if (name.isEmpty()) { toast("Укажите наименование"); return@setPositiveButton }
-                            if (row == null) w.execSQL("INSERT INTO warehouse_items (cell_id,name,qty,description,updated_at) VALUES (?,?,?,?,?)", arrayOf(cid, name, qty, desc, now()))
-                            else w.execSQL("UPDATE warehouse_items SET cell_id=?,name=?,qty=?,description=?,updated_at=? WHERE id=?", arrayOf(cid, name, qty, desc, now(), row["id"]))
+                            if (row == null) {
+                                w.execSQL("INSERT INTO warehouse_items (cell_id,name,qty,description,updated_at) VALUES (?,?,?,?,?)", arrayOf(cid, name, qty, desc, now()))
+                                val nid = q("SELECT last_insert_rowid() AS i").first()["i"]!!.toInt()
+                                w.execSQL("UPDATE warehouse_items SET barcode=? WHERE id=?", arrayOf(ean13("201" + nid.toString().padStart(9, '0')), nid))
+                            } else {
+                                w.execSQL("UPDATE warehouse_items SET cell_id=?,name=?,qty=?,description=?,updated_at=? WHERE id=?", arrayOf(cid, name, qty, desc, now(), row["id"]))
+                            }
                         }
                         1 -> {
                             val code = eCode.text.toString().trim()
@@ -255,7 +317,7 @@ class WarehouseActivity : AppCompatActivity() {
                         }
                     }
                     reload()
-                    CloudPush.pushWarehouse(this) { ok, msg -> toast(msg) }
+                    CloudPush.pushWarehouse(this) { _, msg -> toast(msg) }
                 } catch (e: Exception) { toast("Ошибка: ${e.message}") }
             }
             .setNegativeButton("Отмена", null)
@@ -271,7 +333,7 @@ class WarehouseActivity : AppCompatActivity() {
                     }
                     else -> w.execSQL("DELETE FROM warehouse_names WHERE id=?", arrayOf(row["id"]))
                 }
-                reload(); CloudPush.pushWarehouse(this) { ok, msg -> toast(msg) }
+                reload(); CloudPush.pushWarehouse(this) { _, msg -> toast(msg) }
             }.setNegativeButton("Нет", null).show()
         }
         builder.show()

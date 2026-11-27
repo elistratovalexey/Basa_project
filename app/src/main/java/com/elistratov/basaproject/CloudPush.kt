@@ -46,6 +46,7 @@ object CloudPush {
                 cloud.execSQL("CREATE TABLE IF NOT EXISTS storage_cells (id INTEGER PRIMARY KEY AUTOINCREMENT, code TEXT UNIQUE NOT NULL, barcode TEXT UNIQUE, note TEXT DEFAULT '')")
                 cloud.execSQL("CREATE TABLE IF NOT EXISTS warehouse_names (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE NOT NULL, article TEXT DEFAULT '', unit TEXT DEFAULT 'шт', note TEXT DEFAULT '')")
                 cloud.execSQL("CREATE TABLE IF NOT EXISTS warehouse_items (id INTEGER PRIMARY KEY AUTOINCREMENT, cell_id INTEGER DEFAULT 0, name TEXT DEFAULT '', qty REAL DEFAULT 0, description TEXT DEFAULT '', updated_at TEXT DEFAULT '')")
+                ensureCol(cloud, "warehouse_items", "barcode")
                 copy(local, cloud, "storage_cells", arrayOf("id", "code", "barcode", "note"))
                 copy(local, cloud, "warehouse_names", arrayOf("id", "name", "article", "unit", "note"))
                 mergeItems(local, cloud)
@@ -64,6 +65,24 @@ object CloudPush {
         }.start()
     }
 
+    private fun ensureCol(d: SQLiteDatabase, table: String, col: String) {
+        var has = false
+        d.rawQuery("PRAGMA table_info($table)", null).use { c ->
+            while (c.moveToNext()) if (c.getString(1) == col) has = true
+        }
+        if (!has) d.execSQL("ALTER TABLE $table ADD COLUMN $col TEXT DEFAULT ''")
+    }
+
+    private fun hasCol(d: SQLiteDatabase, table: String, col: String): Boolean {
+        var has = false
+        try {
+            d.rawQuery("PRAGMA table_info($table)", null).use { c ->
+                while (c.moveToNext()) if (c.getString(1) == col) has = true
+            }
+        } catch (e: Exception) { }
+        return has
+    }
+
     private fun copy(src: SQLiteDatabase, dst: SQLiteDatabase, table: String, cols: Array<String>) {
         try {
             src.rawQuery("SELECT ${cols.joinToString(",")} FROM $table", null).use { c ->
@@ -77,7 +96,8 @@ object CloudPush {
 
     private fun mergeItems(src: SQLiteDatabase, dst: SQLiteDatabase) {
         try {
-            src.rawQuery("SELECT id, cell_id, name, qty, description, updated_at FROM warehouse_items", null).use { c ->
+            val bc = if (hasCol(src, "warehouse_items", "barcode")) "IFNULL(barcode,'')" else "''"
+            src.rawQuery("SELECT id, cell_id, name, qty, description, updated_at, $bc FROM warehouse_items", null).use { c ->
                 while (c.moveToNext()) {
                     val id = c.getInt(0)
                     val upd = if (c.isNull(5)) "" else c.getString(5)
@@ -89,8 +109,9 @@ object CloudPush {
                         }
                     }
                     if (keep) dst.execSQL(
-                        "INSERT OR REPLACE INTO warehouse_items (id, cell_id, name, qty, description, updated_at) VALUES (?,?,?,?,?,?)",
-                        arrayOf<Any?>(id, c.getInt(1), if (c.isNull(2)) "" else c.getString(2), c.getDouble(3), if (c.isNull(4)) "" else c.getString(4), upd))
+                        "INSERT OR REPLACE INTO warehouse_items (id, cell_id, name, qty, description, updated_at, barcode) VALUES (?,?,?,?,?,?,?)",
+                        arrayOf<Any?>(id, c.getInt(1), if (c.isNull(2)) "" else c.getString(2), c.getDouble(3),
+                            if (c.isNull(4)) "" else c.getString(4), upd, if (c.isNull(6)) "" else c.getString(6)))
                 }
             }
         } catch (e: Exception) { }
